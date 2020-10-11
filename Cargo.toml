@@ -8,3 +8,8 @@ edition = "2018"
 
 [dependencies]
 rand = "0.7"
+generational-arena = "0.2"
+
+[dev-dependencies]
+proptest = "0.10.1"
+pretty_assertions = "0.6.1"
