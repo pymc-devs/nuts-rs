@@ -1,8 +1,8 @@
-pub trait LeapfrogInfo {
-    type DivergenceInfo;
+use crate::nuts::SampleInfo;
 
+pub trait LeapfrogInfo<D> {
     fn energy_error(&self) -> f64;
-    fn divergence(&self) -> Option<Self::DivergenceInfo>;
+    fn divergence(&self) -> Option<D>;
 }
 
 #[derive(Copy, Clone)]
@@ -21,83 +21,106 @@ impl rand::distributions::Distribution<Direction> for rand::distributions::Stand
     }
 }
 
-pub trait StateSpace {
-    type LeapfrogInfo: LeapfrogInfo;
+pub trait Integrator {
+    type DivergenceInfo: Copy;
+    type LeapfrogInfo: LeapfrogInfo<Self::DivergenceInfo>;
     type StateIdx: Copy + Eq;
 
     fn initial_state(&self) -> Self::StateIdx;
-    fn leapfrog(&mut self, start: Self::StateIdx, dir: Direction) -> (Self::StateIdx, Self::LeapfrogInfo);
+    fn leapfrog(
+        &mut self,
+        start: Self::StateIdx,
+        dir: Direction,
+    ) -> (Self::StateIdx, Self::LeapfrogInfo);
     fn is_turning(&self, start: Self::StateIdx, end: Self::StateIdx) -> bool;
     fn free_state(&mut self, state: Self::StateIdx);
+    fn accept(&mut self, state: Self::StateIdx, info: SampleInfo<Self::DivergenceInfo>);
 }
 
-
-type CpuStateIndex = generational_arena::Index;
-
-
-struct CpuState {
-    p: Box<[f64]>,
-    q: Box<[f64]>,
-    v: Box<[f64]>,
-    p_sum: Box<[f64]>,
-    grad: Box<[f64]>,
-    idx_in_trajectory: i64,
-    kinetic_energy: f64,
-    potential_energy: f64,
-    used: bool,
+pub struct Draw<I: Integrator, S> {
+    state: I::StateIdx,
+    info: S,
+    tuning: bool,
 }
 
-struct CpuStateSpace {
-    states: generational_arena::Arena<CpuState>,
-    initial_state: Option<CpuStateIndex>,
-    
-}
+pub trait Sampler {
+    type Integrator: Integrator;
+    type AdaptationCollector: AdaptationCollector<
+        <Self::Integrator as Integrator>::StateIdx,
+        <Self::Integrator as Integrator>::LeapfrogInfo,
+        <Self::Integrator as Integrator>::DivergenceInfo,
+    >;
 
-struct CpuLeapfrogInfo {}
+    fn adapt(&mut self, collector: Self::AdaptationCollector);
+    fn collector(&self) -> Self::AdaptationCollector;
+    fn integrator(&mut self) -> &mut Self::Integrator;
 
-impl LeapfrogInfo for CpuLeapfrogInfo {
-    type DivergenceInfo = bool;
-
-    fn energy_error(&self) -> f64 {
-        unimplemented!();
+    fn draw<R: rand::Rng + ?Sized>(
+        &mut self,
+        rng: &mut R,
+        state: <Self::Integrator as Integrator>::StateIdx,
+        maxdepth: u64,
+    ) -> Draw<Self::Integrator, SampleInfo<<Self::Integrator as Integrator>::DivergenceInfo>> {
+        let mut collector = self.collector();
+        let mut integrator: CollectingIntegrator<Self> = CollectingIntegrator {
+            collector: &mut collector,
+            integrator: self.integrator(),
+            initial_state: state,
+        };
+        let (idx, info) = crate::nuts::draw(rng, &mut integrator, maxdepth);
+        Draw {
+            state: idx,
+            info,
+            tuning: collector.is_tuning(),
+        }
     }
-
-    fn divergence(&self) -> Option<bool> {
-        unimplemented!();
-    }
 }
 
-impl StateSpace for CpuStateSpace {
-    type LeapfrogInfo = CpuLeapfrogInfo;
-    type StateIdx = CpuStateIndex;
+struct CollectingIntegrator<'a, S: Sampler + ?Sized> {
+    collector: &'a mut S::AdaptationCollector,
+    integrator: &'a mut S::Integrator,
+    initial_state: <S::Integrator as Integrator>::StateIdx,
+}
+
+impl<'a, S> Integrator for CollectingIntegrator<'a, S>
+where
+    S: Sampler + ?Sized,
+{
+    type StateIdx = <S::Integrator as Integrator>::StateIdx;
+    type DivergenceInfo = <S::Integrator as Integrator>::DivergenceInfo;
+    type LeapfrogInfo = <S::Integrator as Integrator>::LeapfrogInfo;
 
     fn initial_state(&self) -> Self::StateIdx {
-        let state = self.initial_state.expect("No initial state.");
-        assert!(self.states.contains(state));
-        state
+        self.initial_state
     }
 
-    fn leapfrog(&mut self, start: Self::StateIdx, dir: Direction) -> (Self::StateIdx, Self::LeapfrogInfo) {
-        unimplemented!();
+    fn leapfrog(
+        &mut self,
+        start: Self::StateIdx,
+        dir: Direction,
+    ) -> (Self::StateIdx, Self::LeapfrogInfo) {
+        let out = self.integrator.leapfrog(start, dir);
+        self.collector.inform_leapfrog(out.0, &out.1);
+        out
     }
 
     fn is_turning(&self, start: Self::StateIdx, end: Self::StateIdx) -> bool {
-        use crate::math::scalar_prods_of_diff;
-
-        let start = &self.states[start];
-        let end = &self.states[end];
-
-        let (start, end) = if start.idx_in_trajectory < end.idx_in_trajectory {
-            (start, end)
-        } else {
-            (end, start)
-        };
-
-        let (a, b) = scalar_prods_of_diff(&end.p_sum, &start.p_sum, &end.v, &start.v);
-        (a < 0.) | (b < 0.)
+        self.integrator.is_turning(start, end)
     }
 
-    fn free_state(&mut self, idx: Self::StateIdx) {
-        unimplemented!();
+    fn free_state(&mut self, state: Self::StateIdx) {
+        self.integrator.free_state(state)
     }
+
+    fn accept(&mut self, state: Self::StateIdx, info: SampleInfo<Self::DivergenceInfo>) {
+        self.collector
+            .inform_accept(self.initial_state, state, &info);
+        self.accept(state, info)
+    }
+}
+
+pub trait AdaptationCollector<I, L, D> {
+    fn inform_leapfrog(&mut self, start: I, info: &L);
+    fn inform_accept(&mut self, old: I, new: I, info: &SampleInfo<D>);
+    fn is_tuning(&self) -> bool;
 }

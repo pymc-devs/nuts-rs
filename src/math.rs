@@ -7,7 +7,8 @@ pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
         a + (-diff).exp().ln_1p()
     } else if diff < 0. {
         b + diff.exp().ln_1p()
-    } else {  // diff is NAN
+    } else {
+        // diff is NAN
         diff
     }
 }
@@ -26,7 +27,6 @@ pub(crate) fn scalar_prods_of_diff(a: &[f64], b: &[f64], c: &[f64], d: &[f64]) -
     }
     (sum_c, sum_d)
 }
-
 
 #[cfg(test)]
 mod tests {
