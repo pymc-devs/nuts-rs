@@ -1,5 +1,7 @@
+use crate::integrator::{
+    AdaptationCollector, Direction, DivergenceInfo, Integrator, LeapfrogInfo, Sampler,
+};
 use crate::nuts::SampleInfo;
-use crate::integrator::{AdaptationCollector, Direction, Integrator, LeapfrogInfo, Sampler, DivergenceInfo};
 
 pub(crate) type StateIdx = generational_arena::Index;
 
@@ -55,7 +57,7 @@ impl<P: Potential> IntegratorImpl<P> {
 
 pub(crate) struct DivergenceInfoImpl {}
 
-impl DivergenceInfo for DivergenceInfoImpl { }
+impl DivergenceInfo for DivergenceInfoImpl {}
 
 pub(crate) struct LeapfrogInfoImpl {
     energy_error: f64,
@@ -90,7 +92,7 @@ impl<P: Potential> SamplerImpl<P> {
 
 impl<P: Potential> Sampler for SamplerImpl<P>
 where
-    P::Collector: AdaptationCollector<IntegratorImpl<P>>
+    P::Collector: AdaptationCollector<IntegratorImpl<P>>,
 {
     type Integrator = IntegratorImpl<P>;
     type AdaptationCollector = P::Collector;
@@ -166,10 +168,10 @@ pub trait LogpFunc {
 }
 
 fn sampler<P, F>(potential: P, init: Box<[f64]>, logp: F) -> impl Sampler
-where 
+where
     P: Potential,
     F: LogpFunc,
-    P::Collector: AdaptationCollector<IntegratorImpl<P>>
+    P::Collector: AdaptationCollector<IntegratorImpl<P>>,
 {
     let dim = logp.dim();
     if dim != init.len() {

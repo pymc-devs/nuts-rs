@@ -1,6 +1,6 @@
 use crate::nuts::SampleInfo;
 
-pub trait DivergenceInfo { }
+pub trait DivergenceInfo {}
 
 pub trait LeapfrogInfo {
     type DivergenceInfo: DivergenceInfo;
@@ -56,7 +56,6 @@ impl<S: Sampler> Draw<S> {
     fn info(&self) -> SampleInfo<S::Integrator> {
         unimplemented!()
     }
-
 }
 
 pub trait Sampler {

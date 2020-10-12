@@ -1,5 +1,5 @@
-use crate::math::logaddexp;
 use crate::integrator::{Direction, Integrator, LeapfrogInfo};
+use crate::math::logaddexp;
 
 pub struct SampleInfo_<L: LeapfrogInfo> {
     pub divergence_info: Option<L::DivergenceInfo>,
@@ -143,11 +143,11 @@ impl<I: Integrator + ?Sized> NutsTree<I> {
 
     fn info(&self, leapfrog_info: Option<I::LeapfrogInfo>) -> SampleInfo<I> {
         let divergence_info = match leapfrog_info {
-            None => { None },
+            None => None,
             Some(mut info) => match info.divergence() {
-                None => { None },
-                Some(val) => { Some(val) }
-            }
+                None => None,
+                Some(val) => Some(val),
+            },
         };
 
         SampleInfo_ {
@@ -158,11 +158,7 @@ impl<I: Integrator + ?Sized> NutsTree<I> {
     }
 }
 
-pub fn draw<I, R>(
-    rng: &mut R,
-    space: &mut I,
-    maxdepth: u64,
-) -> (I::StateIdx, SampleInfo<I>)
+pub fn draw<I, R>(rng: &mut R, space: &mut I, maxdepth: u64) -> (I::StateIdx, SampleInfo<I>)
 where
     I: Integrator + ?Sized,
     R: rand::Rng + ?Sized,

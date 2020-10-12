@@ -1,9 +1,6 @@
-use crate::cpu_sampler::{
-    IntegratorImpl, LeapfrogInfoImpl, Potential, State, StateIdx,
-};
-use crate::nuts::SampleInfo;
+use crate::cpu_sampler::{IntegratorImpl, LeapfrogInfoImpl, Potential, State, StateIdx};
 use crate::integrator::AdaptationCollector;
-
+use crate::nuts::SampleInfo;
 
 type StaticDiagIntegrator = IntegratorImpl<StaticDiagPotential>;
 
