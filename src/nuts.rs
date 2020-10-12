@@ -1,30 +1,32 @@
 use crate::math::logaddexp;
 use crate::integrator::{Direction, Integrator, LeapfrogInfo};
 
-pub struct SampleInfo<D> {
-    pub divergence_info: Option<D>,
+pub struct SampleInfo_<L: LeapfrogInfo> {
+    pub divergence_info: Option<L::DivergenceInfo>,
     pub depth: u64,
     pub turning: bool,
 }
 
-pub struct NutsTree<S: Integrator + ?Sized> {
-    left: S::StateIdx,
-    right: S::StateIdx,
-    draw: S::StateIdx,
+pub type SampleInfo<I: Integrator + ?Sized> = SampleInfo_<I::LeapfrogInfo>;
+
+pub struct NutsTree<I: Integrator + ?Sized> {
+    left: I::StateIdx,
+    right: I::StateIdx,
+    draw: I::StateIdx,
     log_size: f64,
     log_weighted_accept_prob: f64,
     depth: u64,
     turning: bool,
 }
 
-enum ExtendResult<S: Integrator + ?Sized> {
-    Ok(NutsTree<S>),
-    Turning(NutsTree<S>),
-    Diverging(NutsTree<S>, S::DivergenceInfo),
+enum ExtendResult<I: Integrator + ?Sized> {
+    Ok(NutsTree<I>),
+    Turning(NutsTree<I>),
+    Diverging(NutsTree<I>, I::LeapfrogInfo),
 }
 
-impl<S: Integrator + ?Sized> NutsTree<S> {
-    fn new(state: S::StateIdx) -> NutsTree<S> {
+impl<I: Integrator + ?Sized> NutsTree<I> {
+    fn new(state: I::StateIdx) -> NutsTree<I> {
         NutsTree {
             right: state,
             left: state,
@@ -36,15 +38,15 @@ impl<S: Integrator + ?Sized> NutsTree<S> {
         }
     }
 
-    fn free_states(self, space: &mut S) {
+    fn free_states(self, space: &mut I) {
         space.free_state(self.right);
         space.free_state(self.left);
         space.free_state(self.draw);
     }
 
-    fn extend<R>(mut self, rng: &mut R, space: &mut S, direction: Direction) -> ExtendResult<S>
+    fn extend<R>(mut self, rng: &mut R, space: &mut I, direction: Direction) -> ExtendResult<I>
     where
-        S: Integrator,
+        I: Integrator,
         R: rand::Rng + ?Sized,
     {
         let mut other = match self.single_step(space, direction) {
@@ -115,17 +117,17 @@ impl<S: Integrator + ?Sized> NutsTree<S> {
 
     fn single_step(
         &self,
-        space: &mut S,
+        space: &mut I,
         direction: Direction,
-    ) -> Result<NutsTree<S>, S::DivergenceInfo> {
+    ) -> Result<NutsTree<I>, I::LeapfrogInfo> {
         let start = match direction {
             Direction::Forward => self.right,
             Direction::Backward => self.left,
         };
         let (end, info) = space.leapfrog(start, direction);
 
-        if let Some(divergence_info) = info.divergence() {
-            return Err(divergence_info);
+        if info.diverging() {
+            return Err(info);
         }
 
         Ok(NutsTree {
@@ -139,8 +141,16 @@ impl<S: Integrator + ?Sized> NutsTree<S> {
         })
     }
 
-    fn info(&self, divergence_info: Option<S::DivergenceInfo>) -> SampleInfo<S::DivergenceInfo> {
-        SampleInfo {
+    fn info(&self, leapfrog_info: Option<I::LeapfrogInfo>) -> SampleInfo<I> {
+        let divergence_info = match leapfrog_info {
+            None => { None },
+            Some(mut info) => match info.divergence() {
+                None => { None },
+                Some(val) => { Some(val) }
+            }
+        };
+
+        SampleInfo_ {
             depth: self.depth,
             turning: self.turning,
             divergence_info,
@@ -148,13 +158,13 @@ impl<S: Integrator + ?Sized> NutsTree<S> {
     }
 }
 
-pub fn draw<S, R>(
+pub fn draw<I, R>(
     rng: &mut R,
-    space: &mut S,
+    space: &mut I,
     maxdepth: u64,
-) -> (S::StateIdx, SampleInfo<S::DivergenceInfo>)
+) -> (I::StateIdx, SampleInfo<I>)
 where
-    S: Integrator + ?Sized,
+    I: Integrator + ?Sized,
     R: rand::Rng + ?Sized,
 {
     let mut tree = NutsTree::new(space.initial_state());

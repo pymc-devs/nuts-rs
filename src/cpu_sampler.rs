@@ -1,5 +1,5 @@
 use crate::nuts::SampleInfo;
-use crate::integrator::{AdaptationCollector, Direction, Integrator, LeapfrogInfo, Sampler};
+use crate::integrator::{AdaptationCollector, Direction, Integrator, LeapfrogInfo, Sampler, DivergenceInfo};
 
 pub(crate) type StateIdx = generational_arena::Index;
 
@@ -27,7 +27,7 @@ impl State {
 
 pub(crate) trait Potential {
     type Integrator: Integrator;
-    type Collector: AdaptationCollector<StateIdx, LeapfrogInfoImpl, DivergenceInfo>;
+    type Collector: AdaptationCollector<Self::Integrator>;
 
     fn update_state(&self, state: &mut State);
     fn update_self(&mut self, collector: Self::Collector);
@@ -53,21 +53,28 @@ impl<P: Potential> IntegratorImpl<P> {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct DivergenceInfo {}
+pub(crate) struct DivergenceInfoImpl {}
+
+impl DivergenceInfo for DivergenceInfoImpl { }
 
 pub(crate) struct LeapfrogInfoImpl {
     energy_error: f64,
-    divergence: Option<DivergenceInfo>,
+    divergence: Option<DivergenceInfoImpl>,
 }
 
-impl LeapfrogInfo<DivergenceInfo> for LeapfrogInfoImpl {
+impl LeapfrogInfo for LeapfrogInfoImpl {
+    type DivergenceInfo = DivergenceInfoImpl;
+
     fn energy_error(&self) -> f64 {
         self.energy_error
     }
 
-    fn divergence(&self) -> Option<DivergenceInfo> {
-        self.divergence
+    fn divergence(&mut self) -> Option<DivergenceInfoImpl> {
+        self.divergence.take()
+    }
+
+    fn diverging(&self) -> bool {
+        self.divergence.is_some()
     }
 }
 
@@ -83,13 +90,17 @@ impl<P: Potential> SamplerImpl<P> {
 
 impl<P: Potential> Sampler for SamplerImpl<P>
 where
-    P::Collector: AdaptationCollector<StateIdx, LeapfrogInfoImpl, DivergenceInfo>,
+    P::Collector: AdaptationCollector<IntegratorImpl<P>>
 {
     type Integrator = IntegratorImpl<P>;
     type AdaptationCollector = P::Collector;
 
-    fn integrator(&mut self) -> &mut Self::Integrator {
+    fn integrator_mut(&mut self) -> &mut Self::Integrator {
         &mut self.integrator
+    }
+
+    fn integrator(&self) -> &Self::Integrator {
+        &self.integrator
     }
 
     fn collector(&self) -> Self::AdaptationCollector {
@@ -102,7 +113,6 @@ where
 }
 
 impl<P: Potential> Integrator for IntegratorImpl<P> {
-    type DivergenceInfo = DivergenceInfo;
     type LeapfrogInfo = LeapfrogInfoImpl;
     type StateIdx = StateIdx;
 
@@ -140,8 +150,13 @@ impl<P: Potential> Integrator for IntegratorImpl<P> {
         self.states.remove(idx).expect("Double free");
     }
 
-    fn accept(&mut self, _state: Self::StateIdx, info_: SampleInfo<Self::DivergenceInfo>) {
+    fn accept(&mut self, _state: Self::StateIdx, info_: SampleInfo<Self>) {
         unimplemented!()
+    }
+
+    fn write_position(&self, state: Self::StateIdx, out: &mut [f64]) {
+        let state = self.states.get(state).expect("Use after free");
+        out.copy_from_slice(&state.p);
     }
 }
 
@@ -150,7 +165,12 @@ pub trait LogpFunc {
     fn logp_dlogp(point: &[f64], out: &mut [f64]) -> f64;
 }
 
-fn sampler<P: Potential, F: LogpFunc>(potential: P, init: Box<[f64]>, logp: F) -> impl Sampler {
+fn sampler<P, F>(potential: P, init: Box<[f64]>, logp: F) -> impl Sampler
+where 
+    P: Potential,
+    F: LogpFunc,
+    P::Collector: AdaptationCollector<IntegratorImpl<P>>
+{
     let dim = logp.dim();
     if dim != init.len() {
         panic!("Shape mismatch");

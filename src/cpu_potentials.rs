@@ -1,17 +1,20 @@
 use crate::cpu_sampler::{
-    DivergenceInfo, IntegratorImpl, LeapfrogInfoImpl, Potential, State, StateIdx,
+    IntegratorImpl, LeapfrogInfoImpl, Potential, State, StateIdx,
 };
 use crate::nuts::SampleInfo;
 use crate::integrator::AdaptationCollector;
 
+
+type StaticDiagIntegrator = IntegratorImpl<StaticDiagPotential>;
+
 pub(crate) struct EmptyCollector {}
-impl AdaptationCollector<StateIdx, LeapfrogInfoImpl, DivergenceInfo> for EmptyCollector {
+impl AdaptationCollector<StaticDiagIntegrator> for EmptyCollector {
     fn inform_leapfrog(&mut self, _start: StateIdx, _info: &LeapfrogInfoImpl) {}
     fn inform_accept(
         &mut self,
         _old: StateIdx,
         _new: StateIdx,
-        _info: &SampleInfo<DivergenceInfo>,
+        _info: &SampleInfo<StaticDiagIntegrator>,
     ) {
     }
     fn is_tuning(&self) -> bool {
