@@ -1,5 +1,5 @@
 use crate::nuts::SampleInfo;
-use crate::statespace::{AdaptationCollector, Direction, Integrator, LeapfrogInfo, Sampler};
+use crate::integrator::{AdaptationCollector, Direction, Integrator, LeapfrogInfo, Sampler};
 
 pub(crate) type StateIdx = generational_arena::Index;
 

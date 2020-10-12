@@ -2,7 +2,7 @@ use crate::cpu_sampler::{
     DivergenceInfo, IntegratorImpl, LeapfrogInfoImpl, Potential, State, StateIdx,
 };
 use crate::nuts::SampleInfo;
-use crate::statespace::AdaptationCollector;
+use crate::integrator::AdaptationCollector;
 
 pub(crate) struct EmptyCollector {}
 impl AdaptationCollector<StateIdx, LeapfrogInfoImpl, DivergenceInfo> for EmptyCollector {

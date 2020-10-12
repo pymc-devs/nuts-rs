@@ -1,5 +1,5 @@
 use crate::math::logaddexp;
-use crate::statespace::{Direction, Integrator, LeapfrogInfo};
+use crate::integrator::{Direction, Integrator, LeapfrogInfo};
 
 pub struct SampleInfo<D> {
     pub divergence_info: Option<D>,
