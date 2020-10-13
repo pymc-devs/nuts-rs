@@ -3,9 +3,14 @@ use crate::integrator::{
 };
 use crate::nuts::SampleInfo;
 
-pub(crate) type StateIdx = generational_arena::Index;
+use intrusive_collections::intrusive_adapter;
+use intrusive_collections::{LinkedListLink, LinkedList};
+use typed_arena::Arena;
+
+pub(crate) type StateIdx = typed_arena::Arena::
 
 pub(crate) struct State {
+    free_link: LinkedListLink,
     p: Box<[f64]>,
     q: Box<[f64]>,
     v: Box<[f64]>,
@@ -14,7 +19,10 @@ pub(crate) struct State {
     idx_in_trajectory: i64,
     kinetic_energy: f64,
     potential_energy: f64,
-    used: bool,
+}
+
+fn empty_box(size: usize) -> Box<[f64]> {
+    vec![0.; size].into()
 }
 
 impl State {
@@ -22,36 +30,61 @@ impl State {
         self.kinetic_energy + self.potential_energy
     }
 
-    fn new(position: &[f64]) -> State {
-        unimplemented!()
+    fn new(position: &[f64], gradient: &[f64]) -> State {
+        let dim = position.len();
+        let mut p = empty_box(dim);
+        p.copy_from_slice(position);
+        State {
+            p: position.into(),
+            q: empty_box(dim),
+            v: empty_box(dim),
+            p_sum: empty_box(dim),
+            grad: gradient.into(),
+            idx_in_trajectory: 0,
+            kinetic_energy: 0.,
+            potential_energy: 0.,
+        }
     }
 }
 
-pub(crate) trait Potential {
-    type Integrator: Integrator;
-    type Collector: AdaptationCollector<Self::Integrator>;
+pub(crate) trait Potential<F: LogpFunc>: Sized {
+    type Collector: AdaptationCollector<IntegratorImpl<Self, F>>;
 
-    fn update_state(&self, state: &mut State);
-    fn update_self(&mut self, collector: Self::Collector);
+    fn update_state(&self, integrator: &IntegratorImpl<Self, F>, state: &mut State);
+    fn adapt(&mut self, integrator: &IntegratorImpl<Self, F>, collector: Self::Collector);
     fn collector(&self) -> Self::Collector;
 }
 
-pub(crate) struct IntegratorImpl<P: Potential> {
-    states: generational_arena::Arena<State>,
+pub(crate) struct IntegratorImpl<'a, P: Potential<F>, F: LogpFunc> {
+    free_states: LinkedList<ValueAdapter<'a>>,
     initial_state: StateIdx,
-    potential: P,
+    potential: Option<P>,
+    logp: F,
 }
 
-impl<P: Potential> IntegratorImpl<P> {
-    fn new(capacity: usize, position: &[f64], potential: P) -> IntegratorImpl<P> {
+impl<P: Potential<F>, F: LogpFunc> IntegratorImpl<P, F> {
+    fn new(
+        logp: F,
+        capacity: usize,
+        position: &[f64],
+        gradient: &[f64],
+        potential: P,
+    ) -> IntegratorImpl<P, F> {
         let mut arena = generational_arena::Arena::with_capacity(capacity);
-        let state = State::new(position);
+        let state = State::new(position, gradient);
         let state_idx = arena.insert(state);
         IntegratorImpl {
             states: arena,
             initial_state: state_idx,
-            potential,
+            potential: Some(potential),
+            logp,
         }
+    }
+
+    fn adapt_potential(&mut self, collector: P::Collector) {
+        let mut potential = self.potential.take().unwrap();
+        potential.adapt(&*self, collector);
+        self.potential = Some(potential);
     }
 }
 
@@ -80,21 +113,21 @@ impl LeapfrogInfo for LeapfrogInfoImpl {
     }
 }
 
-struct SamplerImpl<P: Potential> {
-    integrator: IntegratorImpl<P>,
+struct SamplerImpl<P: Potential<F>, F: LogpFunc> {
+    integrator: IntegratorImpl<P, F>,
 }
 
-impl<P: Potential> SamplerImpl<P> {
-    fn new(integrator: IntegratorImpl<P>) -> SamplerImpl<P> {
+impl<P: Potential<F>, F: LogpFunc> SamplerImpl<P, F> {
+    fn new(integrator: IntegratorImpl<P, F>) -> SamplerImpl<P, F> {
         SamplerImpl { integrator }
     }
 }
 
-impl<P: Potential> Sampler for SamplerImpl<P>
+impl<P: Potential<F>, F: LogpFunc> Sampler for SamplerImpl<P, F>
 where
-    P::Collector: AdaptationCollector<IntegratorImpl<P>>,
+    P::Collector: AdaptationCollector<IntegratorImpl<P, F>>,
 {
-    type Integrator = IntegratorImpl<P>;
+    type Integrator = IntegratorImpl<P, F>;
     type AdaptationCollector = P::Collector;
 
     fn integrator_mut(&mut self) -> &mut Self::Integrator {
@@ -106,15 +139,15 @@ where
     }
 
     fn collector(&self) -> Self::AdaptationCollector {
-        self.integrator.potential.collector()
+        self.integrator.potential.as_ref().unwrap().collector()
     }
 
     fn adapt(&mut self, collector: Self::AdaptationCollector) {
-        self.integrator.potential.update_self(collector);
+        self.integrator.adapt_potential(collector);
     }
 }
 
-impl<P: Potential> Integrator for IntegratorImpl<P> {
+impl<P: Potential<F>, F: LogpFunc> Integrator for IntegratorImpl<P, F> {
     type LeapfrogInfo = LeapfrogInfoImpl;
     type StateIdx = StateIdx;
 
@@ -129,7 +162,7 @@ impl<P: Potential> Integrator for IntegratorImpl<P> {
         start: Self::StateIdx,
         dir: Direction,
     ) -> (Self::StateIdx, Self::LeapfrogInfo) {
-        unimplemented!();
+        unimplemented!()
     }
 
     fn is_turning(&self, start: Self::StateIdx, end: Self::StateIdx) -> bool {
@@ -152,8 +185,9 @@ impl<P: Potential> Integrator for IntegratorImpl<P> {
         self.states.remove(idx).expect("Double free");
     }
 
-    fn accept(&mut self, _state: Self::StateIdx, info_: SampleInfo<Self>) {
-        unimplemented!()
+    fn accept(&mut self, state: Self::StateIdx, info_: &SampleInfo<Self>) {
+        assert!(self.states.contains(state));
+        assert!(self.states.len() == 1);
     }
 
     fn write_position(&self, state: Self::StateIdx, out: &mut [f64]) {
@@ -164,21 +198,23 @@ impl<P: Potential> Integrator for IntegratorImpl<P> {
 
 pub trait LogpFunc {
     fn dim(&self) -> usize;
-    fn logp_dlogp(point: &[f64], out: &mut [f64]) -> f64;
+    fn logp_dlogp(&self, point: &[f64], out: &mut [f64]) -> f64;
 }
 
 fn sampler<P, F>(potential: P, init: Box<[f64]>, logp: F) -> impl Sampler
 where
-    P: Potential,
+    P: Potential<F>,
     F: LogpFunc,
-    P::Collector: AdaptationCollector<IntegratorImpl<P>>,
+    P::Collector: AdaptationCollector<IntegratorImpl<P, F>>,
 {
     let dim = logp.dim();
     if dim != init.len() {
         panic!("Shape mismatch");
     }
     let capacity = 1024;
-    let integrator = IntegratorImpl::new(capacity, &init, potential);
+    let mut grad = empty_box(dim);
+    logp.logp_dlogp(&init, &mut grad);
+    let integrator = IntegratorImpl::new(logp, capacity, &init, &grad, potential);
     SamplerImpl::new(integrator)
 }
 

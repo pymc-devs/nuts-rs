@@ -1,17 +1,23 @@
-use crate::cpu_sampler::{IntegratorImpl, LeapfrogInfoImpl, Potential, State, StateIdx};
+use crate::cpu_sampler::{IntegratorImpl, LeapfrogInfoImpl, LogpFunc, Potential, State, StateIdx};
 use crate::integrator::AdaptationCollector;
 use crate::nuts::SampleInfo;
 
-type StaticDiagIntegrator = IntegratorImpl<StaticDiagPotential>;
+type StaticDiagIntegrator<F: LogpFunc> = IntegratorImpl<StaticDiagPotential<F>, F>;
 
-pub(crate) struct EmptyCollector {}
-impl AdaptationCollector<StaticDiagIntegrator> for EmptyCollector {
-    fn inform_leapfrog(&mut self, _start: StateIdx, _info: &LeapfrogInfoImpl) {}
+pub(crate) struct EmptyCollector {
+    accept_sum: f64,
+}
+
+impl<F: LogpFunc> AdaptationCollector<StaticDiagIntegrator<F>> for EmptyCollector {
+    fn inform_leapfrog(&mut self, _integrator: &StaticDiagIntegrator<F>, _state: StateIdx, _info: &LeapfrogInfoImpl) {
+
+    }
     fn inform_accept(
         &mut self,
+        _integrator: &StaticDiagIntegrator<F>,
         _old: StateIdx,
         _new: StateIdx,
-        _info: &SampleInfo<StaticDiagIntegrator>,
+        _info: &SampleInfo<StaticDiagIntegrator<F>>,
     ) {
     }
     fn is_tuning(&self) -> bool {
@@ -19,25 +25,27 @@ impl AdaptationCollector<StaticDiagIntegrator> for EmptyCollector {
     }
 }
 
-pub(crate) struct StaticDiagPotential {
+pub(crate) struct StaticDiagPotential<F: LogpFunc> {
     diag: Box<[f64]>,
+    _marker: std::marker::PhantomData<F>
 }
 
-impl StaticDiagPotential {
-    pub(crate) fn new(diag: Box<[f64]>) -> StaticDiagPotential {
-        StaticDiagPotential { diag }
+impl<F: LogpFunc> StaticDiagPotential<F> {
+    pub(crate) fn new(diag: Box<[f64]>) -> StaticDiagPotential<F> {
+        StaticDiagPotential { diag, _marker: std::marker::PhantomData }
     }
 }
 
-impl Potential for StaticDiagPotential {
-    type Integrator = IntegratorImpl<Self>;
+impl<F: LogpFunc> Potential<F> for StaticDiagPotential<F> {
     type Collector = EmptyCollector;
 
-    fn update_self(&mut self, _collector: Self::Collector) {}
-    fn update_state(&self, state: &mut State) {
+    fn adapt(&mut self, integrator: &IntegratorImpl<Self, F>, _collector: Self::Collector) {
+        unimplemented!()
+    }
+    fn update_state(&self, integrator: &IntegratorImpl<Self, F>, state: &mut State) {
         unimplemented!()
     }
     fn collector(&self) -> Self::Collector {
-        EmptyCollector {}
+        EmptyCollector { accept_sum: 0. }
     }
 }

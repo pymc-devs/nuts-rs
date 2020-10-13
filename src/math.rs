@@ -28,6 +28,25 @@ pub(crate) fn scalar_prods_of_diff(a: &[f64], b: &[f64], c: &[f64], d: &[f64]) -
     (sum_c, sum_d)
 }
 
+
+pub(crate) fn norm(a: &[f64]) -> f64 {
+    let mut result = 0.;
+    for val in a.iter() {
+        result += *val;
+    }
+    result
+}
+
+
+pub(crate) fn axpy(x: &[f64], y: &mut [f64], a: f64) {
+    let n = x.len();
+    assert!(y.len() == n);
+    for i in 0..n {
+        y[i] += a * x[i];
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

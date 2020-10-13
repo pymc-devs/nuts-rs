@@ -38,7 +38,7 @@ pub trait Integrator {
     ) -> (Self::StateIdx, Self::LeapfrogInfo);
     fn is_turning(&self, start: Self::StateIdx, end: Self::StateIdx) -> bool;
     fn free_state(&mut self, state: Self::StateIdx);
-    fn accept(&mut self, state: Self::StateIdx, info: SampleInfo<Self>);
+    fn accept(&mut self, state: Self::StateIdx, info: &SampleInfo<Self>);
     fn write_position(&self, state: Self::StateIdx, out: &mut [f64]);
 }
 
@@ -49,12 +49,16 @@ pub struct Draw<S: Sampler + ?Sized> {
 }
 
 impl<S: Sampler> Draw<S> {
-    fn position(&self, sampler: &S, out: &mut [f64]) {
+    pub fn position(&self, sampler: &S, out: &mut [f64]) {
         sampler.integrator().write_position(self.state, out);
     }
 
-    fn info(&self) -> SampleInfo<S::Integrator> {
-        unimplemented!()
+    pub fn info(&self) -> &SampleInfo<S::Integrator> {
+        &self.info
+    }
+
+    pub fn tuning(&self) -> bool {
+        self.tuning
     }
 }
 
@@ -80,6 +84,7 @@ pub trait Sampler {
             initial_state: state,
         };
         let (idx, info) = crate::nuts::draw(rng, &mut integrator, maxdepth);
+        integrator.accept(idx, &info);
         Draw {
             state: idx,
             info,
@@ -111,7 +116,7 @@ where
         dir: Direction,
     ) -> (Self::StateIdx, Self::LeapfrogInfo) {
         let (state, info) = self.integrator.leapfrog(start, dir);
-        self.collector.inform_leapfrog(state, &info);
+        self.collector.inform_leapfrog(&self.integrator, state, &info);
         (state, info)
     }
 
@@ -123,19 +128,19 @@ where
         self.integrator.free_state(state)
     }
 
-    fn accept(&mut self, state: Self::StateIdx, info: SampleInfo<Self>) {
+    fn accept(&mut self, state: Self::StateIdx, info: &SampleInfo<Self>) {
         self.collector
-            .inform_accept(self.initial_state, state, &info);
+            .inform_accept(&self.integrator, self.initial_state, state, &info);
         self.accept(state, info)
     }
 
     fn write_position(&self, state: Self::StateIdx, out: &mut [f64]) {
-        unimplemented!();
+        self.integrator.write_position(state, out)
     }
 }
 
 pub trait AdaptationCollector<I: Integrator + ?Sized> {
-    fn inform_leapfrog(&mut self, start: I::StateIdx, info: &I::LeapfrogInfo);
-    fn inform_accept(&mut self, old: I::StateIdx, new: I::StateIdx, info: &SampleInfo<I>);
+    fn inform_leapfrog(&mut self, integrator: &I, start: I::StateIdx, info: &I::LeapfrogInfo);
+    fn inform_accept(&mut self, integrator: &I, old: I::StateIdx, new: I::StateIdx, info: &SampleInfo<I>);
     fn is_tuning(&self) -> bool;
 }

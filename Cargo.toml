@@ -5,11 +5,23 @@ authors = ["Adrian Seyboldt <adrian.seyboldt@gmail.com>"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[build]
+rustflags = "-C target-cpu=native"
 
 [dependencies]
 rand = "0.7"
 generational-arena = "0.2"
+intrusive-collections = "0.9"
+typed-arena = "2.0.1"
 
 [dev-dependencies]
 proptest = "0.10.1"
 pretty_assertions = "0.6.1"
+criterion = "0.3"
+
+[[bench]]
+name = "sample"
+harness = false
+
+[profile.release]
+debug = true
