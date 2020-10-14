@@ -6,7 +6,7 @@ use std::cell::RefCell;
 
 use crate::nuts::{Integrator, LeapfrogInfo, Direction, DivergenceInfo, SampleInfo};
 
-pub struct InnerState {
+pub struct State {
     p: Box<[f64]>,
     pub q: Box<[f64]>,
     v: Box<[f64]>,
@@ -14,14 +14,14 @@ pub struct InnerState {
     pub grad: Box<[f64]>,
     idx_in_trajectory: i64,
     kinetic_energy: f64,
-    potential_energy: f64,
+    pub potential_energy: f64,
     reuser: Option<Weak<dyn ReuseState>>,
 }
 
 
-impl InnerState {
-    fn new(size: usize) -> InnerState {
-        InnerState {
+impl State {
+    fn new(size: usize) -> State {
+        State {
             p: vec![0.; size].into(),
             q: vec![0.; size].into(),
             v: vec![0.; size].into(),
@@ -36,37 +36,18 @@ impl InnerState {
 }
 
 
-pub struct State {
-    //inner: Option<Rc<InnerState>>,
-    inner: std::mem::ManuallyDrop<Rc<InnerState>>,
+pub struct StateWrapper {
+    inner: std::mem::ManuallyDrop<Rc<State>>,
 }
 
-/*
-impl Drop for State {
-    fn drop(&mut self) {
-        if self.inner.is_none() {
-            return
-        }
-        if let Some(inner) = self.inner.take() {
-            if let Ok(mut inner) = Rc::try_unwrap(inner) {
-                if let Some(reuser) = inner.reuser.take() {
-                    if let Some(reuser) = reuser.upgrade() {
-                        reuser.reuse_state(inner)
-                    }
-                }
-            }
-        }
-    }
-}
-*/
 
-impl Drop for State {
+impl Drop for StateWrapper {
     fn drop(&mut self) {
         let inner = unsafe { std::mem::ManuallyDrop::into_inner(std::ptr::read(&self.inner)) };
         if let Ok(mut inner) = Rc::try_unwrap(inner) {
             if let Some(reuser) = inner.reuser.take() {
                 if let Some(reuser) = reuser.upgrade() {
-                    reuser.reuse_state(inner);
+                    reuser.reuse_state(Rc::new(inner));
                 }
             }
         }
@@ -74,80 +55,57 @@ impl Drop for State {
 }
 
 
-/*
-impl PartialEq for State {
-    fn eq(&self, other: &State) -> bool {
-        if let (Some(a), Some(b)) = (self.inner.as_ref(), other.inner.as_ref()) {
-            Rc::ptr_eq(&a, &b)
-        } else {
-            false
-        }
-    }
-}
-*/
-
-
-impl Clone for State {
+impl Clone for StateWrapper {
     fn clone(&self) -> Self {
-        State {
+        StateWrapper {
             inner: self.inner.clone(),
         }
     }
 }
 
 
-impl Deref for State {
-    type Target = InnerState;
+impl Deref for StateWrapper {
+    type Target = State;
 
     fn deref(&self) -> &Self::Target {
         self.inner.as_ref()
-        //self.inner.as_ref().unwrap()
     }
 }
 
 
 trait ReuseState {
-    fn reuse_state(&self, state: InnerState);
+    fn reuse_state(&self, state: Rc<State>);
 }
 
 pub trait LogpFunc {
-    fn logp(&self, state: &mut InnerState) -> f64;
+    type Err;
+
+    fn logp(&self, state: &mut State) -> Result<(), Self::Err>;
     fn dim(&self) -> usize;
 }
 
 
 #[derive(Debug)]
-pub struct DivergenceInfoImpl {
-    
+pub struct DivergenceInfoImpl<E> {
+    logp_error: Option<E>,
 }
 
-impl DivergenceInfo for DivergenceInfoImpl { }
+impl<E> DivergenceInfo for DivergenceInfoImpl<E> { }
 
 #[derive(Debug)]
 pub struct LeapfrogInfoImpl {
     energy_error: f64,
-    divergence: Option<DivergenceInfoImpl>,
 }
 
 impl LeapfrogInfo for LeapfrogInfoImpl {
-    type DivergenceInfo = DivergenceInfoImpl;
-
     fn energy_error(&self) -> f64 {
         self.energy_error
-    }
-
-    fn diverging(&self) -> bool {
-        self.divergence.is_some()
-    }
-
-    fn divergence(self) -> Option<Self::DivergenceInfo> {
-        self.divergence
     }
 }
 
 
 struct StateStorage {
-    free_states: RefCell<Vec<InnerState>>,
+    free_states: RefCell<Vec<Rc<State>>>,
 }
 
 
@@ -160,12 +118,12 @@ impl StateStorage {
 }
 
 impl ReuseState for StateStorage {
-    fn reuse_state(&self, state: InnerState) {
+    fn reuse_state(&self, state: Rc<State>) {
         self.free_states.borrow_mut().push(state)
     }
 }
 
-fn new_state(this: &mut Rc<StateStorage>, dim: usize) -> State {
+fn new_state(this: &mut Rc<StateStorage>, dim: usize) -> StateWrapper {
     let mut inner = match this.free_states.borrow_mut().pop() {
         Some(inner) => {
             if dim != inner.q.len() {
@@ -173,32 +131,33 @@ fn new_state(this: &mut Rc<StateStorage>, dim: usize) -> State {
             }
             inner
         },
-        None => InnerState::new(dim),
+        None => Rc::new(State::new(dim)),
     };
     let reuser = Rc::downgrade(&this.clone());
-    inner.reuser = Some(reuser);
-    State {
+    Rc::get_mut(&mut inner).unwrap().reuser = Some(reuser);
+    StateWrapper {
         //inner: Some(Rc::new(inner))
-        inner: std::mem::ManuallyDrop::new(Rc::new(inner))
+        inner: std::mem::ManuallyDrop::new(inner)
     }
 }
 
 pub struct StaticIntegrator<F: LogpFunc> {
     states: Rc<StateStorage>,
     logp: F,
-    initial_state: State,
+    initial_state: StateWrapper,
 }
 
 
 impl<F: LogpFunc> Integrator for StaticIntegrator<F> {
-    type State = State;
+    type State = StateWrapper;
     type LeapfrogInfo = LeapfrogInfoImpl;
+    type DivergenceInfo = DivergenceInfoImpl<F::Err>;
 
-    fn initial_state(&self) -> State {
+    fn initial_state(&self) -> StateWrapper {
         self.initial_state.clone()
     }
 
-    fn leapfrog(&mut self, start: &Self::State, dir: Direction) -> (Self::State, Self::LeapfrogInfo) {
+    fn leapfrog(&mut self, start: &Self::State, dir: Direction) -> Result<(Self::State, Self::LeapfrogInfo), Self::DivergenceInfo> {
         use crate::math::{axpy, norm};
 
         let mut out_state = new_state(&mut self.states, self.logp.dim());
@@ -225,7 +184,9 @@ impl<F: LogpFunc> Integrator for StaticIntegrator<F> {
 
         axpy(&out.v, &mut out.q, epsilon);
 
-        let logp = self.logp.logp(out);
+        if let Err(error) = self.logp.logp(out) {
+            return Err(DivergenceInfoImpl { logp_error: Some(error) });
+        }
 
         axpy(&out.grad, &mut out.p, dt);
 
@@ -234,7 +195,6 @@ impl<F: LogpFunc> Integrator for StaticIntegrator<F> {
 
         // kinetic energy
         out.kinetic_energy = norm(&out.p);
-        out.potential_energy = -logp;
 
         match dir {
             Direction::Forward => 1,
@@ -251,9 +211,8 @@ impl<F: LogpFunc> Integrator for StaticIntegrator<F> {
 
         let info = LeapfrogInfoImpl {
             energy_error: 0.,
-            divergence: None,
         };
-        (out_state, info)
+        Ok((out_state, info))
     }
 
     fn is_turning(&self, start: &Self::State, end: &Self::State) -> bool {
@@ -273,73 +232,114 @@ impl<F: LogpFunc> Integrator for StaticIntegrator<F> {
         (a < 0.) | (b < 0.)
     }
 
-    fn accept(&mut self, state: Self::State, _info: SampleInfo<Self>) {}
+    fn accept(&mut self, _state: Self::State, _info: SampleInfo<Self::DivergenceInfo>) {}
 
     fn write_position(&self, state: &Self::State, out: &mut [f64]) {
         out.copy_from_slice(&state.q);
+    }
+
+    fn randomize_initial<R: rand::Rng + ?Sized>(&mut self, rng: &mut R) {
+        //let state_inner = self.initial_state.inner.as_mut().expect("Use after free");
+        //let out = Rc::get_mut(state_inner).expect("State already in use");
+        let out = Rc::get_mut(&mut self.initial_state.inner).expect("State already in use");
+
+        let dist = rand_distr::StandardNormal;
+        for val in out.p.iter_mut() {
+            *val = rng.sample(dist);
+        }
     }
 }
 
 
 impl<F: LogpFunc> StaticIntegrator<F> {
-    pub fn new(func: F, init: &[f64]) -> StaticIntegrator<F> {
+    pub fn new(func: F, init: &[f64]) -> Result<StaticIntegrator<F>, DivergenceInfoImpl<F::Err>> {
         let dim = init.len();
         assert!(dim == func.dim());
         let mut states = Rc::new(StateStorage::with_capacity(100));
-        let mut state = new_state(&mut states, dim);
+        let state = new_state(&mut states, dim);
 
-        //let state_inner = state.inner.as_mut().expect("Use after free");
-        //let out = Rc::get_mut(state_inner).expect("State already in use");
-        let out = Rc::get_mut(&mut state.inner).expect("State already in use");
-
-        for (i, val) in out.q.iter_mut().enumerate() {
-            *val = init[i];
-        }
-
-        StaticIntegrator {
+        let mut integrator = StaticIntegrator {
             logp: func,
             states,
             initial_state: state,
-        }
+        };
+
+        integrator.set_initial(&init)?;
+
+        for _ in 0..20 {
+            let _ = new_state(&mut integrator.states, integrator.logp.dim());
+        };
+
+        Ok(integrator)
     }
 
-    pub fn set_initial<R: rand::Rng + ?Sized>(&mut self, rng: &mut R, mut state: State) {
-        //let state_inner = state.inner.as_mut().expect("Use after free");
-        //let out = Rc::get_mut(state_inner).expect("State already in use");
-        let out = Rc::get_mut(&mut state.inner).expect("State already in use");
-
-        let dist = rand::distributions::StandardNormal;
-        for val in out.p.iter_mut() {
-            *val = rng.sample(dist);
+    pub fn set_initial(&mut self, init: &[f64]) -> Result<(), DivergenceInfoImpl<F::Err>> {
+        let mut state = new_state(&mut self.states, self.logp.dim());
+        
+        let inner = Rc::get_mut(&mut state.inner).expect("State already in use");
+        for (i, val) in inner.q.iter_mut().enumerate() {
+            *val = init[i];
         }
-
-        out.p_sum.copy_from_slice(&out.p);
+        
+        for val in inner.p_sum.iter_mut() {
+            *val = 0.;
+        }
+        if let Err(error) = self.logp.logp(inner) {
+            return Err(DivergenceInfoImpl { logp_error: Some(error) })
+        }
 
         self.initial_state = state;
-    }
-
-    pub fn randomize_initial<R: rand::Rng>(&mut self, rng: &mut R) {
-        //let state_inner = self.initial_state.inner.as_mut().expect("Use after free");
-        //let out = Rc::get_mut(state_inner).expect("State already in use");
-        let out = Rc::get_mut(&mut self.initial_state.inner).expect("State already in use");
-
-        let dist = rand::distributions::StandardNormal;
-        for val in out.p.iter_mut() {
-            *val = rng.sample(dist);
-        }
+        Ok(())
     }
 }
 
 
+pub mod test_logps {
+    use super::{LogpFunc, State};
+
+    pub struct NormalLogp { dim: usize, mu: f64 }
+
+    impl NormalLogp {
+        pub fn new(dim: usize, mu: f64) -> NormalLogp {
+            NormalLogp { dim, mu }
+        }
+    }
+
+    impl LogpFunc for NormalLogp {
+        type Err = ();
+
+        fn dim(&self) -> usize {
+            self.dim
+        }
+        fn logp(&self, state: &mut State) -> Result<(), ()> {
+            let position = &state.q;
+            let grad = &mut state.grad;
+            let n = position.len();
+            assert!(grad.len() == n);
+            let mut logp = 0f64;
+            for i in 0..n {
+                let val = position[i] - self.mu;
+                logp -= val * val;
+                grad[i] = -val;
+            }
+            state.potential_energy = -logp;
+            Ok(())
+        }
+    }
+
+}
 
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::test_logps::*;
+    use rand::SeedableRng;
+    use pretty_assertions::assert_eq;
     
     #[test]
     fn make_state() {
-        let _ = InnerState::new(10);
+        let _ = State::new(10);
         let mut storage = Rc::new(StateStorage::with_capacity(0));
         let a = new_state(&mut storage, 10);
         assert!(storage.free_states.borrow_mut().len() == 0);
@@ -352,37 +352,29 @@ mod tests {
     }
 
     #[test]
-    fn sample_normal() {
-        struct NormalLogp { dim: usize, mu: f64 };
+    fn deterministic() {
+        let dim = 3usize;
+        let func = NormalLogp::new(dim, 3.);
+        let init = vec![3.5; dim];
 
-        impl LogpFunc for NormalLogp {
-            fn dim(&self) -> usize {
-                self.dim
-            }
-            fn logp(&self, state: &mut InnerState) -> f64 {
-                let position = &state.p;
-                let grad = &mut state.grad;
-                let n = position.len();
-                assert!(grad.len() == n);
-                let mut logp = 0f64;
-                for i in 0..n {
-                    let val = position[i] - self.mu;
-                    logp -= val * val;
-                    grad[i] = -val;
-                }
-                logp
-            }
-        }
+        let mut integrator = StaticIntegrator::new(func, &init).unwrap();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let (out, info) = crate::nuts::draw(&mut rng, &mut integrator, 10);
 
-        let func = NormalLogp { dim: 10, mu: 3. };
-        let init = vec![3.5; func.dim];
-        let mut integrator = StaticIntegrator::new(func, &init);
 
-        let mut rng = rand::thread_rng();
-        
-        integrator.randomize_initial(&mut rng);
-        let (out, info) = crate::nuts::draw(&mut rng, &mut integrator, 20);
+        integrator.set_initial(&init).unwrap();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let (out2, info2) = crate::nuts::draw(&mut rng, &mut integrator, 10);
+
+        let mut vals1 = vec![0.; dim];
+        let mut vals2 = vec![0.; dim];
+
+        integrator.write_position(&out, &mut vals1);
+        integrator.write_position(&out2, &mut vals2);
+
         dbg!(info);
-        dbg!(&out.q);
+        dbg!(info2);
+
+        assert_eq!(vals1, vals2);
     }
 }

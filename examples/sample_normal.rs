@@ -4,10 +4,12 @@ pub fn sample_one(mu: f64, out: &mut [f64]) {
     struct NormalLogp { dim: usize, mu: f64 };
 
     impl nuts_rs::cpu::LogpFunc for NormalLogp {
+        type Err = ();
+
         fn dim(&self) -> usize {
             self.dim
         }
-        fn logp(&self, state: &mut nuts_rs::cpu::InnerState) -> f64 {
+        fn logp(&self, state: &mut nuts_rs::cpu::State) -> Result<(), ()>{
             let position = &state.q;
             let grad = &mut state.grad;
             let n = position.len();
@@ -18,18 +20,17 @@ pub fn sample_one(mu: f64, out: &mut [f64]) {
                 logp -= val * val;
                 grad[i] = -val;
             }
-            logp
+            state.potential_energy = -logp;
+            Ok(())
         }
     }
 
     let func = NormalLogp { dim: 1000, mu };
     let init = vec![3.5; func.dim];
-    let mut integrator = nuts_rs::cpu::StaticIntegrator::new(func, &init);
+    let mut integrator = nuts_rs::cpu::StaticIntegrator::new(func, &init).unwrap();
 
     let mut rng = rand::thread_rng();
-    
-    integrator.randomize_initial(&mut rng);
-    let (state, info) = nuts_rs::nuts::draw(&mut rng, &mut integrator, 20);
+    let (state, _) = nuts_rs::nuts::draw(&mut rng, &mut integrator, 20);
     integrator.write_position(&state, out);
 }
 
