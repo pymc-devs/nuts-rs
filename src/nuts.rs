@@ -2,7 +2,7 @@
 use crate::math::logaddexp;
 
 
-pub trait DivergenceInfo {}
+pub trait DivergenceInfo: std::fmt::Debug {}
 
 pub trait LeapfrogInfo {
     fn energy_error(&self) -> f64;
@@ -30,24 +30,23 @@ pub trait Integrator {
     type DivergenceInfo: DivergenceInfo;
     type State: Clone;
 
-    fn initial_state(&self) -> Self::State;
     fn leapfrog(
         &mut self,
         start: &Self::State,
         dir: Direction,
     ) -> Result<(Self::State, Self::LeapfrogInfo), Self::DivergenceInfo>;
     fn is_turning(&self, start: &Self::State, end: &Self::State) -> bool;
-    fn accept(&mut self, state: Self::State, info: SampleInfo<Self::DivergenceInfo>);
+    fn randomize_velocity<R: rand::Rng + ?Sized>(&mut self, state: &mut Self::State, rng: &mut R);
     fn write_position(&self, state: &Self::State, out: &mut [f64]);
-    fn randomize_initial<R: rand::Rng + ?Sized>(&mut self, rng: &mut R);
+    fn new_state(&mut self, init: &[f64]) -> Result<Self::State, Self::DivergenceInfo>;
 }
 
 
 #[derive(Debug)]
 pub struct SampleInfo<D: DivergenceInfo> {
     pub depth: u64,
-    pub turning: bool,
     pub divergence_info: Option<D>,
+    pub maxdepth: bool,
 }
 
 
@@ -58,7 +57,6 @@ pub struct NutsTree<I: Integrator + ?Sized> {
     log_size: f64,
     log_weighted_accept_prob: f64,
     depth: u64,
-    turning: bool,
 }
 
 enum ExtendResult<I: Integrator + ?Sized> {
@@ -76,7 +74,6 @@ impl<I: Integrator + ?Sized> NutsTree<I> {
             depth: 0,
             log_size: 0.,                 // TODO
             log_weighted_accept_prob: 0., // TODO
-            turning: false,
         }
     }
 
@@ -128,13 +125,12 @@ impl<I: Integrator + ?Sized> NutsTree<I> {
         };
         self.draw = draw;
         self.depth += 1;
-        self.turning = turning;
         self.log_size = logaddexp(self.log_size, other.log_size);
         self.log_weighted_accept_prob = logaddexp(
             self.log_weighted_accept_prob,
             other.log_weighted_accept_prob,
         );
-        if self.turning {
+        if turning {
             ExtendResult::Turning(self)
         } else {
             ExtendResult::Ok(self)
@@ -157,48 +153,49 @@ impl<I: Integrator + ?Sized> NutsTree<I> {
             Ok((end, info)) => (end, info)
         };
 
+        let energy_error = info.energy_error();
+
         Ok(NutsTree {
             right: end.clone(),
             left: end.clone(),
             draw: end,
             depth: 0,
-            log_size: 0.,                 // TODO
-            log_weighted_accept_prob: 0., // TODO
-            turning: false,
+            log_size: -energy_error,
+            log_weighted_accept_prob: -energy_error + (-energy_error).min(0.),
         })
     }
 
-    fn info(&self, divergence_info: Option<I::DivergenceInfo>) -> SampleInfo<I::DivergenceInfo> {
+    fn info(&self, maxdepth: bool, divergence_info: Option<I::DivergenceInfo>) -> SampleInfo<I::DivergenceInfo> {
         SampleInfo {
             depth: self.depth,
-            turning: self.turning,
             divergence_info,
+            maxdepth,
         }
     }
 }
 
-pub fn draw<I, R>(rng: &mut R, integrator: &mut I, maxdepth: u64) -> (I::State, SampleInfo<I::DivergenceInfo>)
+pub fn draw<I, R>(mut init: I::State, rng: &mut R, integrator: &mut I, maxdepth: u64) -> (I::State, SampleInfo<I::DivergenceInfo>)
 where
     I: Integrator + ?Sized,
     R: rand::Rng + ?Sized,
 {
-    integrator.randomize_initial(rng);
-    let mut tree = NutsTree::new(integrator.initial_state());
+    integrator.randomize_velocity(&mut init, rng);
+    let mut tree = NutsTree::new(init);
     while tree.depth <= maxdepth {
         use ExtendResult::*;
         let direction: Direction = rng.gen();
         tree = match tree.extend(rng, integrator, direction) {
             Ok(tree) => tree,
             Turning(tree) => {
-                let info = tree.info(None);
+                let info = tree.info(false, None);
                 return (tree.draw, info);
             }
             Diverging(tree, info) => {
-                let info = tree.info(Some(info));
+                let info = tree.info(false, Some(info));
                 return (tree.draw, info);
             }
         };
     }
-    let info = tree.info(None);
+    let info = tree.info(true, None);
     (tree.draw, info)
 }

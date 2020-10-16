@@ -1,19 +1,20 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BatchSize};
-use nuts_rs::nuts::Integrator;
 use nuts_rs::cpu::test_logps::NormalLogp;
+use nuts_rs::nuts::Integrator;
 use rand::SeedableRng;
 
 
 fn make_integrator(dim: usize, mu: f64) -> impl Integrator {
     let func = NormalLogp::new(dim, mu);
-    let init = vec![3.5; dim];
-    nuts_rs::cpu::StaticIntegrator::new(func, &init).unwrap()
+    nuts_rs::cpu::StaticIntegrator::new(func, dim)
 }
 
 pub fn sample_one(mu: f64, out: &mut [f64]) {
     let mut integrator = make_integrator(out.len(), mu);
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-    let (state, _) = nuts_rs::nuts::draw(&mut rng, &mut integrator, 10);
+    let init = vec![3.5; out.len()];
+    let state = integrator.new_state(&init).unwrap();
+    let (state, _) = nuts_rs::nuts::draw(state, &mut rng, &mut integrator, 10);
     integrator.write_position(&state, out);
 }
 
@@ -30,8 +31,10 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let mut integrator = make_integrator(10, 3.);
     let mut out = vec![0.; 10];
+    let init = vec![3.5; out.len()];
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-    let (state, _) = nuts_rs::nuts::draw(&mut rng, &mut integrator, 10);
+    let state = integrator.new_state(&init).unwrap();
+    let (state, _) = nuts_rs::nuts::draw(state, &mut rng, &mut integrator, 10);
     integrator.write_position(&state, &mut out);
 
     let sum: f64 = out.iter().sum();
@@ -40,7 +43,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         rand::rngs::StdRng::seed_from_u64(42)
     },
     |mut rng| {
-        let (state, _) = nuts_rs::nuts::draw(&mut rng, &mut integrator, 10);
+        let state = integrator.new_state(&init).unwrap();
+        let (state, _) = nuts_rs::nuts::draw(state, &mut rng, &mut integrator, 10);
         integrator.write_position(&state, &mut out);
         assert_eq!(out.iter().sum::<f64>(), sum);
     },
@@ -49,8 +53,10 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let mut integrator = make_integrator(1000, 3.);
     let mut out = vec![0.; 1000];
+    let init = vec![3.5; out.len()];
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-    let (state, _) = nuts_rs::nuts::draw(&mut rng, &mut integrator, 10);
+    let state = integrator.new_state(&init).unwrap();
+    let (state, _) = nuts_rs::nuts::draw(state, &mut rng, &mut integrator, 10);
     integrator.write_position(&state, &mut out);
 
     let sum: f64 = out.iter().sum();
@@ -59,7 +65,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         rand::rngs::StdRng::seed_from_u64(42)
     },
     |mut rng| {
-        let (state, _) = nuts_rs::nuts::draw(&mut rng, &mut integrator, 10);
+        let state = integrator.new_state(&init).unwrap();
+        let (state, _) = nuts_rs::nuts::draw(state, &mut rng, &mut integrator, 10);
         integrator.write_position(&state, &mut out);
         assert_eq!(out.iter().sum::<f64>(), sum);
     },

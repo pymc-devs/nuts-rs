@@ -25,12 +25,14 @@ pub fn sample_one(mu: f64, out: &mut [f64]) {
         }
     }
 
-    let func = NormalLogp { dim: 1000, mu };
+    let dim = 1000usize;
+    let func = NormalLogp { dim, mu };
     let init = vec![3.5; func.dim];
-    let mut integrator = nuts_rs::cpu::StaticIntegrator::new(func, &init).unwrap();
+    let mut integrator = nuts_rs::cpu::StaticIntegrator::new(func, dim);
 
     let mut rng = rand::thread_rng();
-    let (state, _) = nuts_rs::nuts::draw(&mut rng, &mut integrator, 20);
+    let state = integrator.new_state(&init).unwrap();
+    let (state, _) = nuts_rs::nuts::draw(state, &mut rng, &mut integrator, 20);
     integrator.write_position(&state, out);
 }
 
