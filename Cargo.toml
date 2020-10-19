@@ -11,11 +11,9 @@ debug = true
 lto = "fat"
 
 [profile.bench]
-rustflags = "-C target-cpu=native"
 panic = "abort"
 debug = true
 lto = "fat"
-
 
 [dependencies]
 rand = "0.7"
