@@ -83,6 +83,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         )
     });
 
+    /*
     let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
     let grad_mod = tvm::runtime::Module::load(&base.join("grad_10.so")).unwrap();
@@ -139,6 +140,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             BatchSize::SmallInput,
         )
     });
+    */
 }
 
 criterion_group!(benches, criterion_benchmark);

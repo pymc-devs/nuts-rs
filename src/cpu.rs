@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
-use crate::nuts::{Direction, DivergenceInfo, Integrator, LeapfrogInfo, SampleInfo};
+use crate::nuts::{Direction, DivergenceInfo, Integrator, LeapfrogInfo};
 
 pub struct State {
     pub p: Box<[f64]>,
