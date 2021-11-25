@@ -1,10 +1,9 @@
 #[inline]
 pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
-    if a == b {
-        return a + 2f64.ln();
-    }
     let diff = a - b;
-    if diff > 0. {
+    if diff == 0. {
+        a + 2f64.ln()
+    } else if diff > 0. {
         a + (-diff).exp().ln_1p()
     } else if diff < 0. {
         b + diff.exp().ln_1p()
@@ -15,6 +14,7 @@ pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
 }
 
 #[inline]
+#[allow(clippy::many_single_char_names)]
 pub(crate) fn scalar_prods_of_diff(a: &[f64], b: &[f64], c: &[f64], d: &[f64]) -> (f64, f64) {
     let n = a.len();
     assert!(b.len() == n);
