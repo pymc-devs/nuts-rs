@@ -5,7 +5,6 @@ pub struct DualAverageSettings {
     pub gamma: f64,
 }
 
-
 impl Default for DualAverageSettings {
     fn default() -> DualAverageSettings {
         DualAverageSettings {
@@ -17,7 +16,6 @@ impl Default for DualAverageSettings {
     }
 }
 
-
 pub struct DualAverage {
     log_step: f64,
     log_step_adapt: f64,
@@ -27,12 +25,10 @@ pub struct DualAverage {
     settings: DualAverageSettings,
 }
 
-
 pub struct StepSizeStats {
     pub step_size: f64,
     pub step_size_adapt: f64,
 }
-
 
 impl DualAverage {
     pub fn new(settings: DualAverageSettings, initial_step: f64) -> DualAverage {

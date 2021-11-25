@@ -1,24 +1,21 @@
-//use intrusive_collections::intrusive_adapter;
-//use intrusive_collections::{LinkedListLink, LinkedList};
-use std::rc::{Rc, Weak};
-use std::ops::Deref;
 use std::cell::RefCell;
 use std::fmt::Debug;
+use std::ops::Deref;
+use std::rc::{Rc, Weak};
 
-use crate::nuts::{Integrator, LeapfrogInfo, Direction, DivergenceInfo, SampleInfo};
+use crate::nuts::{Direction, DivergenceInfo, Integrator, LeapfrogInfo, SampleInfo};
 
 pub struct State {
-    p: Box<[f64]>,
+    pub p: Box<[f64]>,
     pub q: Box<[f64]>,
     v: Box<[f64]>,
     p_sum: Box<[f64]>,
     pub grad: Box<[f64]>,
     idx_in_trajectory: i64,
-    kinetic_energy: f64,
+    pub kinetic_energy: f64,
     pub potential_energy: f64,
     reuser: Weak<dyn ReuseState>,
 }
-
 
 impl State {
     fn new(size: usize, owner: &Rc<dyn ReuseState>) -> State {
@@ -34,17 +31,31 @@ impl State {
             reuser: Rc::downgrade(owner),
         }
     }
-}
 
+    pub fn get_mut_position(&mut self) -> &mut [f64] {
+        &mut self.q
+    }
+
+    pub fn get_mut_gradient(&mut self) -> &mut [f64] {
+        &mut self.grad
+    }
+
+    pub fn potential_energy(&self) -> f64 {
+        self.potential_energy
+    }
+
+    pub fn set_potential_energy(&mut self, energy: f64) {
+        self.potential_energy = energy
+    }
+}
 
 pub struct StateWrapper {
     inner: std::mem::ManuallyDrop<Rc<State>>,
 }
 
-
 impl Drop for StateWrapper {
     fn drop(&mut self) {
-        let mut rc = unsafe { std::mem::ManuallyDrop::into_inner(std::ptr::read(&self.inner)) };
+        let mut rc = unsafe { std::mem::ManuallyDrop::take(&mut self.inner) };
         if let Some(state_ref) = Rc::get_mut(&mut rc) {
             if let Some(reuser) = &mut state_ref.reuser.upgrade() {
                 reuser.reuse_state(rc);
@@ -52,7 +63,6 @@ impl Drop for StateWrapper {
         }
     }
 }
-
 
 impl Clone for StateWrapper {
     fn clone(&self) -> Self {
@@ -62,7 +72,6 @@ impl Clone for StateWrapper {
     }
 }
 
-
 impl Deref for StateWrapper {
     type Target = State;
 
@@ -70,7 +79,6 @@ impl Deref for StateWrapper {
         self.inner.as_ref()
     }
 }
-
 
 trait ReuseState {
     fn reuse_state(&self, state: Rc<State>);
@@ -83,13 +91,12 @@ pub trait LogpFunc {
     fn dim(&self) -> usize;
 }
 
-
 #[derive(Debug)]
 pub struct DivergenceInfoImpl<E> {
     pub logp_error: Option<E>,
 }
 
-impl<E: Debug> DivergenceInfo for DivergenceInfoImpl<E> { }
+impl<E: Debug> DivergenceInfo for DivergenceInfoImpl<E> {}
 
 #[derive(Debug)]
 pub struct LeapfrogInfoImpl {
@@ -102,16 +109,14 @@ impl LeapfrogInfo for LeapfrogInfoImpl {
     }
 }
 
-
 struct StateStorage {
     free_states: RefCell<Vec<Rc<State>>>,
 }
 
-
 impl StateStorage {
     fn with_capacity(capacity: usize) -> StateStorage {
         StateStorage {
-            free_states: RefCell::new(Vec::with_capacity(capacity))
+            free_states: RefCell::new(Vec::with_capacity(capacity)),
         }
     }
 }
@@ -129,14 +134,14 @@ fn new_state(this: &mut Rc<StateStorage>, dim: usize) -> StateWrapper {
                 panic!("dim mismatch");
             }
             inner
-        },
+        }
         None => {
             let owner: Rc<dyn ReuseState> = this.clone();
             Rc::new(State::new(dim, &owner))
-        },
+        }
     };
     StateWrapper {
-        inner: std::mem::ManuallyDrop::new(inner)
+        inner: std::mem::ManuallyDrop::new(inner),
     }
 }
 
@@ -145,18 +150,19 @@ pub struct StaticIntegrator<F: LogpFunc> {
     logp: F,
 }
 
-
 impl<F: LogpFunc> Integrator for StaticIntegrator<F> {
     type State = StateWrapper;
     type LeapfrogInfo = LeapfrogInfoImpl;
     type DivergenceInfo = DivergenceInfoImpl<F::Err>;
 
-    fn leapfrog(&mut self, start: &Self::State, dir: Direction) -> Result<(Self::State, Self::LeapfrogInfo), Self::DivergenceInfo> {
+    fn leapfrog(
+        &mut self,
+        start: &Self::State,
+        dir: Direction,
+    ) -> Result<(Self::State, Self::LeapfrogInfo), Self::DivergenceInfo> {
         use crate::math::{axpy, norm};
 
         let mut out_state = new_state(&mut self.states, self.logp.dim());
-        //let out_inner = out_state.inner.as_mut().expect("Use after free");
-        //let out = Rc::get_mut(out_inner).expect("State already in use");
         let out = Rc::get_mut(&mut out_state.inner).expect("State already in use");
 
         let sign = match dir {
@@ -179,7 +185,9 @@ impl<F: LogpFunc> Integrator for StaticIntegrator<F> {
         axpy(&out.v, &mut out.q, epsilon);
 
         if let Err(error) = self.logp.logp(out) {
-            return Err(DivergenceInfoImpl { logp_error: Some(error) });
+            return Err(DivergenceInfoImpl {
+                logp_error: Some(error),
+            });
         }
 
         axpy(&out.grad, &mut out.p, dt);
@@ -203,13 +211,12 @@ impl<F: LogpFunc> Integrator for StaticIntegrator<F> {
         out.p_sum.copy_from_slice(&start.p_sum);
         axpy(&out.p, &mut out.p_sum, sign as f64);
 
-        let info = LeapfrogInfoImpl {
-            energy_error: 0.,
-        };
+        let info = LeapfrogInfoImpl { energy_error: 0. };
         Ok((out_state, info))
     }
 
-    fn is_turning(&self, start: &Self::State, end: &Self::State) -> bool {
+    #[inline]
+    fn is_turning(&mut self, start: &Self::State, end: &Self::State) -> bool {
         use crate::math::scalar_prods_of_diff;
 
         let (start, end) = if start.idx_in_trajectory < end.idx_in_trajectory {
@@ -219,10 +226,6 @@ impl<F: LogpFunc> Integrator for StaticIntegrator<F> {
         };
 
         let (a, b) = scalar_prods_of_diff(&end.p_sum, &start.p_sum, &end.v, &start.v);
-
-        //dbg!(&start.p_sum);
-        //dbg!(a, b);
-        //dbg!(start.idx_in_trajectory, end.idx_in_trajectory);
         (a < 0.) | (b < 0.)
     }
 
@@ -243,46 +246,46 @@ impl<F: LogpFunc> Integrator for StaticIntegrator<F> {
 
     fn new_state(&mut self, init: &[f64]) -> Result<Self::State, Self::DivergenceInfo> {
         let mut state = new_state(&mut self.states, self.logp.dim());
-        
+
         let inner = Rc::get_mut(&mut state.inner).expect("State already in use");
         for (i, val) in inner.q.iter_mut().enumerate() {
             *val = init[i];
         }
-        
+
         for val in inner.p_sum.iter_mut() {
             *val = 0.;
         }
         if let Err(error) = self.logp.logp(inner) {
-            return Err(DivergenceInfoImpl { logp_error: Some(error) })
+            return Err(DivergenceInfoImpl {
+                logp_error: Some(error),
+            });
         }
 
         Ok(state)
     }
 }
 
-
 impl<F: LogpFunc> StaticIntegrator<F> {
     pub fn new(func: F, dim: usize) -> StaticIntegrator<F> {
         assert!(dim == func.dim());
         let states = Rc::new(StateStorage::with_capacity(100));
 
-        let mut integrator = StaticIntegrator {
-            logp: func,
-            states,
-        };
+        let mut integrator = StaticIntegrator { logp: func, states };
 
         for _ in 0..20 {
             let _ = new_state(&mut integrator.states, integrator.logp.dim());
-        };
+        }
         integrator
     }
 }
 
-
 pub mod test_logps {
     use super::{LogpFunc, State};
 
-    pub struct NormalLogp { dim: usize, mu: f64 }
+    pub struct NormalLogp {
+        dim: usize,
+        mu: f64,
+    }
 
     impl NormalLogp {
         pub fn new(dim: usize, mu: f64) -> NormalLogp {
@@ -302,26 +305,30 @@ pub mod test_logps {
             let n = position.len();
             assert!(grad.len() == n);
             let mut logp = 0f64;
-            for i in 0..n {
-                let val = position[i] - self.mu;
+
+            for (p, g) in position.iter().zip(grad.iter_mut()) {
+                let val = *p - self.mu;
                 logp -= val * val;
-                grad[i] = -val;
+                *g = -val;
             }
+            //for i in 0..n {
+            //    let val = position[i] - self.mu;
+            //    logp -= val * val;
+            //    grad[i] = -val;
+            //}
             state.potential_energy = -logp;
             Ok(())
         }
     }
-
 }
-
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test_logps::*;
-    use rand::SeedableRng;
+    use super::*;
     use pretty_assertions::assert_eq;
-    
+    use rand::SeedableRng;
+
     #[test]
     fn make_state() {
         /*
@@ -348,7 +355,6 @@ mod tests {
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
         let state = integrator.new_state(&init).unwrap();
         let (out, info) = crate::nuts::draw(state, &mut rng, &mut integrator, 10);
-
 
         let state = integrator.new_state(&init).unwrap();
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);

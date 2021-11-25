@@ -1,3 +1,4 @@
+#[inline]
 pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
     if a == b {
         return a + 2f64.ln();
@@ -13,6 +14,7 @@ pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
     }
 }
 
+#[inline]
 pub(crate) fn scalar_prods_of_diff(a: &[f64], b: &[f64], c: &[f64], d: &[f64]) -> (f64, f64) {
     let n = a.len();
     assert!(b.len() == n);
@@ -28,7 +30,7 @@ pub(crate) fn scalar_prods_of_diff(a: &[f64], b: &[f64], c: &[f64], d: &[f64]) -
     (sum_c, sum_d)
 }
 
-
+#[inline]
 pub(crate) fn norm(a: &[f64]) -> f64 {
     let mut result = 0.;
     for val in a.iter() {
@@ -37,7 +39,7 @@ pub(crate) fn norm(a: &[f64]) -> f64 {
     result
 }
 
-
+#[inline]
 pub(crate) fn axpy(x: &[f64], y: &mut [f64], a: f64) {
     let n = x.len();
     assert!(y.len() == n);
@@ -45,7 +47,6 @@ pub(crate) fn axpy(x: &[f64], y: &mut [f64], a: f64) {
         y[i] += a * x[i];
     }
 }
-
 
 #[cfg(test)]
 mod tests {

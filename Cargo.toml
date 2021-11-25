@@ -13,16 +13,18 @@ lto = "fat"
 [profile.bench]
 panic = "abort"
 debug = true
-lto = "fat"
+#lto = "fat"
 
 [dependencies]
-rand = "0.7"
-rand_distr = "0.3"
+rand = "0.8.4"
+rand_distr = "0.4.2"
+#tvm = { path = "../tvm/rust/tvm" }
+ndarray = "0.15.3"
 
 [dev-dependencies]
-proptest = "0.10.1"
-pretty_assertions = "0.6.1"
-criterion = "0.3"
+proptest = "1.0.0"
+pretty_assertions = "1.0.0"
+criterion = "0.3.3"
 
 [[bench]]
 name = "sample"
