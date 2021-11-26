@@ -1,9 +1,10 @@
 #[inline]
 pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
+    if a == b {
+        return a + 2f64.ln();
+    }
     let diff = a - b;
-    if diff == 0. {
-        a + 2f64.ln()
-    } else if diff > 0. {
+    if diff > 0. {
         a + (-diff).exp().ln_1p()
     } else if diff < 0. {
         b + diff.exp().ln_1p()
@@ -45,6 +46,16 @@ pub(crate) fn axpy(x: &[f64], y: &mut [f64], a: f64) {
     assert!(y.len() == n);
     for i in 0..n {
         y[i] += a * x[i];
+    }
+}
+
+#[inline]
+pub(crate) fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
+    let n = x.len();
+    assert!(y.len() == n);
+    assert!(out.len() == n);
+    for i in 0..n {
+        out[i] = y[i] + a * x[i];
     }
 }
 
