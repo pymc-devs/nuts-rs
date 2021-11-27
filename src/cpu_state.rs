@@ -1,17 +1,19 @@
-use std::{
-    cell::RefCell,
-    ops::Deref,
-    rc::{Rc, Weak},
+use std::{cell::RefCell, fmt::Debug, ops::Deref, rc::{Rc, Weak}};
+
+use crate::{
+    math::{axpy, axpy_out},
+    nuts::Direction,
 };
 
+#[derive(Debug)]
 struct StateStorage {
     free_states: RefCell<Vec<Rc<InnerState>>>,
 }
 
 impl StateStorage {
-    fn with_capacity(capacity: usize) -> StateStorage {
+    fn new() -> StateStorage {
         StateStorage {
-            free_states: RefCell::new(Vec::with_capacity(capacity)),
+            free_states: RefCell::new(Vec::with_capacity(20)),
         }
     }
 }
@@ -28,9 +30,9 @@ pub(crate) struct StatePool {
 }
 
 impl StatePool {
-    pub(crate) fn with_capacity(dim: usize, capacity: usize) -> StatePool {
+    pub(crate) fn new(dim: usize) -> StatePool {
         StatePool {
-            storage: Rc::new(StateStorage::with_capacity(100)),
+            storage: Rc::new(StateStorage::new()),
             dim,
         }
     }
@@ -54,10 +56,11 @@ impl StatePool {
     }
 }
 
-trait ReuseState {
+trait ReuseState: Debug {
     fn reuse_state(&self, state: Rc<InnerState>);
 }
 
+#[derive(Debug)]
 pub(crate) struct InnerState {
     pub(crate) p: Box<[f64]>,
     pub(crate) q: Box<[f64]>,
@@ -86,6 +89,7 @@ impl InnerState {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct State {
     inner: std::mem::ManuallyDrop<Rc<InnerState>>,
 }
@@ -109,42 +113,6 @@ impl State {
             Some(val) => Ok(val),
             None => Err(StateInUse {}),
         }
-    }
-
-    pub(crate) fn get_position(&self) -> &[f64] {
-        &self.inner.q[..]
-    }
-
-    pub(crate) fn get_mut_position(&mut self) -> Result<&mut [f64]> {
-        self.try_mut_inner().map(|inner| &mut inner.q[..])
-    }
-
-    pub(crate) fn get_gradient(&self) -> &[f64] {
-        &self.inner.grad[..]
-    }
-
-    pub(crate) fn get_mut_gradient(&mut self) -> Result<&mut [f64]> {
-        self.try_mut_inner().map(|inner| &mut inner.grad[..])
-    }
-
-    pub(crate) fn get_momentum(&self) -> &[f64] {
-        &self.inner.p
-    }
-
-    pub(crate) fn get_mut_momentum(&mut self) -> Result<&mut [f64]> {
-        self.try_mut_inner().map(|inner| &mut inner.p[..])
-    }
-
-    pub(crate) fn get_velocity(&self) -> &[f64] {
-        &self.inner.v
-    }
-
-    pub(crate) fn get_mut_velocity(&mut self) -> Result<&mut [f64]> {
-        self.try_mut_inner().map(|inner| &mut inner.v[..])
-    }
-
-    pub(crate) fn potential_energy(&self) -> f64 {
-        self.inner.potential_energy
     }
 }
 
@@ -188,7 +156,7 @@ impl crate::nuts::State for State {
         out.copy_from_slice(&self.q);
     }
 
-    fn new(pool: &mut Self::Pool, init: &[f64], init_grad: &[f64]) -> Self {
+    fn new(pool: &mut Self::Pool, init: &[f64]) -> Self {
         let mut state = pool.new_state();
 
         let inner = state.try_mut_inner().expect("State already in use");
@@ -196,23 +164,60 @@ impl crate::nuts::State for State {
             *val = init[i];
         }
 
-        for (i, val) in inner.grad.iter_mut().enumerate() {
-            *val = init_grad[i];
-        }
-
         for val in inner.p_sum.iter_mut() {
             *val = 0.;
         }
 
-        todo!(); // check initialization
-    }
+        inner.idx_in_trajectory = 0;
 
-    fn deep_clone(&self, pool: &mut Self::Pool) -> Self {
-        todo!()
+        state
     }
 
     fn energy(&self) -> f64 {
-        todo!()
+        self.kinetic_energy + self.potential_energy
+    }
+
+    fn first_momentum_halfstep(&self, out: &mut Self, epsilon: f64) {
+        axpy_out(
+            &self.grad,
+            &self.p,
+            epsilon / 2.,
+            &mut out.try_mut_inner().expect("State already in use").p,
+        );
+    }
+
+    fn position_step(&self, out: &mut Self, epsilon: f64) {
+        let out = out.try_mut_inner().expect("State already in use");
+        axpy_out(&self.q, &out.v, epsilon, &mut out.q);
+    }
+
+    fn second_momentum_halfstep(&mut self, epsilon: f64) {
+        let inner = self.try_mut_inner().expect("State already in use");
+        axpy(&inner.grad, &mut inner.p, epsilon / 2.);
+    }
+
+    fn set_psum(&self, target: &mut Self, dir: crate::nuts::Direction) {
+        let out = target.try_mut_inner().expect("State already in use");
+        let sign = match dir {
+            Direction::Forward => 1,
+            Direction::Backward => -1,
+        };
+        axpy_out(&self.p_sum, &out.p, sign as f64, &mut out.p_sum); // TODO check order
+    }
+
+    fn index_in_trajectory(&self) -> i64 {
+        self.idx_in_trajectory
+    }
+
+    fn index_in_trajectory_mut(&mut self) -> &mut i64 {
+        &mut self
+            .try_mut_inner()
+            .expect("State already in use")
+            .idx_in_trajectory
+    }
+
+    fn new_empty(pool: &mut Self::Pool) -> Self {
+        pool.new_state()
     }
 }
 
@@ -222,7 +227,7 @@ mod tests {
 
     #[test]
     fn crate_pool() {
-        let mut pool = StatePool::with_capacity(10, 20);
+        let mut pool = StatePool::new(10);
         let mut state = pool.new_state();
         assert!(state.p.len() == 10);
         state.try_mut_inner().unwrap();

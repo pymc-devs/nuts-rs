@@ -6,6 +6,7 @@ pub mod nuts;
 //mod potentials;
 //pub mod adapt;
 pub(crate) mod cpu_potential;
+pub mod cpu_sampler;
 pub(crate) mod cpu_state;
 pub mod stepsize;
 //pub mod tvm;
