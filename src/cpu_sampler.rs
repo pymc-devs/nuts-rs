@@ -1,9 +1,9 @@
 use rand::Rng;
 
 use crate::{
-    cpu_potential::{CpuLogpFunc, MassMatrix, Potential, UnitMassMatrix},
+    cpu_potential::{CpuLogpFunc, Potential, UnitMassMatrix},
     cpu_state::{State, StatePool},
-    nuts::{draw, Collector, DivergenceInfo, SampleInfo},
+    nuts::{draw, Collector, SampleInfo},
 };
 
 pub struct UnitStaticSampler<F: CpuLogpFunc> {
@@ -31,7 +31,7 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
             state,
             pool,
             maxdepth: 10,
-            step_size: 1e-3,
+            step_size: 1e-2,
         }
     }
 
@@ -44,6 +44,7 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
         if let Err(err) = self.potential.update_potential_gradient(&mut self.state) {
             return Err(err.logp_function_error.unwrap());
         }
+        // TODO check init of p_sum
         Ok(())
     }
 
@@ -53,7 +54,6 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
         self.potential.randomize_momentum(&mut self.state, rng);
         self.potential.update_velocity(&mut self.state);
         self.potential.update_kinetic_energy(&mut self.state);
-        dbg!(&self.state);
 
         let (state, info) = draw(
             &mut self.pool,
@@ -64,7 +64,6 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
             self.step_size,
             &mut collector,
         );
-        dbg!(&state);
         self.state = state;
         let position: Box<[f64]> = self.state.q.clone().into();
         (position, info)
@@ -156,6 +155,5 @@ mod tests {
         dbg!(info2);
 
         assert_eq!(sample1, sample2);
-        assert!(false);
     }
 }

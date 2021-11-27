@@ -188,7 +188,7 @@ impl crate::nuts::State for State {
 
     fn position_step(&self, out: &mut Self, epsilon: f64) {
         let out = out.try_mut_inner().expect("State already in use");
-        axpy_out(&self.q, &out.v, epsilon, &mut out.q);
+        axpy_out(&out.v, &self.q, epsilon, &mut out.q);
     }
 
     fn second_momentum_halfstep(&mut self, epsilon: f64) {
@@ -202,7 +202,7 @@ impl crate::nuts::State for State {
             Direction::Forward => 1,
             Direction::Backward => -1,
         };
-        axpy_out(&self.p_sum, &out.p, sign as f64, &mut out.p_sum); // TODO check order
+        axpy_out(&out.p, &self.p_sum, sign as f64, &mut out.p_sum); // TODO check order
     }
 
     fn index_in_trajectory(&self) -> i64 {
@@ -231,5 +231,9 @@ mod tests {
         let mut state = pool.new_state();
         assert!(state.p.len() == 10);
         state.try_mut_inner().unwrap();
+
+        let mut state2 = state.clone();
+        assert!(state.try_mut_inner().is_err());
+        assert!(state2.try_mut_inner().is_err());
     }
 }

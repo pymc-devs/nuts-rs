@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use crate::cpu_state::{InnerState, State, StatePool};
+use crate::cpu_state::{InnerState, State};
 use crate::math::norm;
 use crate::nuts::DivergenceInfo;
 
@@ -73,7 +73,6 @@ pub(crate) struct Potential<F: CpuLogpFunc, M: MassMatrix> {
 impl<F: CpuLogpFunc, M: MassMatrix> Potential<F, M> {
     pub(crate) fn new(logp: F, mass_matrix: M) -> Potential<F, M> {
         let dim = logp.dim();
-        let state_pool = StatePool::new(dim);
 
         let potential = Potential {
             logp,
@@ -100,7 +99,7 @@ impl<F: CpuLogpFunc, M: MassMatrix> crate::nuts::Potential for Potential<F, M> {
 
     fn update_potential_gradient(&mut self, state: &mut State) -> Result<(), Self::DivergenceInfo> {
         let inner = state.try_mut_inner().unwrap();
-        inner.kinetic_energy =
+        inner.potential_energy =
             -self
                 .logp
                 .logp(&inner.q[..], &mut inner.grad[..])

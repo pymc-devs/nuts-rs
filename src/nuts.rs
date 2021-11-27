@@ -231,7 +231,7 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
             Direction::Forward => &self.right,
             Direction::Backward => &self.left,
         };
-        let (end, info) = match leapfrog(pool, integrator, start, direction, step_size, collector) {
+        let (end, _) = match leapfrog(pool, integrator, start, direction, step_size, collector) {
             Err(divergence_info) => return Err(divergence_info),
             Ok((end, info)) => (end, info),
         };
