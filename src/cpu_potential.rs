@@ -5,7 +5,7 @@ use crate::math::norm;
 use crate::nuts::DivergenceInfo;
 
 pub trait CpuLogpFunc {
-    type Err: Debug + 'static;
+    type Err: Debug + Send + 'static;
 
     fn logp(&mut self, position: &[f64], grad: &mut [f64]) -> Result<f64, Self::Err>;
     fn dim(&self) -> usize;
@@ -57,11 +57,11 @@ impl MassMatrix for DiagMassMatrix {
 }
 
 #[derive(Debug)]
-pub struct DivergenceInfoImpl<E> {
+pub struct DivergenceInfoImpl<E: Send> {
     pub logp_function_error: Option<E>,
 }
 
-impl<E: Debug> DivergenceInfo for DivergenceInfoImpl<E> {}
+impl<E: Debug + Send> DivergenceInfo for DivergenceInfoImpl<E> {}
 
 pub(crate) struct Potential<F: CpuLogpFunc, M: MassMatrix> {
     logp: F,

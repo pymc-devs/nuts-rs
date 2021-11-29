@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use crate::math::logaddexp;
 
-pub trait DivergenceInfo: std::fmt::Debug {}
+pub trait DivergenceInfo: std::fmt::Debug + Send {}
 
 pub struct LeapfrogInfo {}
 

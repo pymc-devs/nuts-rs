@@ -1,10 +1,12 @@
 use rand::Rng;
 
 use crate::{
-    cpu_potential::{CpuLogpFunc, Potential, UnitMassMatrix},
+    cpu_potential::{Potential, UnitMassMatrix},
     cpu_state::{State, StatePool},
     nuts::{draw, Collector, SampleInfo},
 };
+
+pub use crate::cpu_potential::CpuLogpFunc;
 
 pub struct UnitStaticSampler<F: CpuLogpFunc> {
     potential: Potential<F, UnitMassMatrix>,
@@ -12,6 +14,7 @@ pub struct UnitStaticSampler<F: CpuLogpFunc> {
     pool: StatePool,
     maxdepth: u64,
     step_size: f64,
+    rng: rand::rngs::StdRng,
 }
 
 struct NullCollector {}
@@ -21,7 +24,9 @@ impl Collector for NullCollector {
 }
 
 impl<F: CpuLogpFunc> UnitStaticSampler<F> {
-    pub fn new(logp: F) -> UnitStaticSampler<F> {
+    pub fn new(logp: F, seed: u64, maxdepth: u64, step_size: f64) -> UnitStaticSampler<F> {
+        use rand::SeedableRng;
+
         let mass_matrix = UnitMassMatrix {};
         let mut pool = StatePool::new(logp.dim());
         let potential = Potential::new(logp, mass_matrix);
@@ -30,8 +35,9 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
             potential,
             state,
             pool,
-            maxdepth: 10,
-            step_size: 1e-2,
+            maxdepth,
+            step_size,
+            rng: rand::rngs::StdRng::seed_from_u64(seed),
         }
     }
 
@@ -48,17 +54,17 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
         Ok(())
     }
 
-    pub fn draw<R: Rng + ?Sized>(&mut self, rng: &mut R) -> (Box<[f64]>, SampleInfo) {
+    pub fn draw(&mut self) -> (Box<[f64]>, SampleInfo) {
         use crate::nuts::Potential;
         let mut collector = NullCollector {};
-        self.potential.randomize_momentum(&mut self.state, rng);
+        self.potential.randomize_momentum(&mut self.state, &mut self.rng);
         self.potential.update_velocity(&mut self.state);
         self.potential.update_kinetic_energy(&mut self.state);
 
         let (state, info) = draw(
             &mut self.pool,
             self.state.clone(),
-            rng,
+            &mut self.rng,
             &mut self.potential,
             self.maxdepth,
             self.step_size,
@@ -111,7 +117,6 @@ mod tests {
 
     use super::test_logps::*;
     use pretty_assertions::assert_eq;
-    use rand::SeedableRng;
 
     #[test]
     fn make_state() {
@@ -135,18 +140,16 @@ mod tests {
         let func = NormalLogp::new(dim, 3.);
         let init = vec![3.5; dim];
 
-        let mut sampler = UnitStaticSampler::new(func);
-        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let mut sampler = UnitStaticSampler::new(func, 42, 10, 1e-2);
 
         sampler.set_position(&init).unwrap();
-        let (sample1, info1) = sampler.draw(&mut rng);
+        let (sample1, info1) = sampler.draw();
 
         let func = NormalLogp::new(dim, 3.);
-        let mut sampler = UnitStaticSampler::new(func);
-        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let mut sampler = UnitStaticSampler::new(func, 42, 10, 1e-2);
 
         sampler.set_position(&init).unwrap();
-        let (sample2, info2) = sampler.draw(&mut rng);
+        let (sample2, info2) = sampler.draw();
 
         dbg!(&sample1);
         dbg!(info1);
