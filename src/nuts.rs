@@ -34,12 +34,11 @@ pub trait Collector {
         &mut self,
         _start: &Self::State,
         _end: &Self::State,
-        _step_size: f64,
         _divergence_info: Option<&dyn DivergenceInfo>,
     ) {
     }
     fn register_draw(&mut self, _state: &Self::State, _info: &SampleInfo) {}
-    fn register_init(&mut self, _state: &Self::State) {}
+    fn register_init(&mut self, _state: &Self::State, _options: &NutsOptions) {}
 }
 
 pub trait Potential {
@@ -82,7 +81,7 @@ fn leapfrog<P: Potential + ?Sized, C: Collector<State = P::State>>(
     potential: &mut P,
     start: &P::State,
     dir: Direction,
-    step_size: f64,
+    options: &NutsOptions,
     collector: &mut C,
 ) -> Result<(P::State, LeapfrogInfo), P::DivergenceInfo> {
     let mut out = P::State::new_empty(pool);
@@ -92,14 +91,14 @@ fn leapfrog<P: Potential + ?Sized, C: Collector<State = P::State>>(
         Direction::Backward => -1,
     };
 
-    let epsilon = (sign as f64) * step_size;
+    let epsilon = (sign as f64) * options.step_size;
 
     start.first_momentum_halfstep(&mut out, epsilon);
     potential.update_velocity(&mut out);
 
     start.position_step(&mut out, epsilon);
     if let Err(div_info) = potential.update_potential_gradient(&mut out) {
-        collector.register_leapfrog(start, &out, step_size, Some(&div_info));
+        collector.register_leapfrog(start, &out, Some(&div_info));
         return Err(div_info);
     }
 
@@ -112,7 +111,7 @@ fn leapfrog<P: Potential + ?Sized, C: Collector<State = P::State>>(
 
     start.set_psum(&mut out, dir);
 
-    collector.register_leapfrog(start, &out, step_size, None);
+    collector.register_leapfrog(start, &out, None);
 
     Ok((out, LeapfrogInfo {}))
 }
@@ -160,21 +159,21 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
         rng: &mut R,
         potential: &mut P,
         direction: Direction,
-        step_size: f64,
+        options: &NutsOptions,
         collector: &mut C,
     ) -> ExtendResult<P, C>
     where
         P: Potential,
         R: rand::Rng + ?Sized,
     {
-        let mut other = match self.single_step(pool, potential, direction, step_size, collector) {
+        let mut other = match self.single_step(pool, potential, direction, options, collector) {
             Ok(tree) => tree,
             Err(info) => return ExtendResult::Diverging(self, info),
         };
 
         while other.depth < self.depth {
             use ExtendResult::*;
-            other = match other.extend(pool, rng, potential, direction, step_size, collector) {
+            other = match other.extend(pool, rng, potential, direction, options, collector) {
                 Ok(tree) => tree,
                 Turning(_) => {
                     return Turning(self);
@@ -234,14 +233,14 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
         pool: &mut <P::State as State>::Pool,
         integrator: &mut P,
         direction: Direction,
-        step_size: f64,
+        options: &NutsOptions,
         collector: &mut C,
     ) -> Result<NutsTree<P, C>, P::DivergenceInfo> {
         let start = match direction {
             Direction::Forward => &self.right,
             Direction::Backward => &self.left,
         };
-        let (end, _) = match leapfrog(pool, integrator, start, direction, step_size, collector) {
+        let (end, _) = match leapfrog(pool, integrator, start, direction, options, collector) {
             Err(divergence_info) => return Err(divergence_info),
             Ok((end, info)) => (end, info),
         };
@@ -276,13 +275,20 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
     }
 }
 
+
+pub struct NutsOptions {
+    pub maxdepth: u64,
+    pub step_size: f64,
+    pub max_energy_error: f64,
+}
+
+
 pub fn draw<P, R, C>(
     pool: &mut <P::State as State>::Pool,
     init: P::State,
     rng: &mut R,
     potential: &mut P,
-    maxdepth: u64,
-    step_size: f64,
+    options: &NutsOptions,
     collector: &mut C,
 ) -> (P::State, SampleInfo)
 where
@@ -290,13 +296,13 @@ where
     R: rand::Rng + ?Sized,
     C: Collector<State = P::State>,
 {
-    collector.register_init(&init);
+    collector.register_init(&init, options);
 
     let mut tree = NutsTree::new(init);
-    while tree.depth < maxdepth {
+    while tree.depth < options.maxdepth {
         use ExtendResult::*;
         let direction: Direction = rng.gen();
-        tree = match tree.extend(pool, rng, potential, direction, step_size, collector) {
+        tree = match tree.extend(pool, rng, potential, direction, options, collector) {
             Ok(tree) => tree,
             Turning(tree) => {
                 let info = tree.info(false, None);

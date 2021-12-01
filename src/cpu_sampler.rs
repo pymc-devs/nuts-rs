@@ -1,7 +1,7 @@
 use crate::{
     cpu_potential::{Potential, UnitMassMatrix},
     cpu_state::{State, StatePool},
-    nuts::{draw, Collector, SampleInfo},
+    nuts::{draw, Collector, SampleInfo, NutsOptions},
 };
 
 pub use crate::cpu_potential::CpuLogpFunc;
@@ -57,14 +57,13 @@ impl Collector for AcceptanceRateCollector {
         &mut self,
         _start: &Self::State,
         end: &Self::State,
-        _step_size: f64,
         _divergence_info: Option<&dyn crate::nuts::DivergenceInfo>,
     ) {
         use crate::nuts::State;
         self.mean.add(end.log_acceptance_probability(self.initial_energy).exp())
     }
 
-    fn register_init(&mut self, state: &Self::State) {
+    fn register_init(&mut self, state: &Self::State, _options: &NutsOptions) {
         use crate::nuts::State;
         self.initial_energy = state.energy();
         self.mean.reset();
@@ -105,18 +104,17 @@ impl Collector for StatsCollector {
         &mut self,
         start: &Self::State,
         end: &Self::State,
-        step_size: f64,
         divergence_info: Option<&dyn crate::nuts::DivergenceInfo>,
     ) {
-        self.acceptance_rate.register_leapfrog(start, end, step_size, divergence_info);
+        self.acceptance_rate.register_leapfrog(start, end, divergence_info);
     }
 
     fn register_draw(&mut self, state: &Self::State, info: &SampleInfo) {
         self.acceptance_rate.register_draw(state, info);
     }
 
-    fn register_init(&mut self, state: &Self::State) {
-        self.acceptance_rate.register_init(state);
+    fn register_init(&mut self, state: &Self::State, options: &NutsOptions) {
+        self.acceptance_rate.register_init(state, options);
     }
 }
 
@@ -125,10 +123,9 @@ pub struct UnitStaticSampler<F: CpuLogpFunc> {
     potential: Potential<F, UnitMassMatrix>,
     state: State,
     pool: StatePool,
-    maxdepth: u64,
-    step_size: f64,
     rng: rand::rngs::StdRng,
     collector: StatsCollector,
+    options: NutsOptions,
 }
 
 struct NullCollector {}
@@ -146,12 +143,16 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
         let potential = Potential::new(logp, mass_matrix);
         let state = pool.new_state();
         let collector = StatsCollector::new();
+        let options = NutsOptions {
+            step_size,
+            maxdepth,
+            max_energy_error: 1000.,
+        };
         UnitStaticSampler {
             potential,
             state,
             pool,
-            maxdepth,
-            step_size,
+            options,
             rng: rand::rngs::StdRng::seed_from_u64(seed),
             collector,
         }
@@ -181,8 +182,7 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
             self.state.clone(),
             &mut self.rng,
             &mut self.potential,
-            self.maxdepth,
-            self.step_size,
+            &self.options,
             &mut self.collector,
         );
         self.state = state;
