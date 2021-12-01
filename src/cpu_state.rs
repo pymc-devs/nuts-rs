@@ -1,4 +1,4 @@
-use std::{cell::RefCell, fmt::Debug, ops::Deref, rc::{Rc, Weak}};
+use std::{cell::RefCell, fmt::Debug, ops::{Deref, DerefMut}, rc::{Rc, Weak}};
 
 use crate::{
     math::{axpy, axpy_out},
@@ -7,7 +7,7 @@ use crate::{
 
 #[derive(Debug)]
 struct StateStorage {
-    free_states: RefCell<Vec<Rc<InnerState>>>,
+    free_states: RefCell<Vec<Rc<InnerStateReusable>>>,
 }
 
 impl StateStorage {
@@ -19,7 +19,7 @@ impl StateStorage {
 }
 
 impl ReuseState for StateStorage {
-    fn reuse_state(&self, state: Rc<InnerState>) {
+    fn reuse_state(&self, state: Rc<InnerStateReusable>) {
         self.free_states.borrow_mut().push(state)
     }
 }
@@ -40,14 +40,14 @@ impl StatePool {
     pub(crate) fn new_state(&mut self) -> State {
         let inner = match self.storage.free_states.borrow_mut().pop() {
             Some(inner) => {
-                if self.dim != inner.q.len() {
+                if self.dim != inner.inner.q.len() {
                     panic!("dim mismatch");
                 }
                 inner
             }
             None => {
                 let owner: Rc<dyn ReuseState> = self.storage.clone();
-                Rc::new(InnerState::new(self.dim, &owner))
+                Rc::new(InnerStateReusable::new(self.dim, &owner))
             }
         };
         State {
@@ -57,10 +57,11 @@ impl StatePool {
 }
 
 trait ReuseState: Debug {
-    fn reuse_state(&self, state: Rc<InnerState>);
+    fn reuse_state(&self, state: Rc<InnerStateReusable>);
 }
 
-#[derive(Debug)]
+
+#[derive(Debug, Clone)]
 pub(crate) struct InnerState {
     pub(crate) p: Box<[f64]>,
     pub(crate) q: Box<[f64]>,
@@ -70,20 +71,27 @@ pub(crate) struct InnerState {
     pub(crate) idx_in_trajectory: i64,
     pub(crate) kinetic_energy: f64,
     pub(crate) potential_energy: f64,
+}
+
+#[derive(Debug)]
+pub(crate) struct InnerStateReusable {
+    inner: InnerState,
     reuser: Weak<dyn ReuseState>,
 }
 
-impl InnerState {
-    fn new(size: usize, owner: &Rc<dyn ReuseState>) -> InnerState {
-        InnerState {
-            p: vec![0.; size].into(),
-            q: vec![0.; size].into(),
-            v: vec![0.; size].into(),
-            p_sum: vec![0.; size].into(),
-            grad: vec![0.; size].into(),
-            idx_in_trajectory: 0,
-            kinetic_energy: 0.,
-            potential_energy: 0.,
+impl InnerStateReusable {
+    fn new(size: usize, owner: &Rc<dyn ReuseState>) -> InnerStateReusable {
+        InnerStateReusable {
+            inner: InnerState {
+                p: vec![0.; size].into(),
+                q: vec![0.; size].into(),
+                v: vec![0.; size].into(),
+                p_sum: vec![0.; size].into(),
+                grad: vec![0.; size].into(),
+                idx_in_trajectory: 0,
+                kinetic_energy: 0.,
+                potential_energy: 0.,
+            },
             reuser: Rc::downgrade(owner),
         }
     }
@@ -91,16 +99,17 @@ impl InnerState {
 
 #[derive(Debug)]
 pub(crate) struct State {
-    inner: std::mem::ManuallyDrop<Rc<InnerState>>,
+    inner: std::mem::ManuallyDrop<Rc<InnerStateReusable>>,
 }
 
 impl Deref for State {
     type Target = InnerState;
 
     fn deref(&self) -> &Self::Target {
-        self.inner.as_ref()
+        &self.inner.inner
     }
 }
+
 
 #[derive(Debug)]
 pub(crate) struct StateInUse {}
@@ -110,9 +119,13 @@ type Result<T> = std::result::Result<T, StateInUse>;
 impl State {
     pub(crate) fn try_mut_inner(&mut self) -> Result<&mut InnerState> {
         match Rc::get_mut(&mut self.inner) {
-            Some(val) => Ok(val),
+            Some(val) => Ok(&mut val.inner),
             None => Err(StateInUse {}),
         }
+    }
+
+    pub(crate) fn clone_inner(&self) -> InnerState {
+        self.inner.inner.clone()
     }
 }
 

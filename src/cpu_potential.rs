@@ -59,9 +59,29 @@ impl MassMatrix for DiagMassMatrix {
 #[derive(Debug)]
 pub struct DivergenceInfoImpl<E: Send> {
     pub logp_function_error: Option<E>,
+    start: Option<InnerState>,
+    right: Option<InnerState>,
+    energy_error: Option<f64>,
 }
 
-impl<E: Debug + Send> DivergenceInfo for DivergenceInfoImpl<E> {}
+
+impl<E: Debug + Send> DivergenceInfo for DivergenceInfoImpl<E> {
+    fn start_location(&self) -> Option<&[f64]> {
+        Some(&self.start.as_ref()?.q)
+    }
+
+    fn end_location(&self) -> Option<&[f64]> {
+        Some(&self.right.as_ref()?.q)
+    }
+
+    fn energy_error(&self) -> Option<f64> {
+        Some(self.energy_error?)
+    }
+
+    fn end_idx_in_trajectory(&self) -> Option<i64> {
+        Some(self.right.as_ref()?.idx_in_trajectory)
+    }
+}
 
 pub(crate) struct Potential<F: CpuLogpFunc, M: MassMatrix> {
     logp: F,
@@ -98,14 +118,21 @@ impl<F: CpuLogpFunc, M: MassMatrix> crate::nuts::Potential for Potential<F, M> {
     type DivergenceInfo = DivergenceInfoImpl<F::Err>;
 
     fn update_potential_gradient(&mut self, state: &mut State) -> Result<(), Self::DivergenceInfo> {
+        // TODO can we avoid the second try_mut_inner?
+        let func_return = {
+            let inner = state.try_mut_inner().unwrap();
+            self.logp.logp(&inner.q[..], &mut inner.grad[..])
+        };
+
+        let logp = func_return.map_err(|err| DivergenceInfoImpl {
+            logp_function_error: Some(err),
+            start: Some(state.clone_inner()),
+            right: None,
+            energy_error: None,
+        })?;
+
         let inner = state.try_mut_inner().unwrap();
-        inner.potential_energy =
-            -self
-                .logp
-                .logp(&inner.q[..], &mut inner.grad[..])
-                .map_err(|err| DivergenceInfoImpl {
-                    logp_function_error: Some(err),
-                })?;
+        inner.potential_energy = -logp;
         Ok(())
     }
 
@@ -122,5 +149,14 @@ impl<F: CpuLogpFunc, M: MassMatrix> crate::nuts::Potential for Potential<F, M> {
     fn update_kinetic_energy(&mut self, state: &mut Self::State) {
         self.mass_matrix
             .update_kinetic_energy(state.try_mut_inner().expect("State already in us"))
+    }
+
+    fn new_divergence_info(&mut self, left: Self::State, end: Self::State, energy_error: f64) -> Self::DivergenceInfo {
+        DivergenceInfoImpl {
+            logp_function_error: None,
+            start: Some(left.clone_inner()),
+            right: Some(end.clone_inner()),
+            energy_error: Some(energy_error),
+        }
     }
 }

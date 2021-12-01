@@ -1,5 +1,3 @@
-use rand::Rng;
-
 use crate::{
     cpu_potential::{Potential, UnitMassMatrix},
     cpu_state::{State, StatePool},
@@ -8,6 +6,121 @@ use crate::{
 
 pub use crate::cpu_potential::CpuLogpFunc;
 
+
+struct RunningMean {
+    sum: f64,
+    count: u64,
+}
+
+impl RunningMean {
+    fn new() -> RunningMean {
+        RunningMean {
+            sum: 0.,
+            count: 0,
+        }
+    }
+
+    fn add(&mut self, value: f64) {
+        self.sum += value;
+        self.count += 1;
+    }
+
+    fn current(&self) -> f64 {
+        self.sum / self.count as f64
+    }
+
+    fn reset(&mut self) {
+        self.sum = 0f64;
+        self.count = 0;
+    }
+}
+
+struct AcceptanceRateCollector {
+    initial_energy: f64,
+    mean: RunningMean,
+}
+
+
+impl AcceptanceRateCollector {
+    fn new() -> AcceptanceRateCollector {
+        AcceptanceRateCollector {
+            initial_energy: 0.,
+            mean: RunningMean::new(),
+        }
+    }
+}
+
+impl Collector for AcceptanceRateCollector {
+    type State = State;
+
+    fn register_leapfrog(
+        &mut self,
+        _start: &Self::State,
+        end: &Self::State,
+        _step_size: f64,
+        _divergence_info: Option<&dyn crate::nuts::DivergenceInfo>,
+    ) {
+        use crate::nuts::State;
+        self.mean.add(end.log_acceptance_probability(self.initial_energy).exp())
+    }
+
+    fn register_init(&mut self, state: &Self::State) {
+        use crate::nuts::State;
+        self.initial_energy = state.energy();
+        self.mean.reset();
+    }
+}
+
+
+struct StatsCollector {
+    acceptance_rate: AcceptanceRateCollector,
+}
+
+
+#[derive(Debug)]
+pub struct Stats {
+    pub mean_acceptance_rate: f64,
+}
+
+
+impl StatsCollector {
+    fn new() -> StatsCollector {
+        StatsCollector {
+            acceptance_rate: AcceptanceRateCollector::new(),
+        }
+    }
+
+    fn stats(&self) -> Stats {
+        Stats {
+            mean_acceptance_rate: self.acceptance_rate.mean.current(),
+        }
+    }
+}
+
+
+impl Collector for StatsCollector {
+    type State = State;
+
+    fn register_leapfrog(
+        &mut self,
+        start: &Self::State,
+        end: &Self::State,
+        step_size: f64,
+        divergence_info: Option<&dyn crate::nuts::DivergenceInfo>,
+    ) {
+        self.acceptance_rate.register_leapfrog(start, end, step_size, divergence_info);
+    }
+
+    fn register_draw(&mut self, state: &Self::State, info: &SampleInfo) {
+        self.acceptance_rate.register_draw(state, info);
+    }
+
+    fn register_init(&mut self, state: &Self::State) {
+        self.acceptance_rate.register_init(state);
+    }
+}
+
+
 pub struct UnitStaticSampler<F: CpuLogpFunc> {
     potential: Potential<F, UnitMassMatrix>,
     state: State,
@@ -15,6 +128,7 @@ pub struct UnitStaticSampler<F: CpuLogpFunc> {
     maxdepth: u64,
     step_size: f64,
     rng: rand::rngs::StdRng,
+    collector: StatsCollector,
 }
 
 struct NullCollector {}
@@ -31,6 +145,7 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
         let mut pool = StatePool::new(logp.dim());
         let potential = Potential::new(logp, mass_matrix);
         let state = pool.new_state();
+        let collector = StatsCollector::new();
         UnitStaticSampler {
             potential,
             state,
@@ -38,6 +153,7 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
             maxdepth,
             step_size,
             rng: rand::rngs::StdRng::seed_from_u64(seed),
+            collector,
         }
     }
 
@@ -54,9 +170,8 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
         Ok(())
     }
 
-    pub fn draw(&mut self) -> (Box<[f64]>, SampleInfo) {
+    pub fn draw(&mut self) -> (Box<[f64]>, SampleInfo, Stats) {
         use crate::nuts::Potential;
-        let mut collector = NullCollector {};
         self.potential.randomize_momentum(&mut self.state, &mut self.rng);
         self.potential.update_velocity(&mut self.state);
         self.potential.update_kinetic_energy(&mut self.state);
@@ -68,11 +183,11 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
             &mut self.potential,
             self.maxdepth,
             self.step_size,
-            &mut collector,
+            &mut self.collector,
         );
         self.state = state;
         let position: Box<[f64]> = self.state.q.clone().into();
-        (position, info)
+        (position, info, self.collector.stats())
     }
 }
 
@@ -143,13 +258,13 @@ mod tests {
         let mut sampler = UnitStaticSampler::new(func, 42, 10, 1e-2);
 
         sampler.set_position(&init).unwrap();
-        let (sample1, info1) = sampler.draw();
+        let (sample1, info1, _stats) = sampler.draw();
 
         let func = NormalLogp::new(dim, 3.);
         let mut sampler = UnitStaticSampler::new(func, 42, 10, 1e-2);
 
         sampler.set_position(&init).unwrap();
-        let (sample2, info2) = sampler.draw();
+        let (sample2, info2, _stats) = sampler.draw();
 
         dbg!(&sample1);
         dbg!(info1);
