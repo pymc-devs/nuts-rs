@@ -1,4 +1,9 @@
-use std::{cell::RefCell, fmt::Debug, ops::{Deref, DerefMut}, rc::{Rc, Weak}};
+use std::{
+    cell::RefCell,
+    fmt::Debug,
+    ops::Deref,
+    rc::{Rc, Weak},
+};
 
 use crate::{
     math::{axpy, axpy_out},
@@ -60,7 +65,6 @@ trait ReuseState: Debug {
     fn reuse_state(&self, state: Rc<InnerStateReusable>);
 }
 
-
 #[derive(Debug, Clone)]
 pub(crate) struct InnerState {
     pub(crate) p: Box<[f64]>,
@@ -109,7 +113,6 @@ impl Deref for State {
         &self.inner.inner
     }
 }
-
 
 #[derive(Debug)]
 pub(crate) struct StateInUse {}

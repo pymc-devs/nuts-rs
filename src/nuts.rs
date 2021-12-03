@@ -3,10 +3,18 @@ use std::marker::PhantomData;
 use crate::math::logaddexp;
 
 pub trait DivergenceInfo: std::fmt::Debug + Send {
-    fn start_location(&self) -> Option<&[f64]> { None }
-    fn end_location(&self) -> Option<&[f64]> { None }
-    fn energy_error(&self) -> Option<f64> { None }
-    fn end_idx_in_trajectory(&self) -> Option<i64> { None }
+    fn start_location(&self) -> Option<&[f64]> {
+        None
+    }
+    fn end_location(&self) -> Option<&[f64]> {
+        None
+    }
+    fn energy_error(&self) -> Option<f64> {
+        None
+    }
+    fn end_idx_in_trajectory(&self) -> Option<i64> {
+        None
+    }
 }
 
 pub struct LeapfrogInfo {}
@@ -52,7 +60,12 @@ pub trait Potential {
     fn update_velocity(&mut self, state: &mut Self::State);
     fn update_kinetic_energy(&mut self, state: &mut Self::State);
     fn randomize_momentum<R: rand::Rng + ?Sized>(&self, state: &mut Self::State, rng: &mut R);
-    fn new_divergence_info(&mut self, left: Self::State, end: Self::State, energy_error: f64) -> Self::DivergenceInfo;
+    fn new_divergence_info(
+        &mut self,
+        left: Self::State,
+        end: Self::State,
+        energy_error: f64,
+    ) -> Self::DivergenceInfo;
 }
 
 pub trait State: Clone {
@@ -81,6 +94,7 @@ fn leapfrog<P: Potential + ?Sized, C: Collector<State = P::State>>(
     potential: &mut P,
     start: &P::State,
     dir: Direction,
+    initial_energy: f64,
     options: &NutsOptions,
     collector: &mut C,
 ) -> Result<(P::State, LeapfrogInfo), P::DivergenceInfo> {
@@ -110,6 +124,14 @@ fn leapfrog<P: Potential + ?Sized, C: Collector<State = P::State>>(
     *out.index_in_trajectory_mut() = start.index_in_trajectory() + sign;
 
     start.set_psum(&mut out, dir);
+
+    let energy_error = out.energy() - initial_energy;
+    if energy_error.abs() > options.max_energy_error {
+        let divergence_info =
+            potential.new_divergence_info(start.clone(), out.clone(), energy_error);
+        collector.register_leapfrog(start, &out, Some(&divergence_info));
+        return Err(divergence_info);
+    }
 
     collector.register_leapfrog(start, &out, None);
 
@@ -147,7 +169,7 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
             left: state.clone(),
             draw: state,
             depth: 0,
-            log_size: 0., // TODO
+            log_size: 0.,
             initial_energy,
             collector: PhantomData,
         }
@@ -221,9 +243,12 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
                 self.left = other.left;
             }
         }
-        if rng.gen_bool((self.log_size - other.log_size).exp().min(1.)) {
+        if other.log_size > self.log_size {
+            self.draw = other.draw;
+        } else if rng.gen_bool((other.log_size - self.log_size).exp()) {
             self.draw = other.draw;
         }
+
         self.depth += 1;
         self.log_size = logaddexp(self.log_size, other.log_size);
     }
@@ -240,26 +265,29 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
             Direction::Forward => &self.right,
             Direction::Backward => &self.left,
         };
-        let (end, _) = match leapfrog(pool, integrator, start, direction, options, collector) {
+        let (end, _) = match leapfrog(
+            pool,
+            integrator,
+            start,
+            direction,
+            self.initial_energy,
+            options,
+            collector,
+        ) {
             Err(divergence_info) => return Err(divergence_info),
             Ok((end, info)) => (end, info),
         };
 
-        let energy_error = end.energy() - self.initial_energy;
-
-        if energy_error.abs() > 1000. {   // TODO make configurable
-            Err(integrator.new_divergence_info(start.clone(), end, energy_error))
-        } else {
-            Ok(NutsTree {
-                right: end.clone(),
-                left: end.clone(),
-                draw: end,
-                depth: 0,
-                log_size: -energy_error,
-                initial_energy: self.initial_energy,
-                collector: PhantomData,
-            })
-        }
+        let log_size = end.log_acceptance_probability(self.initial_energy);
+        Ok(NutsTree {
+            right: end.clone(),
+            left: end.clone(),
+            draw: end,
+            depth: 0,
+            log_size,
+            initial_energy: self.initial_energy,
+            collector: PhantomData,
+        })
     }
 
     fn info(&self, maxdepth: bool, divergence_info: Option<P::DivergenceInfo>) -> SampleInfo {
@@ -275,13 +303,11 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
     }
 }
 
-
 pub struct NutsOptions {
     pub maxdepth: u64,
     pub step_size: f64,
     pub max_energy_error: f64,
 }
-
 
 pub fn draw<P, R, C>(
     pool: &mut <P::State as State>::Pool,

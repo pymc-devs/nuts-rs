@@ -1,11 +1,11 @@
 use crate::{
     cpu_potential::{Potential, UnitMassMatrix},
     cpu_state::{State, StatePool},
-    nuts::{draw, Collector, SampleInfo, NutsOptions},
+    nuts::{draw, Collector, DivergenceInfo, NutsOptions, SampleInfo},
+    stepsize::{DualAverage, DualAverageSettings},
 };
 
 pub use crate::cpu_potential::CpuLogpFunc;
-
 
 struct RunningMean {
     sum: f64,
@@ -14,10 +14,7 @@ struct RunningMean {
 
 impl RunningMean {
     fn new() -> RunningMean {
-        RunningMean {
-            sum: 0.,
-            count: 0,
-        }
+        RunningMean { sum: 0., count: 0 }
     }
 
     fn add(&mut self, value: f64) {
@@ -40,7 +37,6 @@ struct AcceptanceRateCollector {
     mean: RunningMean,
 }
 
-
 impl AcceptanceRateCollector {
     fn new() -> AcceptanceRateCollector {
         AcceptanceRateCollector {
@@ -57,30 +53,33 @@ impl Collector for AcceptanceRateCollector {
         &mut self,
         _start: &Self::State,
         end: &Self::State,
-        _divergence_info: Option<&dyn crate::nuts::DivergenceInfo>,
+        divergence_info: Option<&dyn crate::nuts::DivergenceInfo>,
     ) {
         use crate::nuts::State;
-        self.mean.add(end.log_acceptance_probability(self.initial_energy).exp())
+        match divergence_info {
+            Some(_) => self.mean.add(0.),
+            None => self
+                .mean
+                .add(end.log_acceptance_probability(self.initial_energy).exp()),
+        }
     }
 
     fn register_init(&mut self, state: &Self::State, _options: &NutsOptions) {
         use crate::nuts::State;
         self.initial_energy = state.energy();
+        self.mean.add(1.);
         self.mean.reset();
     }
 }
-
 
 struct StatsCollector {
     acceptance_rate: AcceptanceRateCollector,
 }
 
-
 #[derive(Debug)]
-pub struct Stats {
+struct CollectedStats {
     pub mean_acceptance_rate: f64,
 }
-
 
 impl StatsCollector {
     fn new() -> StatsCollector {
@@ -89,13 +88,12 @@ impl StatsCollector {
         }
     }
 
-    fn stats(&self) -> Stats {
-        Stats {
+    fn stats(&self) -> CollectedStats {
+        CollectedStats {
             mean_acceptance_rate: self.acceptance_rate.mean.current(),
         }
     }
 }
-
 
 impl Collector for StatsCollector {
     type State = State;
@@ -106,7 +104,8 @@ impl Collector for StatsCollector {
         end: &Self::State,
         divergence_info: Option<&dyn crate::nuts::DivergenceInfo>,
     ) {
-        self.acceptance_rate.register_leapfrog(start, end, divergence_info);
+        self.acceptance_rate
+            .register_leapfrog(start, end, divergence_info);
     }
 
     fn register_draw(&mut self, state: &Self::State, info: &SampleInfo) {
@@ -118,6 +117,16 @@ impl Collector for StatsCollector {
     }
 }
 
+#[derive(Debug)]
+pub struct SampleStats {
+    pub step_size: f64,
+    pub step_size_bar: f64,
+    pub depth: u64,
+    pub idx_in_trajectory: i64,
+    pub logp: f64,
+    pub mean_acceptance_rate: f64,
+    pub divergence_info: Option<Box<dyn DivergenceInfo>>,
+}
 
 pub struct UnitStaticSampler<F: CpuLogpFunc> {
     potential: Potential<F, UnitMassMatrix>,
@@ -171,9 +180,10 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
         Ok(())
     }
 
-    pub fn draw(&mut self) -> (Box<[f64]>, SampleInfo, Stats) {
+    pub fn draw(&mut self) -> (Box<[f64]>, SampleStats) {
         use crate::nuts::Potential;
-        self.potential.randomize_momentum(&mut self.state, &mut self.rng);
+        self.potential
+            .randomize_momentum(&mut self.state, &mut self.rng);
         self.potential.update_velocity(&mut self.state);
         self.potential.update_kinetic_energy(&mut self.state);
 
@@ -187,7 +197,68 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
         );
         self.state = state;
         let position: Box<[f64]> = self.state.q.clone().into();
-        (position, info, self.collector.stats())
+        let stats = SampleStats {
+            step_size: self.options.step_size,
+            step_size_bar: self.options.step_size,
+            divergence_info: info.divergence_info,
+            idx_in_trajectory: self.state.idx_in_trajectory,
+            depth: info.depth,
+            logp: -self.state.potential_energy,
+            mean_acceptance_rate: self.collector.stats().mean_acceptance_rate,
+        };
+        (position, stats)
+    }
+}
+
+pub struct AdaptiveSampler<F: CpuLogpFunc> {
+    num_tune: u64,
+    sampler: UnitStaticSampler<F>,
+    step_size_adapt: DualAverage,
+    draw_count: u64,
+}
+
+impl<F: CpuLogpFunc> AdaptiveSampler<F> {
+    pub fn new(logp: F, num_tune: u64, initial_step: f64, seed: u64) -> Self {
+        let maxdepth = 10;
+        let sampler = UnitStaticSampler::new(logp, seed, maxdepth, initial_step);
+        let settings = DualAverageSettings::default();
+        let step_size_adapt = DualAverage::new(settings, initial_step);
+
+        Self {
+            num_tune,
+            sampler,
+            step_size_adapt,
+            draw_count: 0,
+        }
+    }
+
+    pub fn set_position(&mut self, position: &[f64]) -> Result<(), F::Err> {
+        self.sampler.set_position(position)
+    }
+
+    pub fn tuning(&self) -> bool {
+        self.draw_count <= self.num_tune
+    }
+
+    pub fn draw(&mut self) -> (Box<[f64]>, SampleStats) {
+        let step_size = if self.tuning() {
+            self.step_size_adapt.current_step_size()
+        } else {
+            self.step_size_adapt.current_step_size_adapted()
+        };
+        let step_size_bar = self.step_size_adapt.current_step_size_adapted();
+
+        self.sampler.options.step_size = step_size;
+
+        self.draw_count += 1;
+        let (position, mut stats) = self.sampler.draw();
+
+        stats.step_size_bar = step_size_bar;
+
+        if self.tuning() {
+            self.step_size_adapt.advance(stats.mean_acceptance_rate)
+        }
+        (position, stats)
     }
 }
 
@@ -258,19 +329,19 @@ mod tests {
         let mut sampler = UnitStaticSampler::new(func, 42, 10, 1e-2);
 
         sampler.set_position(&init).unwrap();
-        let (sample1, info1, _stats) = sampler.draw();
+        let (sample1, stats1) = sampler.draw();
 
         let func = NormalLogp::new(dim, 3.);
         let mut sampler = UnitStaticSampler::new(func, 42, 10, 1e-2);
 
         sampler.set_position(&init).unwrap();
-        let (sample2, info2, _stats) = sampler.draw();
+        let (sample2, stats2) = sampler.draw();
 
         dbg!(&sample1);
-        dbg!(info1);
+        dbg!(stats1);
 
         dbg!(&sample2);
-        dbg!(info2);
+        dbg!(stats2);
 
         assert_eq!(sample1, sample2);
     }
