@@ -1,7 +1,9 @@
+#![feature(portable_simd)]
+
 //pub(crate) mod cpu_potentials;
 //pub mod cpu_sampler;
 //pub mod integrator;
-mod math;
+pub mod math;
 pub mod nuts;
 //mod potentials;
 //pub mod adapt;

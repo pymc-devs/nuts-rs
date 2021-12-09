@@ -169,7 +169,7 @@ impl crate::nuts::State for State {
     }
 
     fn write_position(&self, out: &mut [f64]) {
-        out.copy_from_slice(&self.q);
+        out.copy_from_slice(&self.q)
     }
 
     fn new(pool: &mut Self::Pool, init: &[f64]) -> Self {
@@ -218,7 +218,7 @@ impl crate::nuts::State for State {
             Direction::Forward => 1,
             Direction::Backward => -1,
         };
-        axpy_out(&out.p, &self.p_sum, sign as f64, &mut out.p_sum); // TODO check order
+        axpy_out(&out.p, &self.p_sum, sign as f64, &mut out.p_sum);
     }
 
     fn index_in_trajectory(&self) -> i64 {

@@ -1,3 +1,4 @@
+#[derive(Clone, Copy)]
 pub struct DualAverageSettings {
     pub target: f64,
     pub k: f64,
@@ -16,6 +17,7 @@ impl Default for DualAverageSettings {
     }
 }
 
+#[derive(Clone)]
 pub struct DualAverage {
     log_step: f64,
     log_step_adapted: f64,

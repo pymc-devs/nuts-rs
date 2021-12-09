@@ -1,3 +1,8 @@
+use crossbeam::channel::{bounded, Receiver};
+use rand::{prelude::StdRng, Rng, SeedableRng};
+use rayon::prelude::*;
+use std::thread::{spawn, JoinHandle};
+
 use crate::{
     cpu_potential::{Potential, UnitMassMatrix},
     cpu_state::{State, StatePool},
@@ -122,10 +127,13 @@ pub struct SampleStats {
     pub step_size: f64,
     pub step_size_bar: f64,
     pub depth: u64,
+    pub maxdepth_reached: bool,
     pub idx_in_trajectory: i64,
     pub logp: f64,
     pub mean_acceptance_rate: f64,
     pub divergence_info: Option<Box<dyn DivergenceInfo>>,
+    pub chain: u64,
+    pub draw: u64,
 }
 
 pub struct UnitStaticSampler<F: CpuLogpFunc> {
@@ -135,6 +143,9 @@ pub struct UnitStaticSampler<F: CpuLogpFunc> {
     rng: rand::rngs::StdRng,
     collector: StatsCollector,
     options: NutsOptions,
+    draw_count: u64,
+    chain: u64,
+    dim: usize,
 }
 
 struct NullCollector {}
@@ -144,18 +155,18 @@ impl Collector for NullCollector {
 }
 
 impl<F: CpuLogpFunc> UnitStaticSampler<F> {
-    pub fn new(logp: F, seed: u64, maxdepth: u64, step_size: f64) -> UnitStaticSampler<F> {
-        use rand::SeedableRng;
+    pub fn new(logp: F, args: SamplerArgs, chain: u64, seed: u64) -> UnitStaticSampler<F> {
+        let dim = logp.dim();
 
         let mass_matrix = UnitMassMatrix {};
-        let mut pool = StatePool::new(logp.dim());
+        let mut pool = StatePool::new(dim);
         let potential = Potential::new(logp, mass_matrix);
         let state = pool.new_state();
         let collector = StatsCollector::new();
         let options = NutsOptions {
-            step_size,
-            maxdepth,
-            max_energy_error: 1000.,
+            step_size: args.initial_step,
+            maxdepth: args.maxdepth,
+            max_energy_error: args.max_energy_error,
         };
         UnitStaticSampler {
             potential,
@@ -164,6 +175,9 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
             options,
             rng: rand::rngs::StdRng::seed_from_u64(seed),
             collector,
+            draw_count: 0,
+            chain,
+            dim,
         }
     }
 
@@ -172,11 +186,11 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
         {
             let inner = self.state.try_mut_inner().expect("State already in use");
             inner.q.copy_from_slice(position);
+            inner.p_sum.fill(0.);
         }
         if let Err(err) = self.potential.update_potential_gradient(&mut self.state) {
             return Err(err.logp_function_error.unwrap());
         }
-        // TODO check init of p_sum
         Ok(())
     }
 
@@ -203,10 +217,39 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
             divergence_info: info.divergence_info,
             idx_in_trajectory: self.state.idx_in_trajectory,
             depth: info.depth,
+            maxdepth_reached: info.maxdepth,
             logp: -self.state.potential_energy,
             mean_acceptance_rate: self.collector.stats().mean_acceptance_rate,
+            chain: self.chain,
+            draw: self.draw_count,
         };
+        self.draw_count += 1;
         (position, stats)
+    }
+
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct SamplerArgs {
+    pub num_tune: u64,
+    pub initial_step: f64,
+    pub maxdepth: u64,
+    pub max_energy_error: f64,
+    step_size_adapt: DualAverageSettings,
+}
+
+impl Default for SamplerArgs {
+    fn default() -> Self {
+        Self {
+            num_tune: 1000,
+            initial_step: 0.1,
+            maxdepth: 10,
+            max_energy_error: 1000f64,
+            step_size_adapt: DualAverageSettings::default(),
+        }
     }
 }
 
@@ -218,14 +261,12 @@ pub struct AdaptiveSampler<F: CpuLogpFunc> {
 }
 
 impl<F: CpuLogpFunc> AdaptiveSampler<F> {
-    pub fn new(logp: F, num_tune: u64, initial_step: f64, seed: u64) -> Self {
-        let maxdepth = 10;
-        let sampler = UnitStaticSampler::new(logp, seed, maxdepth, initial_step);
-        let settings = DualAverageSettings::default();
-        let step_size_adapt = DualAverage::new(settings, initial_step);
+    pub fn new(logp: F, args: SamplerArgs, chain: u64, seed: u64) -> Self {
+        let sampler = UnitStaticSampler::new(logp, args, chain, seed);
+        let step_size_adapt = DualAverage::new(args.step_size_adapt, args.initial_step);
 
         Self {
-            num_tune,
+            num_tune: args.num_tune,
             sampler,
             step_size_adapt,
             draw_count: 0,
@@ -234,6 +275,24 @@ impl<F: CpuLogpFunc> AdaptiveSampler<F> {
 
     pub fn set_position(&mut self, position: &[f64]) -> Result<(), F::Err> {
         self.sampler.set_position(position)
+    }
+
+    pub fn init_random<R: Rng + ?Sized, I: InitPointFunc>(
+        &mut self,
+        rng: &mut R,
+        func: &mut I,
+        n_try: u64,
+    ) -> Result<(), F::Err> {
+        let mut last_error: Option<F::Err> = None;
+        let mut position = vec![0.; self.dim()];
+        for _ in 0..n_try {
+            func.new_init_point(rng, &mut position);
+            match self.set_position(&position) {
+                Ok(_) => return Ok(()),
+                Err(e) => last_error = Some(e),
+            }
+        }
+        Err(last_error.unwrap())
     }
 
     pub fn tuning(&self) -> bool {
@@ -260,11 +319,84 @@ impl<F: CpuLogpFunc> AdaptiveSampler<F> {
         }
         (position, stats)
     }
+
+    pub fn dim(&self) -> usize {
+        self.sampler.dim()
+    }
+}
+
+pub trait InitPointFunc {
+    fn new_init_point<R: Rng + ?Sized>(&mut self, rng: &mut R, out: &mut [f64]);
+}
+
+pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc>(
+    func: F,
+    init_point_func: &mut I,
+    settings: SamplerArgs,
+    n_chains: u64,
+    n_draws: u64,
+    seed: u64,
+    n_try_init: u64,
+) -> Result<(JoinHandle<()>, Receiver<(Box<[f64]>, SampleStats)>), F::Err> {
+    let mut func = func;
+    let draws = settings.num_tune + n_draws;
+    let mut grad = vec![0.; func.dim()];
+    let mut rng = StdRng::seed_from_u64(seed.wrapping_sub(1));
+    let mut points: Vec<Result<Box<[f64]>, F::Err>> = (0..n_chains)
+        .map(|_| {
+            let mut position = vec![0.; func.dim()];
+            init_point_func.new_init_point(&mut rng, &mut position);
+
+            let mut error = None;
+            for _ in 0..n_try_init {
+                match func.logp(&mut position, &mut grad) {
+                    Err(e) => error = Some(e),
+                    Ok(_) => {
+                        error = None;
+                        break;
+                    }
+                }
+            }
+            match error {
+                Some(e) => Err(e),
+                None => Ok(position.into()),
+            }
+        })
+        .collect();
+
+    let points: Result<Vec<Box<[f64]>>, _> = points.drain(..).collect();
+    let points = points?;
+
+    let (sender, receiver) = bounded(128);
+
+    let handle = spawn(move || {
+        points
+            .into_par_iter()
+            //.with_max_len(1)
+            .enumerate()
+            .for_each_with((sender, func), |(sender, func), (chain, point)| {
+                let mut sampler = AdaptiveSampler::new(
+                    func.clone(),
+                    settings,
+                    chain as u64,
+                    (chain as u64).wrapping_add(seed),
+                );
+                sampler
+                    .set_position(&point)
+                    .expect("Could not eval logp at initial positon, though we could previously.");
+                for _ in 0..draws {
+                    sender.send(sampler.draw()).unwrap();
+                }
+            });
+    });
+
+    Ok((handle, receiver))
 }
 
 pub mod test_logps {
     use crate::cpu_potential::CpuLogpFunc;
 
+    #[derive(Clone)]
     pub struct NormalLogp {
         dim: usize,
         mu: f64,
@@ -289,7 +421,7 @@ pub mod test_logps {
             let mut logp = 0f64;
             for (p, g) in position.iter().zip(gradient.iter_mut()) {
                 let val = *p - self.mu;
-                logp -= val * val;
+                logp -= val * val / 2.;
                 *g = -val;
             }
             Ok(logp)
@@ -297,9 +429,24 @@ pub mod test_logps {
     }
 }
 
+pub struct JitterInitFunc {}
+
+impl JitterInitFunc {
+    pub fn new() -> JitterInitFunc {
+        JitterInitFunc {}
+    }
+}
+
+impl InitPointFunc for JitterInitFunc {
+    fn new_init_point<R: Rng + ?Sized>(&mut self, rng: &mut R, out: &mut [f64]) {
+        rng.fill(out);
+        out.iter_mut().for_each(|val| *val = 2. * *val - 1.);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::cpu_sampler::UnitStaticSampler;
+    use crate::cpu_sampler::{SamplerArgs, UnitStaticSampler};
 
     use super::test_logps::*;
     use pretty_assertions::assert_eq;
@@ -326,13 +473,13 @@ mod tests {
         let func = NormalLogp::new(dim, 3.);
         let init = vec![3.5; dim];
 
-        let mut sampler = UnitStaticSampler::new(func, 42, 10, 1e-2);
+        let mut sampler = UnitStaticSampler::new(func, SamplerArgs::default(), 10, 42);
 
         sampler.set_position(&init).unwrap();
         let (sample1, stats1) = sampler.draw();
 
         let func = NormalLogp::new(dim, 3.);
-        let mut sampler = UnitStaticSampler::new(func, 42, 10, 1e-2);
+        let mut sampler = UnitStaticSampler::new(func, SamplerArgs::default(), 10, 42);
 
         sampler.set_position(&init).unwrap();
         let (sample2, stats2) = sampler.draw();

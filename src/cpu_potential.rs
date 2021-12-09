@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use crate::cpu_state::{InnerState, State};
-use crate::math::norm2;
+use crate::math::vector_dot;
 use crate::nuts::DivergenceInfo;
 
 pub trait CpuLogpFunc {
@@ -25,7 +25,7 @@ impl MassMatrix for UnitMassMatrix {
     }
 
     fn update_kinetic_energy(&self, state: &mut InnerState) {
-        state.kinetic_energy = 0.5 * norm2(&state.p, &state.v);
+        state.kinetic_energy = 0.5 * vector_dot(&state.p, &state.v);
     }
 
     fn randomize_momentum<R: rand::Rng + ?Sized>(&self, state: &mut InnerState, rng: &mut R) {
@@ -37,19 +37,19 @@ impl MassMatrix for UnitMassMatrix {
 }
 
 pub(crate) struct DiagMassMatrix {
-    inv_diag: Box<[f64]>,
+    _inv_diag: Box<[f64]>,
 }
 
 impl MassMatrix for DiagMassMatrix {
-    fn update_velocity(&self, state: &mut InnerState) {
+    fn update_velocity(&self, _state: &mut InnerState) {
         todo!()
     }
 
-    fn update_kinetic_energy(&self, state: &mut InnerState) {
+    fn update_kinetic_energy(&self, _state: &mut InnerState) {
         todo!()
     }
 
-    fn randomize_momentum<R: rand::Rng + ?Sized>(&self, state: &mut InnerState, rng: &mut R) {
+    fn randomize_momentum<R: rand::Rng + ?Sized>(&self, _state: &mut InnerState, _rng: &mut R) {
         todo!()
     }
     /*
@@ -111,7 +111,7 @@ impl<F: CpuLogpFunc, M: MassMatrix> crate::nuts::Potential for Potential<F, M> {
         // TODO can we avoid the second try_mut_inner?
         let func_return = {
             let inner = state.try_mut_inner().unwrap();
-            self.logp.logp(&inner.q[..], &mut inner.grad[..])
+            self.logp.logp(&inner.q, &mut inner.grad)
         };
 
         let logp = func_return.map_err(|err| DivergenceInfoImpl {
