@@ -129,6 +129,8 @@ impl<F: CpuLogpFunc, M: MassMatrix> crate::nuts::Potential for Potential<F, M> {
     fn randomize_momentum<R: rand::Rng + ?Sized>(&self, state: &mut Self::State, rng: &mut R) {
         let inner = state.try_mut_inner().unwrap();
         self.mass_matrix.randomize_momentum(inner, rng);
+        self.mass_matrix.update_velocity(inner);
+        self.mass_matrix.update_kinetic_energy(inner);
         inner.idx_in_trajectory = 0;
         inner.p_sum.fill(0.);
     }

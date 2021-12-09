@@ -206,6 +206,7 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
             };
         }
 
+        /*
         let (first, last) = match direction {
             Direction::Forward => (&self.left, &other.right),
             Direction::Backward => (&other.left, &self.right),
@@ -218,6 +219,9 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
         if (!turning) & (self.depth > 1) {
             turning = self.left.is_turning(&other.left);
         }
+        */
+
+        let turning = false;
 
         self.merge_into(other, rng, direction);
 
@@ -243,7 +247,7 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
                 self.left = other.left;
             }
         }
-        if other.log_size > self.log_size {
+        if other.log_size >= self.log_size {
             self.draw = other.draw;
         } else if rng.gen_bool((other.log_size - self.log_size).exp()) {
             self.draw = other.draw;
@@ -278,7 +282,8 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
             Ok((end, info)) => (end, info),
         };
 
-        let log_size = end.log_acceptance_probability(self.initial_energy);
+        //let log_size = end.log_acceptance_probability(self.initial_energy);
+        let log_size = self.initial_energy - end.energy();
         Ok(NutsTree {
             right: end.clone(),
             left: end.clone(),

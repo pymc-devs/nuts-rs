@@ -116,7 +116,15 @@ pub fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
     //assert_eq!(&*&a[0] as *const f64 as usize % 16, 0);
     //assert_eq!(&*&b[0] as *const f64 as usize % 16, 0);
 
-    //let head_length = 4 * (n / 4);
+
+    /*
+    let mut result = 0.;
+    for (val1, val2) in a.iter().zip(b) {
+        result += *val1 * *val2;
+    }
+    result
+    */
+
     let head_length = n - n % 4;
 
     let (x, x_tail) = a.split_at(head_length);

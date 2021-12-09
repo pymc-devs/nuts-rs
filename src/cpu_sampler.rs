@@ -1,4 +1,5 @@
 use crossbeam::channel::{bounded, Receiver};
+use itertools::Itertools;
 use rand::{prelude::StdRng, Rng, SeedableRng};
 use rayon::prelude::*;
 use std::thread::{spawn, JoinHandle};
@@ -134,6 +135,7 @@ pub struct SampleStats {
     pub divergence_info: Option<Box<dyn DivergenceInfo>>,
     pub chain: u64,
     pub draw: u64,
+    pub tree_size: u64,
 }
 
 pub struct UnitStaticSampler<F: CpuLogpFunc> {
@@ -198,8 +200,6 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
         use crate::nuts::Potential;
         self.potential
             .randomize_momentum(&mut self.state, &mut self.rng);
-        self.potential.update_velocity(&mut self.state);
-        self.potential.update_kinetic_energy(&mut self.state);
 
         let (state, info) = draw(
             &mut self.pool,
@@ -222,6 +222,7 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
             mean_acceptance_rate: self.collector.stats().mean_acceptance_rate,
             chain: self.chain,
             draw: self.draw_count,
+            tree_size: self.collector.acceptance_rate.mean.count,
         };
         self.draw_count += 1;
         (position, stats)
@@ -238,7 +239,7 @@ pub struct SamplerArgs {
     pub initial_step: f64,
     pub maxdepth: u64,
     pub max_energy_error: f64,
-    step_size_adapt: DualAverageSettings,
+    pub step_size_adapt: DualAverageSettings,
 }
 
 impl Default for SamplerArgs {
@@ -337,7 +338,7 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
     n_draws: u64,
     seed: u64,
     n_try_init: u64,
-) -> Result<(JoinHandle<()>, Receiver<(Box<[f64]>, SampleStats)>), F::Err> {
+) -> Result<(JoinHandle<Result<Vec<()>, ()>>, Receiver<(Box<[f64]>, SampleStats)>), F::Err> {
     let mut func = func;
     let draws = settings.num_tune + n_draws;
     let mut grad = vec![0.; func.dim()];
@@ -369,14 +370,16 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
 
     let (sender, receiver) = bounded(128);
 
+    let funcs = (0..n_chains).map(|_| func.clone()).collect_vec();
     let handle = spawn(move || {
-        points
+        let results: Result<Vec<_>, ()> = points
             .into_par_iter()
+            .zip(funcs)
             //.with_max_len(1)
             .enumerate()
-            .for_each_with((sender, func), |(sender, func), (chain, point)| {
+            .map_with(sender, |sender, (chain, (point, func))| {
                 let mut sampler = AdaptiveSampler::new(
-                    func.clone(),
+                    func,
                     settings,
                     chain as u64,
                     (chain as u64).wrapping_add(seed),
@@ -385,9 +388,13 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
                     .set_position(&point)
                     .expect("Could not eval logp at initial positon, though we could previously.");
                 for _ in 0..draws {
-                    sender.send(sampler.draw()).unwrap();
+                    sender.send(sampler.draw()).map_err(|_| ())?;
                 }
-            });
+                let result: Result<(), ()> = Ok(());
+                result
+            })
+            .collect();
+        results
     });
 
     Ok((handle, receiver))
