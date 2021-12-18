@@ -126,7 +126,7 @@ fn leapfrog<P: Potential + ?Sized, C: Collector<State = P::State>>(
     start.set_psum(&mut out, dir);
 
     let energy_error = out.energy() - initial_energy;
-    if energy_error.abs() > options.max_energy_error {
+    if (energy_error.abs() > options.max_energy_error) | !energy_error.is_finite() {
         let divergence_info =
             potential.new_divergence_info(start.clone(), out.clone(), energy_error);
         collector.register_leapfrog(start, &out, Some(&divergence_info));
@@ -152,6 +152,7 @@ pub struct NutsTree<P: Potential + ?Sized, C: Collector<State = P::State>> {
     log_size: f64,
     depth: u64,
     initial_energy: f64,
+    is_main: bool,
     collector: PhantomData<C>,
 }
 
@@ -171,10 +172,12 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
             depth: 0,
             log_size: 0.,
             initial_energy,
+            is_main: true,
             collector: PhantomData,
         }
     }
 
+    #[inline]
     fn extend<R>(
         mut self,
         pool: &mut <P::State as State>::Pool,
@@ -206,22 +209,20 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
             };
         }
 
-        /*
         let (first, last) = match direction {
             Direction::Forward => (&self.left, &other.right),
             Direction::Backward => (&other.left, &self.right),
         };
 
         let mut turning = first.is_turning(last);
-        if (!turning) & (self.depth > 1) {
-            turning = self.right.is_turning(&other.right);
+        if self.depth > 0 {
+            if !turning {
+                turning = self.right.is_turning(&other.right);
+            }
+            if !turning {
+                turning = self.left.is_turning(&other.left);
+            }
         }
-        if (!turning) & (self.depth > 1) {
-            turning = self.left.is_turning(&other.left);
-        }
-        */
-
-        let turning = false;
 
         self.merge_into(other, rng, direction);
 
@@ -232,6 +233,7 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
         }
     }
 
+    #[inline]
     fn merge_into<R: rand::Rng + ?Sized>(
         &mut self,
         other: NutsTree<P, C>,
@@ -239,6 +241,7 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
         direction: Direction,
     ) {
         assert!(self.depth == other.depth);
+        assert!(self.left.index_in_trajectory() <= self.right.index_in_trajectory());
         match direction {
             Direction::Forward => {
                 self.right = other.right;
@@ -247,16 +250,27 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
                 self.left = other.left;
             }
         }
-        if other.log_size >= self.log_size {
+        let log_size = logaddexp(self.log_size, other.log_size);
+
+        let self_log_size = if self.is_main {
+            assert!(self.left.index_in_trajectory() <= 0);
+            assert!(self.right.index_in_trajectory() >= 0);
+            self.log_size
+        } else {
+            log_size
+        };
+
+        if other.log_size >= self_log_size {
             self.draw = other.draw;
-        } else if rng.gen_bool((other.log_size - self.log_size).exp()) {
+        } else if rng.gen_bool((other.log_size - self_log_size).exp()) {
             self.draw = other.draw;
         }
 
         self.depth += 1;
-        self.log_size = logaddexp(self.log_size, other.log_size);
+        self.log_size = log_size;
     }
 
+    #[inline]
     fn single_step(
         &self,
         pool: &mut <P::State as State>::Pool,
@@ -282,7 +296,6 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
             Ok((end, info)) => (end, info),
         };
 
-        //let log_size = end.log_acceptance_probability(self.initial_energy);
         let log_size = self.initial_energy - end.energy();
         Ok(NutsTree {
             right: end.clone(),
@@ -291,6 +304,7 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
             depth: 0,
             log_size,
             initial_energy: self.initial_energy,
+            is_main: false,
             collector: PhantomData,
         })
     }

@@ -55,4 +55,12 @@ impl DualAverage {
     pub fn current_step_size_adapted(&self) -> f64 {
         self.log_step_adapted.exp()
     }
+
+    pub fn reset(&mut self, initial_step: f64) {
+        self.log_step = initial_step.ln();
+        self.log_step_adapted = initial_step.ln();
+        self.hbar = 0f64;
+        self.mu = (10f64 * initial_step).ln();
+        self.count = 1;
+    }
 }

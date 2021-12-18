@@ -5,10 +5,7 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use crate::{
-    math::{axpy, axpy_out},
-    nuts::Direction,
-};
+use crate::math::{axpy, axpy_out, scalar_prods2, scalar_prods3};
 
 #[derive(Debug)]
 struct StateStorage {
@@ -154,18 +151,28 @@ impl Clone for State {
 impl crate::nuts::State for State {
     type Pool = StatePool;
 
-    #[inline]
     fn is_turning(&self, other: &Self) -> bool {
-        use crate::math::scalar_prods_of_diff;
-
         let (start, end) = if self.idx_in_trajectory < other.idx_in_trajectory {
             (&*self, other)
         } else {
             (other, &*self)
         };
 
-        let (a, b) = scalar_prods_of_diff(&end.p_sum, &start.p_sum, &end.v, &start.v);
-        (a < 0.) | (b < 0.)
+        let a = start.idx_in_trajectory;
+        let b = end.idx_in_trajectory;
+
+        assert!(a < b);
+        let (turn1, turn2) = if (a >= 0) & (b >= 0) {
+            // <(end.psum - start.psum + start.p), c> and <(end.psum - start.psum + start.p), d>
+            scalar_prods3(&end.p_sum, &start.p_sum, &start.p, &end.v, &start.v)
+        } else if (b >= 0) & (a < 0) {
+            scalar_prods2(&end.p_sum, &start.p_sum, &end.v, &start.v)
+        } else {
+            assert!((a < 0) & (b < 0));
+            scalar_prods3(&start.p_sum, &end.p_sum, &end.p, &end.v, &start.v)
+        };
+
+        (turn1 < 0.) | (turn2 < 0.)
     }
 
     fn write_position(&self, out: &mut [f64]) {
@@ -212,13 +219,16 @@ impl crate::nuts::State for State {
         axpy(&inner.grad, &mut inner.p, epsilon / 2.);
     }
 
-    fn set_psum(&self, target: &mut Self, dir: crate::nuts::Direction) {
+    fn set_psum(&self, target: &mut Self, _dir: crate::nuts::Direction) {
         let out = target.try_mut_inner().expect("State already in use");
-        let sign = match dir {
-            Direction::Forward => 1,
-            Direction::Backward => -1,
-        };
-        axpy_out(&out.p, &self.p_sum, sign as f64, &mut out.p_sum);
+
+        assert!(out.idx_in_trajectory != 0);
+
+        if out.idx_in_trajectory == -1 {
+            out.p_sum.copy_from_slice(&out.p);
+        } else {
+            axpy_out(&out.p, &self.p_sum, 1., &mut out.p_sum);
+        }
     }
 
     fn index_in_trajectory(&self) -> i64 {

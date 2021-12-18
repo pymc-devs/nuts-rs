@@ -5,8 +5,9 @@ use rayon::prelude::*;
 use std::thread::{spawn, JoinHandle};
 
 use crate::{
-    cpu_potential::{Potential, UnitMassMatrix},
+    cpu_potential::Potential,
     cpu_state::{State, StatePool},
+    mass_matrix::{DiagAdaptExp, DiagAdaptExpSettings},
     nuts::{draw, Collector, DivergenceInfo, NutsOptions, SampleInfo},
     stepsize::{DualAverage, DualAverageSettings},
 };
@@ -73,13 +74,13 @@ impl Collector for AcceptanceRateCollector {
     fn register_init(&mut self, state: &Self::State, _options: &NutsOptions) {
         use crate::nuts::State;
         self.initial_energy = state.energy();
-        self.mean.add(1.);
         self.mean.reset();
     }
 }
 
-struct StatsCollector {
+struct GlobalCollector {
     acceptance_rate: AcceptanceRateCollector,
+    mass_matrix_tuning: crate::mass_matrix::AdaptCollector,
 }
 
 #[derive(Debug)]
@@ -87,10 +88,11 @@ struct CollectedStats {
     pub mean_acceptance_rate: f64,
 }
 
-impl StatsCollector {
-    fn new() -> StatsCollector {
-        StatsCollector {
+impl GlobalCollector {
+    fn new(dim: usize) -> GlobalCollector {
+        GlobalCollector {
             acceptance_rate: AcceptanceRateCollector::new(),
+            mass_matrix_tuning: crate::mass_matrix::AdaptCollector::new(dim),
         }
     }
 
@@ -101,7 +103,7 @@ impl StatsCollector {
     }
 }
 
-impl Collector for StatsCollector {
+impl Collector for GlobalCollector {
     type State = State;
 
     fn register_leapfrog(
@@ -112,14 +114,18 @@ impl Collector for StatsCollector {
     ) {
         self.acceptance_rate
             .register_leapfrog(start, end, divergence_info);
+        self.mass_matrix_tuning
+            .register_leapfrog(start, end, divergence_info);
     }
 
     fn register_draw(&mut self, state: &Self::State, info: &SampleInfo) {
         self.acceptance_rate.register_draw(state, info);
+        self.mass_matrix_tuning.register_draw(state, info);
     }
 
     fn register_init(&mut self, state: &Self::State, options: &NutsOptions) {
         self.acceptance_rate.register_init(state, options);
+        self.mass_matrix_tuning.register_init(state, options);
     }
 }
 
@@ -136,14 +142,15 @@ pub struct SampleStats {
     pub chain: u64,
     pub draw: u64,
     pub tree_size: u64,
+    pub first_diag_mass_matrix: f64,
 }
 
-pub struct UnitStaticSampler<F: CpuLogpFunc> {
-    potential: Potential<F, UnitMassMatrix>,
+pub struct StaticSampler<F: CpuLogpFunc> {
+    potential: Potential<F, DiagAdaptExp>,
     state: State,
     pool: StatePool,
     rng: rand::rngs::StdRng,
-    collector: StatsCollector,
+    collector: GlobalCollector,
     options: NutsOptions,
     draw_count: u64,
     chain: u64,
@@ -156,21 +163,27 @@ impl Collector for NullCollector {
     type State = State;
 }
 
-impl<F: CpuLogpFunc> UnitStaticSampler<F> {
-    pub fn new(logp: F, args: SamplerArgs, chain: u64, seed: u64) -> UnitStaticSampler<F> {
+impl<F: CpuLogpFunc> StaticSampler<F> {
+    pub fn new(
+        logp: F,
+        args: SamplerArgs,
+        mass_matrix_settings: DiagAdaptExpSettings,
+        chain: u64,
+        seed: u64,
+    ) -> StaticSampler<F> {
         let dim = logp.dim();
 
-        let mass_matrix = UnitMassMatrix {};
+        let mass_matrix = DiagAdaptExp::new(dim, mass_matrix_settings);
         let mut pool = StatePool::new(dim);
         let potential = Potential::new(logp, mass_matrix);
         let state = pool.new_state();
-        let collector = StatsCollector::new();
+        let collector = GlobalCollector::new(dim);
         let options = NutsOptions {
             step_size: args.initial_step,
             maxdepth: args.maxdepth,
             max_energy_error: args.max_energy_error,
         };
-        UnitStaticSampler {
+        StaticSampler {
             potential,
             state,
             pool,
@@ -210,7 +223,7 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
             &mut self.collector,
         );
         self.state = state;
-        let position: Box<[f64]> = self.state.q.clone().into();
+        let position: Box<[f64]> = self.state.q.clone();
         let stats = SampleStats {
             step_size: self.options.step_size,
             step_size_bar: self.options.step_size,
@@ -223,6 +236,7 @@ impl<F: CpuLogpFunc> UnitStaticSampler<F> {
             chain: self.chain,
             draw: self.draw_count,
             tree_size: self.collector.acceptance_rate.mean.count,
+            first_diag_mass_matrix: self.potential.mass_matrix_mut().current.variance[0],
         };
         self.draw_count += 1;
         (position, stats)
@@ -240,6 +254,7 @@ pub struct SamplerArgs {
     pub maxdepth: u64,
     pub max_energy_error: f64,
     pub step_size_adapt: DualAverageSettings,
+    pub mass_matrix: DiagAdaptExpSettings,
 }
 
 impl Default for SamplerArgs {
@@ -250,20 +265,21 @@ impl Default for SamplerArgs {
             maxdepth: 10,
             max_energy_error: 1000f64,
             step_size_adapt: DualAverageSettings::default(),
+            mass_matrix: DiagAdaptExpSettings::default(),
         }
     }
 }
 
 pub struct AdaptiveSampler<F: CpuLogpFunc> {
     num_tune: u64,
-    sampler: UnitStaticSampler<F>,
+    sampler: StaticSampler<F>,
     step_size_adapt: DualAverage,
     draw_count: u64,
 }
 
 impl<F: CpuLogpFunc> AdaptiveSampler<F> {
     pub fn new(logp: F, args: SamplerArgs, chain: u64, seed: u64) -> Self {
-        let sampler = UnitStaticSampler::new(logp, args, chain, seed);
+        let sampler = StaticSampler::new(logp, args, args.mass_matrix, chain, seed);
         let step_size_adapt = DualAverage::new(args.step_size_adapt, args.initial_step);
 
         Self {
@@ -316,7 +332,14 @@ impl<F: CpuLogpFunc> AdaptiveSampler<F> {
         stats.step_size_bar = step_size_bar;
 
         if self.tuning() {
-            self.step_size_adapt.advance(stats.mean_acceptance_rate)
+            self.step_size_adapt.advance(stats.mean_acceptance_rate);
+            let reset_step_size = self.sampler
+                .potential
+                .mass_matrix_mut()
+                .adapt(&self.sampler.collector.mass_matrix_tuning);
+            if reset_step_size {
+                self.step_size_adapt.reset(self.step_size_adapt.current_step_size_adapted())
+            }
         }
         (position, stats)
     }
@@ -338,7 +361,13 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
     n_draws: u64,
     seed: u64,
     n_try_init: u64,
-) -> Result<(JoinHandle<Result<Vec<()>, ()>>, Receiver<(Box<[f64]>, SampleStats)>), F::Err> {
+) -> Result<
+    (
+        JoinHandle<Result<Vec<()>, ()>>,
+        Receiver<(Box<[f64]>, SampleStats)>,
+    ),
+    F::Err,
+> {
     let mut func = func;
     let draws = settings.num_tune + n_draws;
     let mut grad = vec![0.; func.dim()];
@@ -453,7 +482,10 @@ impl InitPointFunc for JitterInitFunc {
 
 #[cfg(test)]
 mod tests {
-    use crate::cpu_sampler::{SamplerArgs, UnitStaticSampler};
+    use crate::{
+        cpu_sampler::{SamplerArgs, StaticSampler},
+        mass_matrix::DiagAdaptExpSettings,
+    };
 
     use super::test_logps::*;
     use pretty_assertions::assert_eq;
@@ -480,13 +512,14 @@ mod tests {
         let func = NormalLogp::new(dim, 3.);
         let init = vec![3.5; dim];
 
-        let mut sampler = UnitStaticSampler::new(func, SamplerArgs::default(), 10, 42);
+        let settings = DiagAdaptExpSettings::default();
+        let mut sampler = StaticSampler::new(func, SamplerArgs::default(), settings, 10, 42);
 
         sampler.set_position(&init).unwrap();
         let (sample1, stats1) = sampler.draw();
 
         let func = NormalLogp::new(dim, 3.);
-        let mut sampler = UnitStaticSampler::new(func, SamplerArgs::default(), 10, 42);
+        let mut sampler = StaticSampler::new(func, SamplerArgs::default(), settings, 10, 42);
 
         sampler.set_position(&init).unwrap();
         let (sample2, stats2) = sampler.draw();

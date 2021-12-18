@@ -1,13 +1,15 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use nuts_rs::cpu_sampler::test_logps::NormalLogp;
 use nuts_rs::cpu_sampler::{
-    sample_parallel, AdaptiveSampler, JitterInitFunc, SamplerArgs, UnitStaticSampler,
+    sample_parallel, AdaptiveSampler, JitterInitFunc, SamplerArgs, StaticSampler,
 };
+use nuts_rs::mass_matrix::DiagAdaptExpSettings;
 use nuts_rs::math::{axpy, axpy_out, scalar_prods_of_diff, vector_dot};
 
-fn make_sampler(dim: usize, mu: f64) -> UnitStaticSampler<NormalLogp> {
+fn make_sampler(dim: usize, mu: f64) -> StaticSampler<NormalLogp> {
     let func = NormalLogp::new(dim, mu);
-    UnitStaticSampler::new(func, SamplerArgs::default(), 0, 42)
+    let settings = DiagAdaptExpSettings::default();
+    StaticSampler::new(func, SamplerArgs::default(), settings, 0, 42)
 }
 
 pub fn sample_one(mu: f64, out: &mut [f64]) {
@@ -100,7 +102,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 //let draws: Vec<_> = channel.iter().collect();
                 let draws = channel.iter().count();
                 //assert_eq!(draws.len() as u64, (n_draws + settings.num_tune) * n_chains);
-                handle.join().unwrap();
+                handle.join().unwrap().unwrap();
                 draws
             });
         });

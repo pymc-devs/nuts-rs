@@ -18,6 +18,126 @@ pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
     }
 }
 
+#[multiversion]
+#[clone(target = "[x84|x86_64]+avx+avx2")]
+#[clone(target = "x86+sse")]
+pub fn scalar_prods2(positive1: &[f64], positive2: &[f64], x: &[f64], y: &[f64]) -> (f64, f64) {
+    let n = positive1.len();
+
+    assert!(positive1.len() == n);
+    assert!(positive2.len() == n);
+    assert!(x.len() == n);
+    assert!(y.len() == n);
+
+    /*
+    izip!(positive1, positive2, x, y)
+        .map(|(a, b, x, y)| {
+            ((a + b) * x, (a + b) * y)
+        })
+        .fold((0f64, 0f64), |(s1, s2), (x, y)| (s1 + x, s2 + y))
+
+    */
+
+    let zero = f64x4::splat(0.);
+
+    let head_length = n - n % 4;
+
+    let (a, a_tail) = positive1.split_at(head_length);
+    let (b, b_tail) = positive2.split_at(head_length);
+    let (c, c_tail) = x.split_at(head_length);
+    let (d, d_tail) = y.split_at(head_length);
+
+    let out = izip!(
+        a.chunks_exact(4),
+        b.chunks_exact(4),
+        c.chunks_exact(4),
+        d.chunks_exact(4)
+    )
+    .map(|(a, b, c, d)| {
+        (
+            f64x4::from_slice(a),
+            f64x4::from_slice(b),
+            f64x4::from_slice(c),
+            f64x4::from_slice(d),
+        )
+    })
+    .fold((zero, zero), |(s1, s2), (a, b, c, d)| {
+        (s1 + c * (a + b), s2 + d * (a + b))
+    });
+    let out_head = (out.0.horizontal_sum(), out.1.horizontal_sum());
+
+    let out = izip!(a_tail, b_tail, c_tail, d_tail,).fold((0., 0.), |(s1, s2), (a, b, c, d)| {
+        (s1 + c * (a + b), s2 + d * (a + b))
+    });
+
+    (out_head.0 + out.0, out_head.1 + out.1)
+}
+
+#[multiversion]
+#[clone(target = "[x84|x86_64]+avx+avx2")]
+#[clone(target = "x86+sse")]
+pub fn scalar_prods3(
+    positive1: &[f64],
+    negative1: &[f64],
+    positive2: &[f64],
+    x: &[f64],
+    y: &[f64],
+) -> (f64, f64) {
+    let n = positive1.len();
+
+    assert!(positive1.len() == n);
+    assert!(positive2.len() == n);
+    assert!(negative1.len() == n);
+    assert!(x.len() == n);
+    assert!(y.len() == n);
+
+    /*
+    izip!(positive1, negative1, positive2, x, y)
+        .map(|(a, b, c, x, y)| {
+            ((a - b + c) * x, (a - b + c) * y)
+        })
+        .fold((0f64, 0f64), |(s1, s2), (x, y)| (s1 + x, s2 + y))
+    */
+
+    let zero = f64x4::splat(0.);
+
+    let head_length = n - n % 4;
+
+    let (a, a_tail) = positive1.split_at(head_length);
+    let (b, b_tail) = negative1.split_at(head_length);
+    let (c, c_tail) = positive2.split_at(head_length);
+    let (x, x_tail) = x.split_at(head_length);
+    let (y, y_tail) = y.split_at(head_length);
+
+    let out = izip!(
+        a.chunks_exact(4),
+        b.chunks_exact(4),
+        c.chunks_exact(4),
+        x.chunks_exact(4),
+        y.chunks_exact(4),
+    )
+    .map(|(a, b, c, x, y)| {
+        (
+            f64x4::from_slice(a),
+            f64x4::from_slice(b),
+            f64x4::from_slice(c),
+            f64x4::from_slice(x),
+            f64x4::from_slice(y),
+        )
+    })
+    .fold((zero, zero), |(s1, s2), (a, b, c, x, y)| {
+        (s1 + x * (a - b + c), s2 + y * (a - b + c))
+    });
+    let out_head = (out.0.horizontal_sum(), out.1.horizontal_sum());
+
+    let out = izip!(a_tail, b_tail, c_tail, x_tail, y_tail)
+        .fold((0., 0.), |(s1, s2), (a, b, c, x, y)| {
+            (s1 + x * (a - b + c), s2 + y * (a - b + c))
+        });
+
+    (out_head.0 + out.0, out_head.1 + out.1)
+}
+
 //pub(crate) fn scalar_prods_of_diff(a: &Array1<f64>, b: &Array1<f64>, c: &Array1<f64>, d: &Array1<f64>) -> (f64, f64) {
 //#[allow(clippy::many_single_char_names)]
 #[multiversion]
@@ -115,7 +235,6 @@ pub fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
     assert!(a.len() == b.len());
     //assert_eq!(&*&a[0] as *const f64 as usize % 16, 0);
     //assert_eq!(&*&b[0] as *const f64 as usize % 16, 0);
-
 
     /*
     let mut result = 0.;

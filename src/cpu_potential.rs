@@ -1,5 +1,7 @@
 use std::fmt::Debug;
 
+use itertools::{izip, Itertools};
+
 use crate::cpu_state::{InnerState, State};
 use crate::math::vector_dot;
 use crate::nuts::DivergenceInfo;
@@ -17,11 +19,41 @@ pub(crate) trait MassMatrix {
     fn randomize_momentum<R: rand::Rng + ?Sized>(&self, state: &mut InnerState, rng: &mut R);
 }
 
-pub(crate) struct UnitMassMatrix {}
+#[derive(Debug)]
+pub(crate) struct DiagMassMatrix {
+    inv_stds: Box<[f64]>,
+    pub(crate) variance: Box<[f64]>,
+}
 
-impl MassMatrix for UnitMassMatrix {
+impl DiagMassMatrix {
+    pub(crate) fn new(variance: Box<[f64]>) -> Self {
+        DiagMassMatrix {
+            inv_stds: variance.iter().map(|x| 1. / x.sqrt()).collect_vec().into(),
+            variance,
+        }
+    }
+
+    pub(crate) fn update_diag(&mut self, new_variance: impl Iterator<Item = f64>) {
+        izip!(
+            self.variance.iter_mut(),
+            self.inv_stds.iter_mut(),
+            new_variance
+        )
+        .for_each(|(var, inv_std, x)| {
+            *var = x;
+            *inv_std = (1. / x).sqrt();
+        });
+    }
+}
+
+impl MassMatrix for DiagMassMatrix {
     fn update_velocity(&self, state: &mut InnerState) {
-        state.v.copy_from_slice(&state.p);
+        //axpy_out(&self.variance, &state.p, 1., &mut state.v);
+        izip!(state.v.iter_mut(), self.variance.iter(), state.p.iter()).for_each(
+            |(out, &var, &p)| {
+                *out = var * p;
+            },
+        );
     }
 
     fn update_kinetic_energy(&self, state: &mut InnerState) {
@@ -30,30 +62,15 @@ impl MassMatrix for UnitMassMatrix {
 
     fn randomize_momentum<R: rand::Rng + ?Sized>(&self, state: &mut InnerState, rng: &mut R) {
         let dist = rand_distr::StandardNormal;
-        for val in state.p.iter_mut() {
-            *val = rng.sample(dist);
-        }
+        state
+            .p
+            .iter_mut()
+            .zip(self.inv_stds.iter())
+            .for_each(|(p, &s)| {
+                let norm: f64 = rng.sample(dist);
+                *p = s * norm;
+            });
     }
-}
-
-pub(crate) struct DiagMassMatrix {
-    _inv_diag: Box<[f64]>,
-}
-
-impl MassMatrix for DiagMassMatrix {
-    fn update_velocity(&self, _state: &mut InnerState) {
-        todo!()
-    }
-
-    fn update_kinetic_energy(&self, _state: &mut InnerState) {
-        todo!()
-    }
-
-    fn randomize_momentum<R: rand::Rng + ?Sized>(&self, _state: &mut InnerState, _rng: &mut R) {
-        todo!()
-    }
-    /*
-     */
 }
 
 #[derive(Debug)]
@@ -88,14 +105,8 @@ pub(crate) struct Potential<F: CpuLogpFunc, M: MassMatrix> {
 }
 
 impl<F: CpuLogpFunc, M: MassMatrix> Potential<F, M> {
-    pub(crate) fn new(logp: F, mass_matrix: M) -> Potential<F, M> {
-        let potential = Potential { logp, mass_matrix };
-
-        potential
-    }
-
-    pub(crate) fn mass_matrix(&self) -> &M {
-        &self.mass_matrix
+    pub(crate) fn new(logp: F, mass_matrix: M) -> Self {
+        Potential { logp, mass_matrix }
     }
 
     pub(crate) fn mass_matrix_mut(&mut self) -> &mut M {
@@ -132,7 +143,7 @@ impl<F: CpuLogpFunc, M: MassMatrix> crate::nuts::Potential for Potential<F, M> {
         self.mass_matrix.update_velocity(inner);
         self.mass_matrix.update_kinetic_energy(inner);
         inner.idx_in_trajectory = 0;
-        inner.p_sum.fill(0.);
+        inner.p_sum.copy_from_slice(&inner.p);
     }
 
     fn update_velocity(&mut self, state: &mut Self::State) {
