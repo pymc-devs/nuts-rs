@@ -26,6 +26,7 @@ multiversion = "0.6.1"
 itertools = "0.10.1"
 flume = "0.10.9"
 thiserror = "1.0.30"
+rayon = "1.5.1"
 
 [dev-dependencies]
 proptest = "1.0.0"

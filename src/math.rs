@@ -21,7 +21,12 @@ pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
 #[multiversion]
 #[clone(target = "[x84|x86_64]+avx+avx2")]
 #[clone(target = "x86+sse")]
-pub(crate) fn scalar_prods2(positive1: &[f64], positive2: &[f64], x: &[f64], y: &[f64]) -> (f64, f64) {
+pub(crate) fn scalar_prods2(
+    positive1: &[f64],
+    positive2: &[f64],
+    x: &[f64],
+    y: &[f64],
+) -> (f64, f64) {
     let n = positive1.len();
 
     assert!(positive1.len() == n);

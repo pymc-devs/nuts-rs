@@ -163,7 +163,6 @@ impl crate::nuts::State for State {
 
         assert!(a < b);
         let (turn1, turn2) = if (a >= 0) & (b >= 0) {
-            // <(end.psum - start.psum + start.p), c> and <(end.psum - start.psum + start.p), d>
             scalar_prods3(&end.p_sum, &start.p_sum, &start.p, &end.v, &start.v)
         } else if (b >= 0) & (a < 0) {
             scalar_prods2(&end.p_sum, &start.p_sum, &end.v, &start.v)
@@ -179,7 +178,27 @@ impl crate::nuts::State for State {
         out.copy_from_slice(&self.q)
     }
 
-    fn new(pool: &mut Self::Pool, init: &[f64]) -> Self {
+    fn energy(&self) -> f64 {
+        self.kinetic_energy + self.potential_energy
+    }
+
+    fn index_in_trajectory(&self) -> i64 {
+        self.idx_in_trajectory
+    }
+
+    fn into_init_point(&mut self) {
+        let inner = self.try_mut_inner().unwrap();
+        inner.idx_in_trajectory = 0;
+        inner.p_sum.copy_from_slice(&inner.p);
+    }
+
+    fn potential_energy(&self) -> f64 {
+        self.potential_energy
+    }
+}
+
+impl State {
+    pub(crate) fn new(pool: &mut StatePool, init: &[f64]) -> Self {
         let mut state = pool.new_state();
 
         let inner = state.try_mut_inner().expect("State already in use");
@@ -196,11 +215,7 @@ impl crate::nuts::State for State {
         state
     }
 
-    fn energy(&self) -> f64 {
-        self.kinetic_energy + self.potential_energy
-    }
-
-    fn first_momentum_halfstep(&self, out: &mut Self, epsilon: f64) {
+    pub(crate) fn first_momentum_halfstep(&self, out: &mut Self, epsilon: f64) {
         axpy_out(
             &self.grad,
             &self.p,
@@ -209,17 +224,17 @@ impl crate::nuts::State for State {
         );
     }
 
-    fn position_step(&self, out: &mut Self, epsilon: f64) {
+    pub(crate) fn position_step(&self, out: &mut Self, epsilon: f64) {
         let out = out.try_mut_inner().expect("State already in use");
         axpy_out(&out.v, &self.q, epsilon, &mut out.q);
     }
 
-    fn second_momentum_halfstep(&mut self, epsilon: f64) {
+    pub(crate) fn second_momentum_halfstep(&mut self, epsilon: f64) {
         let inner = self.try_mut_inner().expect("State already in use");
         axpy(&inner.grad, &mut inner.p, epsilon / 2.);
     }
 
-    fn set_psum(&self, target: &mut Self, _dir: crate::nuts::Direction) {
+    pub(crate) fn set_psum(&self, target: &mut Self, _dir: crate::nuts::Direction) {
         let out = target.try_mut_inner().expect("State already in use");
 
         assert!(out.idx_in_trajectory != 0);
@@ -231,18 +246,18 @@ impl crate::nuts::State for State {
         }
     }
 
-    fn index_in_trajectory(&self) -> i64 {
+    pub(crate) fn index_in_trajectory(&self) -> i64 {
         self.idx_in_trajectory
     }
 
-    fn index_in_trajectory_mut(&mut self) -> &mut i64 {
+    pub(crate) fn index_in_trajectory_mut(&mut self) -> &mut i64 {
         &mut self
             .try_mut_inner()
             .expect("State already in use")
             .idx_in_trajectory
     }
 
-    fn new_empty(pool: &mut Self::Pool) -> Self {
+    pub(crate) fn new_empty(pool: &mut StatePool) -> Self {
         pool.new_state()
     }
 }

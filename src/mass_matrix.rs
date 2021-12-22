@@ -1,13 +1,79 @@
-use itertools::izip;
+use itertools::{izip, Itertools};
 
 use crate::{
-    cpu_potential::{DiagMassMatrix, MassMatrix},
-    cpu_state::State,
+    cpu_state::{InnerState, State},
+    math::vector_dot,
     nuts::Collector,
 };
 
+pub(crate) trait MassMatrix {
+    fn update_velocity(&self, state: &mut InnerState);
+    fn update_kinetic_energy(&self, state: &mut InnerState);
+    fn randomize_momentum<R: rand::Rng + ?Sized>(&self, state: &mut InnerState, rng: &mut R);
+}
+
+pub(crate) struct NullCollector {}
+
+impl Collector for NullCollector {
+    type State = State;
+}
+
 #[derive(Debug)]
-struct ExpWeightedVariance {
+pub(crate) struct DiagMassMatrix {
+    inv_stds: Box<[f64]>,
+    pub(crate) variance: Box<[f64]>,
+}
+
+impl DiagMassMatrix {
+    pub(crate) fn new(variance: Box<[f64]>) -> Self {
+        DiagMassMatrix {
+            inv_stds: variance.iter().map(|x| 1. / x.sqrt()).collect_vec().into(),
+            variance,
+        }
+    }
+
+    pub(crate) fn update_diag(&mut self, new_variance: impl Iterator<Item = f64>) {
+        izip!(
+            self.variance.iter_mut(),
+            self.inv_stds.iter_mut(),
+            new_variance
+        )
+        .for_each(|(var, inv_std, x)| {
+            *var = x;
+            *inv_std = (1. / x).sqrt();
+        });
+    }
+}
+
+impl MassMatrix for DiagMassMatrix {
+    fn update_velocity(&self, state: &mut InnerState) {
+        //axpy_out(&self.variance, &state.p, 1., &mut state.v);
+        izip!(state.v.iter_mut(), self.variance.iter(), state.p.iter()).for_each(
+            |(out, &var, &p)| {
+                *out = var * p;
+            },
+        );
+    }
+
+    fn update_kinetic_energy(&self, state: &mut InnerState) {
+        state.kinetic_energy = 0.5 * vector_dot(&state.p, &state.v);
+    }
+
+    fn randomize_momentum<R: rand::Rng + ?Sized>(&self, state: &mut InnerState, rng: &mut R) {
+        let dist = rand_distr::StandardNormal;
+        state
+            .p
+            .iter_mut()
+            .zip(self.inv_stds.iter())
+            .for_each(|(p, &s)| {
+                let norm: f64 = rng.sample(dist);
+                *p = s * norm;
+            });
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ExpWeightedVariance {
     mean: Box<[f64]>,
     variance: Box<[f64]>,
     alpha: f64,
@@ -15,7 +81,7 @@ struct ExpWeightedVariance {
 }
 
 impl ExpWeightedVariance {
-    fn new(dim: usize, alpha: f64, use_mean: bool) -> Self {
+    pub(crate) fn new(dim: usize, alpha: f64, use_mean: bool) -> Self {
         ExpWeightedVariance {
             mean: vec![0f64; dim].into(),
             variance: vec![0f64; dim].into(),
@@ -24,11 +90,14 @@ impl ExpWeightedVariance {
         }
     }
 
-    fn set_mean(&mut self, values: impl Iterator<Item = f64>) {
-        self.mean.iter_mut().zip(values).for_each(|(out, val)| *out = val);
+    pub(crate) fn set_mean(&mut self, values: impl Iterator<Item = f64>) {
+        self.mean
+            .iter_mut()
+            .zip(values)
+            .for_each(|(out, val)| *out = val);
     }
 
-    fn add_sample(&mut self, value: impl Iterator<Item = f64>) {
+    pub(crate) fn add_sample(&mut self, value: impl Iterator<Item = f64>) {
         izip!(value, self.mean.iter_mut(), self.variance.iter_mut()).for_each(|(x, mean, var)| {
             let delta = if self.use_mean {
                 let delta = x - *mean;
@@ -41,7 +110,7 @@ impl ExpWeightedVariance {
         });
     }
 
-    fn current(&self) -> &[f64] {
+    pub(crate) fn current(&self) -> &[f64] {
         &self.variance
     }
 }
@@ -81,76 +150,31 @@ impl DiagAdaptExp {
             settings,
         }
     }
-
-    pub(crate) fn adapt(&mut self, collector: &AdaptCollector) -> bool {
-        if self.draw_count < self.settings.discard_window {
-            self.draw_count += 1;
-            return false;
-        }
-
-        if self.draw_count > self.settings.stop_at_draw {
-            self.draw_count += 1;
-            return false;
-        }
-
-        if self.draw_count == self.settings.discard_window {
-            self.exp_variance_draw.set_mean(collector.draw.iter().copied());
-        }
-
-        self.exp_variance_draw
-            .add_sample(collector.draw.iter().copied());
-        self.exp_variance_grad
-            .add_sample(collector.grad.iter().copied());
-
-        if self.draw_count > 2 * self.settings.discard_window {
-            self.current.update_diag(
-                izip!(
-                    self.exp_variance_draw.current(),
-                    self.exp_variance_grad.current(),
-                )
-                .map(|(&draw, &grad)| (draw / grad).sqrt().clamp(1e-12, 1e10)),
-            );
-        }
-
-        self.draw_count += 1;
-        (self.draw_count - 1) == 2 * self.settings.discard_window
-    }
 }
 
-impl MassMatrix for DiagAdaptExp {
-    fn update_velocity(&self, state: &mut crate::cpu_state::InnerState) {
-        self.current.update_velocity(state)
-    }
-
-    fn update_kinetic_energy(&self, state: &mut crate::cpu_state::InnerState) {
-        self.current.update_kinetic_energy(state)
-    }
-
-    fn randomize_momentum<R: rand::Rng + ?Sized>(
-        &self,
-        state: &mut crate::cpu_state::InnerState,
-        rng: &mut R,
-    ) {
-        self.current.randomize_momentum(state, rng)
+/*
+    fn adapt(&mut self, draw: u64, collector: &mut Self::Collector) {
     }
 }
+*/
 
-pub(crate) struct AdaptCollector {
-    draw: Box<[f64]>,
-    grad: Box<[f64]>,
+pub(crate) struct DrawGradCollector {
+    pub(crate) draw: Box<[f64]>,
+    pub(crate) grad: Box<[f64]>,
 }
 
-impl AdaptCollector {
+impl DrawGradCollector {
     pub(crate) fn new(dim: usize) -> Self {
-        AdaptCollector {
+        DrawGradCollector {
             draw: vec![0f64; dim].into(),
             grad: vec![0f64; dim].into(),
         }
     }
 }
 
-impl Collector for AdaptCollector {
+impl Collector for DrawGradCollector {
     type State = State;
+
     fn register_draw(&mut self, state: &Self::State, info: &crate::nuts::SampleInfo) {
         if info.divergence_info.is_none() {
             self.draw.copy_from_slice(&state.q);

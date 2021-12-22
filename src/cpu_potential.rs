@@ -1,76 +1,14 @@
 use std::fmt::Debug;
 
-use itertools::{izip, Itertools};
-
-use crate::cpu_state::{InnerState, State};
-use crate::math::vector_dot;
-use crate::nuts::DivergenceInfo;
+use crate::cpu_state::{InnerState, State, StatePool};
+use crate::mass_matrix::MassMatrix;
+use crate::nuts::{Collector, Direction, DivergenceInfo, LogpError, NutsError, Potential};
 
 pub trait CpuLogpFunc {
-    type Err: Debug + Send + 'static;
+    type Err: Debug + Send + LogpError + 'static;
 
     fn logp(&mut self, position: &[f64], grad: &mut [f64]) -> Result<f64, Self::Err>;
     fn dim(&self) -> usize;
-}
-
-pub(crate) trait MassMatrix {
-    fn update_velocity(&self, state: &mut InnerState);
-    fn update_kinetic_energy(&self, state: &mut InnerState);
-    fn randomize_momentum<R: rand::Rng + ?Sized>(&self, state: &mut InnerState, rng: &mut R);
-}
-
-#[derive(Debug)]
-pub(crate) struct DiagMassMatrix {
-    inv_stds: Box<[f64]>,
-    pub(crate) variance: Box<[f64]>,
-}
-
-impl DiagMassMatrix {
-    pub(crate) fn new(variance: Box<[f64]>) -> Self {
-        DiagMassMatrix {
-            inv_stds: variance.iter().map(|x| 1. / x.sqrt()).collect_vec().into(),
-            variance,
-        }
-    }
-
-    pub(crate) fn update_diag(&mut self, new_variance: impl Iterator<Item = f64>) {
-        izip!(
-            self.variance.iter_mut(),
-            self.inv_stds.iter_mut(),
-            new_variance
-        )
-        .for_each(|(var, inv_std, x)| {
-            *var = x;
-            *inv_std = (1. / x).sqrt();
-        });
-    }
-}
-
-impl MassMatrix for DiagMassMatrix {
-    fn update_velocity(&self, state: &mut InnerState) {
-        //axpy_out(&self.variance, &state.p, 1., &mut state.v);
-        izip!(state.v.iter_mut(), self.variance.iter(), state.p.iter()).for_each(
-            |(out, &var, &p)| {
-                *out = var * p;
-            },
-        );
-    }
-
-    fn update_kinetic_energy(&self, state: &mut InnerState) {
-        state.kinetic_energy = 0.5 * vector_dot(&state.p, &state.v);
-    }
-
-    fn randomize_momentum<R: rand::Rng + ?Sized>(&self, state: &mut InnerState, rng: &mut R) {
-        let dist = rand_distr::StandardNormal;
-        state
-            .p
-            .iter_mut()
-            .zip(self.inv_stds.iter())
-            .for_each(|(p, &s)| {
-                let norm: f64 = rng.sample(dist);
-                *p = s * norm;
-            });
-    }
 }
 
 #[derive(Debug)]
@@ -99,14 +37,21 @@ impl<E: Debug + Send> DivergenceInfo for DivergenceInfoImpl<E> {
     }
 }
 
-pub(crate) struct Potential<F: CpuLogpFunc, M: MassMatrix> {
+pub(crate) struct EuclideanPotential<F: CpuLogpFunc, M: MassMatrix> {
     logp: F,
-    mass_matrix: M,
+    pub(crate) mass_matrix: M,
+    max_energy_error: f64,
+    pub(crate) step_size: f64,
 }
 
-impl<F: CpuLogpFunc, M: MassMatrix> Potential<F, M> {
-    pub(crate) fn new(logp: F, mass_matrix: M) -> Self {
-        Potential { logp, mass_matrix }
+impl<F: CpuLogpFunc, M: MassMatrix> EuclideanPotential<F, M> {
+    pub(crate) fn new(logp: F, mass_matrix: M, max_energy_error: f64, step_size: f64) -> Self {
+        EuclideanPotential {
+            logp,
+            mass_matrix,
+            max_energy_error,
+            step_size,
+        }
     }
 
     pub(crate) fn mass_matrix_mut(&mut self) -> &mut M {
@@ -114,27 +59,85 @@ impl<F: CpuLogpFunc, M: MassMatrix> Potential<F, M> {
     }
 }
 
-impl<F: CpuLogpFunc, M: MassMatrix> crate::nuts::Potential for Potential<F, M> {
+#[derive(Copy, Clone)]
+pub(crate) struct PotentialStats {}
+
+impl<F: CpuLogpFunc, M: MassMatrix> Potential for EuclideanPotential<F, M> {
     type State = State;
     type DivergenceInfo = DivergenceInfoImpl<F::Err>;
+    type LogpError = F::Err;
+    type Stats = PotentialStats;
 
-    fn update_potential_gradient(&mut self, state: &mut State) -> Result<(), Self::DivergenceInfo> {
-        // TODO can we avoid the second try_mut_inner?
-        let func_return = {
-            let inner = state.try_mut_inner().unwrap();
-            self.logp.logp(&inner.q, &mut inner.grad)
+    fn leapfrog<C: Collector<State = Self::State>>(
+        &mut self,
+        pool: &mut StatePool,
+        start: &Self::State,
+        dir: Direction,
+        initial_energy: f64,
+        collector: &mut C,
+    ) -> Result<Result<Self::State, Self::DivergenceInfo>, NutsError> {
+        let mut out = pool.new_state();
+
+        let sign = match dir {
+            Direction::Forward => 1,
+            Direction::Backward => -1,
         };
 
-        let logp = func_return.map_err(|err| DivergenceInfoImpl {
-            logp_function_error: Some(err),
-            start: Some(state.clone_inner()),
-            right: None,
-            energy_error: None,
-        })?;
+        let epsilon = (sign as f64) * self.step_size;
 
-        let inner = state.try_mut_inner().unwrap();
-        inner.potential_energy = -logp;
-        Ok(())
+        start.first_momentum_halfstep(&mut out, epsilon);
+        self.update_velocity(&mut out);
+
+        start.position_step(&mut out, epsilon);
+        if let Err(logp_error) = self.update_potential_gradient(&mut out) {
+            if !logp_error.is_recoverable() {
+                return Err(NutsError::LogpFailure(Box::new(logp_error)));
+            }
+            let div_info = DivergenceInfoImpl {
+                logp_function_error: Some(logp_error),
+                start: Some(start.clone_inner()),
+                right: None,
+                energy_error: None,
+            };
+            collector.register_leapfrog(start, &out, Some(&div_info));
+            return Ok(Err(div_info));
+        }
+
+        out.second_momentum_halfstep(epsilon);
+
+        self.update_velocity(&mut out);
+        self.update_kinetic_energy(&mut out);
+
+        *out.index_in_trajectory_mut() = start.index_in_trajectory() + sign;
+
+        start.set_psum(&mut out, dir);
+
+        let energy_error = {
+            use crate::nuts::State;
+            out.energy() - initial_energy
+        };
+        if (energy_error.abs() > self.max_energy_error) | !energy_error.is_finite() {
+            let divergence_info =
+                self.new_divergence_info(start.clone(), out.clone(), energy_error);
+            collector.register_leapfrog(start, &out, Some(&divergence_info));
+            return Ok(Err(divergence_info));
+        }
+
+        collector.register_leapfrog(start, &out, None);
+
+        Ok(Ok(out))
+    }
+
+    fn init_state(&mut self, pool: &mut StatePool, init: &[f64]) -> Result<Self::State, NutsError> {
+        let mut state = pool.new_state();
+        {
+            let inner = state.try_mut_inner().expect("State already in use");
+            inner.q.copy_from_slice(init);
+            inner.p_sum.fill(0.);
+        }
+        self.update_potential_gradient(&mut state)
+            .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
+        Ok(state)
     }
 
     fn randomize_momentum<R: rand::Rng + ?Sized>(&self, state: &mut Self::State, rng: &mut R) {
@@ -146,22 +149,51 @@ impl<F: CpuLogpFunc, M: MassMatrix> crate::nuts::Potential for Potential<F, M> {
         inner.p_sum.copy_from_slice(&inner.p);
     }
 
-    fn update_velocity(&mut self, state: &mut Self::State) {
+    fn current_stats(&self) -> Self::Stats {
+        PotentialStats {}
+    }
+
+    fn new_empty_state(&mut self, pool: &mut StatePool) -> Self::State {
+        pool.new_state()
+    }
+
+    fn new_pool(&mut self, _capacity: usize) -> StatePool {
+        StatePool::new(self.dim())
+    }
+
+    fn dim(&self) -> usize {
+        self.logp.dim()
+    }
+}
+
+impl<F: CpuLogpFunc, M: MassMatrix> EuclideanPotential<F, M> {
+    fn update_potential_gradient(&mut self, state: &mut State) -> Result<(), F::Err> {
+        let logp = {
+            let inner = state.try_mut_inner().unwrap();
+            self.logp.logp(&inner.q, &mut inner.grad)
+        }?;
+
+        let inner = state.try_mut_inner().unwrap();
+        inner.potential_energy = -logp;
+        Ok(())
+    }
+
+    fn update_velocity(&mut self, state: &mut State) {
         self.mass_matrix
             .update_velocity(state.try_mut_inner().expect("State already in us"))
     }
 
-    fn update_kinetic_energy(&mut self, state: &mut Self::State) {
+    fn update_kinetic_energy(&mut self, state: &mut State) {
         self.mass_matrix
             .update_kinetic_energy(state.try_mut_inner().expect("State already in us"))
     }
 
     fn new_divergence_info(
         &mut self,
-        left: Self::State,
-        end: Self::State,
+        left: State,
+        end: State,
         energy_error: f64,
-    ) -> Self::DivergenceInfo {
+    ) -> DivergenceInfoImpl<F::Err> {
         DivergenceInfoImpl {
             logp_function_error: None,
             start: Some(left.clone_inner()),
