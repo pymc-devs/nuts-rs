@@ -1,4 +1,3 @@
-use crossbeam::channel::{bounded, Receiver};
 use itertools::Itertools;
 use rand::{prelude::StdRng, Rng, SeedableRng};
 use rayon::prelude::*;
@@ -7,12 +6,14 @@ use std::thread::{spawn, JoinHandle};
 use crate::{
     cpu_potential::Potential,
     cpu_state::{State, StatePool},
-    mass_matrix::{DiagAdaptExp, DiagAdaptExpSettings},
+    mass_matrix::DiagAdaptExp,
     nuts::{draw, Collector, DivergenceInfo, NutsOptions, SampleInfo},
-    stepsize::{DualAverage, DualAverageSettings},
+    stepsize::DualAverage,
 };
 
 pub use crate::cpu_potential::CpuLogpFunc;
+pub use crate::stepsize::DualAverageSettings;
+pub use crate::mass_matrix::DiagAdaptExpSettings;
 
 struct RunningMean {
     sum: f64,
@@ -364,7 +365,7 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
 ) -> Result<
     (
         JoinHandle<Result<Vec<()>, ()>>,
-        Receiver<(Box<[f64]>, SampleStats)>,
+        flume::Receiver<(Box<[f64]>, SampleStats)>,
     ),
     F::Err,
 > {
@@ -397,7 +398,7 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
     let points: Result<Vec<Box<[f64]>>, _> = points.drain(..).collect();
     let points = points?;
 
-    let (sender, receiver) = bounded(128);
+    let (sender, receiver) = flume::bounded(128);
 
     let funcs = (0..n_chains).map(|_| func.clone()).collect_vec();
     let handle = spawn(move || {

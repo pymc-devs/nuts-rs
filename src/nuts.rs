@@ -2,25 +2,40 @@ use std::marker::PhantomData;
 
 use crate::math::logaddexp;
 
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+enum NutsError<FuncError: std::error::Error> {
+    #[error("Logp function returned unrecoverable error")]
+    LogpFailure(FuncError)
+}
+
 pub trait DivergenceInfo: std::fmt::Debug + Send {
+    /// The position in parameter space where the diverging leapfrog started
     fn start_location(&self) -> Option<&[f64]> {
         None
     }
+
+    /// The position in parameter space where the diverging leapfrog ended
     fn end_location(&self) -> Option<&[f64]> {
         None
     }
+
+    /// The difference between the energy at the initial location of the trajectory and the energy
+    /// at the end of the diverging leapfrog step.
     fn energy_error(&self) -> Option<f64> {
         None
     }
+    /// The index of the end location of the diverging leapfrog.
     fn end_idx_in_trajectory(&self) -> Option<i64> {
         None
     }
 }
 
-pub struct LeapfrogInfo {}
+pub(crate) struct LeapfrogInfo {}
 
 #[derive(Copy, Clone)]
-pub enum Direction {
+pub(crate) enum Direction {
     Forward,
     Backward,
 }
@@ -35,7 +50,8 @@ impl rand::distributions::Distribution<Direction> for rand::distributions::Stand
     }
 }
 
-pub trait Collector {
+/// Callbacks for various events during a Nuts sampling step.
+pub(crate) trait Collector {
     type State: State;
 
     fn register_leapfrog(
@@ -68,7 +84,7 @@ pub trait Potential {
     ) -> Self::DivergenceInfo;
 }
 
-pub trait State: Clone {
+pub(crate) trait State: Clone {
     type Pool;
 
     fn write_position(&self, out: &mut [f64]);
@@ -139,13 +155,13 @@ fn leapfrog<P: Potential + ?Sized, C: Collector<State = P::State>>(
 }
 
 #[derive(Debug)]
-pub struct SampleInfo {
+pub(crate) struct SampleInfo {
     pub depth: u64,
     pub divergence_info: Option<Box<dyn DivergenceInfo>>,
     pub maxdepth: bool,
 }
 
-pub struct NutsTree<P: Potential + ?Sized, C: Collector<State = P::State>> {
+pub(crate) struct NutsTree<P: Potential + ?Sized, C: Collector<State = P::State>> {
     left: P::State,
     right: P::State,
     draw: P::State,
@@ -322,13 +338,13 @@ impl<P: Potential + ?Sized, C: Collector<State = P::State>> NutsTree<P, C> {
     }
 }
 
-pub struct NutsOptions {
+pub(crate) struct NutsOptions {
     pub maxdepth: u64,
     pub step_size: f64,
     pub max_energy_error: f64,
 }
 
-pub fn draw<P, R, C>(
+pub(crate) fn draw<P, R, C>(
     pool: &mut <P::State as State>::Pool,
     init: P::State,
     rng: &mut R,
