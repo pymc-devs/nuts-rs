@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, collections::HashMap};
+use std::{collections::HashMap, marker::PhantomData};
 
 use itertools::izip;
 
@@ -7,7 +7,7 @@ use crate::{
     mass_matrix::{
         DiagAdaptExpSettings, DiagMassMatrix, DrawGradCollector, ExpWeightedVariance, MassMatrix,
     },
-    nuts::{AdaptStrategy, Collector, AsSampleStatMap, SampleStatValue},
+    nuts::{AdaptStrategy, AsSampleStatMap, Collector, SampleStatValue},
     stepsize::{AcceptanceRateCollector, DualAverage, DualAverageSettings},
 };
 
@@ -28,7 +28,10 @@ impl AsSampleStatMap for DualAverageStats {
     fn as_map(&self) -> HashMap<&'static str, crate::nuts::SampleStatValue> {
         let mut map = HashMap::with_capacity(2);
         map.insert("step_size_bar", SampleStatValue::F64(self.step_size_bar));
-        map.insert("mean_tree_accept", SampleStatValue::F64(self.mean_tree_accept));
+        map.insert(
+            "mean_tree_accept",
+            SampleStatValue::F64(self.mean_tree_accept),
+        );
         map
     }
 }
@@ -80,13 +83,11 @@ pub(crate) struct ExpWindowDiagAdapt<F> {
 #[derive(Clone, Copy)]
 pub struct ExpWindowDiagAdaptStats {}
 
-
 impl AsSampleStatMap for ExpWindowDiagAdaptStats {
     fn as_map(&self) -> std::collections::HashMap<&'static str, crate::nuts::SampleStatValue> {
         HashMap::new()
     }
 }
-
 
 impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
     type Potential = EuclideanPotential<F, DiagMassMatrix>;
@@ -163,7 +164,8 @@ pub struct CombinedStats<D1: Copy, D2: Copy> {
     stats2: D2,
 }
 
-impl<D1: AsSampleStatMap + Copy, D2: AsSampleStatMap + Copy> AsSampleStatMap for CombinedStats<D1, D2>
+impl<D1: AsSampleStatMap + Copy, D2: AsSampleStatMap + Copy> AsSampleStatMap
+    for CombinedStats<D1, D2>
 {
     fn as_map(&self) -> HashMap<&'static str, SampleStatValue> {
         let mut map1 = self.stats1.as_map();

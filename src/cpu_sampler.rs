@@ -1,15 +1,17 @@
 use itertools::Itertools;
 use rand::{prelude::StdRng, Rng, SeedableRng};
-use std::thread::{spawn, JoinHandle};
 use rayon::prelude::*;
+use std::thread::{spawn, JoinHandle};
 use thiserror::Error;
 
 use crate::{
+    adapt_strategy::{CombinedStrategy, DualAverageStrategy, ExpWindowDiagAdapt},
+    cpu_potential::EuclideanPotential,
     mass_matrix::{DiagAdaptExpSettings, DiagMassMatrix},
-    nuts::{SampleStats, Sampler, NutsError, NutsSampler},
-    stepsize::DualAverageSettings, CpuLogpFunc, adapt_strategy::{DualAverageStrategy, ExpWindowDiagAdapt, CombinedStrategy}, cpu_potential::EuclideanPotential, NutsOptions
+    nuts::{NutsError, NutsSampler, SampleStats, Sampler},
+    stepsize::DualAverageSettings,
+    CpuLogpFunc, NutsOptions,
 };
-
 
 #[derive(Clone, Copy)]
 pub struct SamplerArgs {
@@ -32,11 +34,9 @@ impl Default for SamplerArgs {
     }
 }
 
-
 pub trait InitPointFunc {
     fn new_init_point<R: Rng + ?Sized>(&mut self, rng: &mut R, out: &mut [f64]);
 }
-
 
 #[derive(Error, Debug)]
 pub enum ParallelSamplingError {
@@ -45,17 +45,15 @@ pub enum ParallelSamplingError {
     #[error("Nuts failed because of unrecoverable logp function error")]
     NutsError {
         #[from]
-        source: NutsError
+        source: NutsError,
     },
     #[error("Initialization of first point failed")]
-    InitError {
-        source: NutsError,
-    }
+    InitError { source: NutsError },
 }
 
 pub type ParallelChainResult = Result<(), ParallelSamplingError>;
 
-pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc> (
+pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc>(
     func: F,
     init_point_func: &mut I,
     settings: SamplerArgs,
@@ -68,7 +66,7 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
         JoinHandle<Vec<ParallelChainResult>>,
         flume::Receiver<(Box<[f64]>, impl SampleStats)>,
     ),
-    ParallelSamplingError
+    ParallelSamplingError,
 > {
     let mut func = func;
     let draws = settings.num_tune + n_draws;
@@ -116,7 +114,8 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
                     .expect("Could not eval logp at initial positon, though we could previously.");
                 for _ in 0..draws {
                     let (point, info) = sampler.draw()?;
-                    sender.send((point, info))
+                    sender
+                        .send((point, info))
                         .map_err(|_| ParallelSamplingError::ChannelClosed())?;
                 }
                 Ok(())
@@ -148,11 +147,11 @@ pub fn new_sampler<F: CpuLogpFunc>(
     let step_size = settings.step_size_adapt.initial_step;
 
     let potential = EuclideanPotential::new(logp, mass_matrix, max_energy_error, step_size);
-    let options = NutsOptions { maxdepth: settings.maxdepth };
-
-    let rng = {
-        rand::rngs::StdRng::seed_from_u64(seed)
+    let options = NutsOptions {
+        maxdepth: settings.maxdepth,
     };
+
+    let rng = { rand::rngs::StdRng::seed_from_u64(seed) };
 
     NutsSampler::new(potential, strategy, options, rng, chain)
 }

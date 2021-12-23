@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use std::{marker::PhantomData, collections::HashMap};
+use std::{collections::HashMap, marker::PhantomData};
 
 use crate::math::logaddexp;
 
@@ -131,7 +131,7 @@ pub trait Hamiltonian {
 ///
 /// This also needs to store the sum of momentum terms
 /// from the initial point of the trajectory to this point,
-/// so that it can compute the termination criterion in 
+/// so that it can compute the termination criterion in
 /// `is_turming`.
 pub trait State: Clone {
     /// The state pool can be used to crate new states
@@ -429,7 +429,7 @@ pub enum SampleStatValue {
     U64(u64),
     I64(i64),
     F64(f64),
-    Bool(bool)
+    Bool(bool),
 }
 
 impl From<Box<[f64]>> for SampleStatValue {
@@ -478,7 +478,9 @@ pub trait SampleStats: Send + AsSampleStatMap {
 }
 
 impl<HStats, AdaptStats> AsSampleStatMap for NutsSampleStats<HStats, AdaptStats>
-where HStats: Send + AsSampleStatMap, AdaptStats: Send + AsSampleStatMap
+where
+    HStats: Send + AsSampleStatMap,
+    AdaptStats: Send + AsSampleStatMap,
 {
     fn as_map(&self) -> HashMap<&'static str, SampleStatValue> {
         let mut map: HashMap<_, SampleStatValue> = HashMap::with_capacity(20);
@@ -495,18 +497,34 @@ where HStats: Send + AsSampleStatMap, AdaptStats: Send + AsSampleStatMap
 }
 
 impl<HStats, AdaptStats> SampleStats for NutsSampleStats<HStats, AdaptStats>
-where HStats: Send + AsSampleStatMap, AdaptStats: Send + AsSampleStatMap
+where
+    HStats: Send + AsSampleStatMap,
+    AdaptStats: Send + AsSampleStatMap,
 {
-    fn depth(&self) -> u64 {self.depth}
-    fn maxdepth_reached(&self) -> bool {self.maxdepth_reached}
-    fn index_in_trajectory(&self) -> i64 {self.idx_in_trajectory}
-    fn logp(&self) -> f64 {self.logp}
-    fn energy(&self) -> f64 {self.energy}
+    fn depth(&self) -> u64 {
+        self.depth
+    }
+    fn maxdepth_reached(&self) -> bool {
+        self.maxdepth_reached
+    }
+    fn index_in_trajectory(&self) -> i64 {
+        self.idx_in_trajectory
+    }
+    fn logp(&self) -> f64 {
+        self.logp
+    }
+    fn energy(&self) -> f64 {
+        self.energy
+    }
     fn divergence_info(&self) -> Option<&dyn DivergenceInfo> {
         self.divergence_info.as_ref().map(|x| x.as_ref())
     }
-    fn chain(&self) -> u64 {self.chain}
-    fn draw(&self) -> u64 {self.draw}
+    fn chain(&self) -> u64 {
+        self.chain
+    }
+    fn draw(&self) -> u64 {
+        self.draw
+    }
 }
 
 pub trait Sampler {
@@ -515,9 +533,7 @@ pub trait Sampler {
     type Stats: SampleStats;
 
     fn set_position(&mut self, position: &[f64]) -> Result<()>;
-    fn draw(
-        &mut self,
-    ) -> Result<(Box<[f64]>, Self::Stats)>;
+    fn draw(&mut self) -> Result<(Box<[f64]>, Self::Stats)>;
     fn dim(&self) -> usize;
 }
 
@@ -544,13 +560,7 @@ where
     R: rand::Rng,
     S: AdaptStrategy<Potential = P>,
 {
-    pub fn new(
-        mut potential: P,
-        strategy: S,
-        options: NutsOptions,
-        rng: R,
-        chain: u64,
-    ) -> Self {
+    pub fn new(mut potential: P, strategy: S, options: NutsOptions, rng: R, chain: u64) -> Self {
         let pool_size: usize = options.maxdepth.checked_mul(2).unwrap().try_into().unwrap();
         let mut pool = potential.new_pool(pool_size);
         let init = potential.new_empty_state(&mut pool);
@@ -600,10 +610,7 @@ where
             .map(|_| ())
     }
 
-    fn draw(
-        &mut self,
-    ) -> Result<(Box<[f64]>, Self::Stats)>
-    {
+    fn draw(&mut self) -> Result<(Box<[f64]>, Self::Stats)> {
         let (state, info) = draw(
             &mut self.pool,
             &mut self.init,

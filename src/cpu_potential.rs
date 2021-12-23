@@ -3,7 +3,10 @@ use std::fmt::Debug;
 
 use crate::cpu_state::{InnerState, State, StatePool};
 use crate::mass_matrix::MassMatrix;
-use crate::nuts::{Collector, Direction, DivergenceInfo, LogpError, NutsError, Hamiltonian, AsSampleStatMap, SampleStatValue};
+use crate::nuts::{
+    AsSampleStatMap, Collector, Direction, DivergenceInfo, Hamiltonian, LogpError, NutsError,
+    SampleStatValue,
+};
 
 pub trait CpuLogpFunc {
     type Err: Debug + Send + LogpError + 'static;
@@ -42,7 +45,9 @@ impl<E: Debug + Send + std::error::Error> DivergenceInfo for DivergenceInfoImpl<
     }
 
     fn logp_function_error(&self) -> Option<&dyn std::error::Error> {
-        self.logp_function_error.as_ref().map(|x| x as &dyn std::error::Error)
+        self.logp_function_error
+            .as_ref()
+            .map(|x| x as &dyn std::error::Error)
     }
 }
 
