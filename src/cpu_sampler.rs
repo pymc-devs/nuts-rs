@@ -5,71 +5,15 @@ use rayon::prelude::*;
 use thiserror::Error;
 
 use crate::{
-    cpu_potential::EuclideanPotential,
-    cpu_state::State,
-    mass_matrix::{DiagAdaptExp, MassMatrix},
-    nuts::{Collector, NutsOptions, SampleInfo, Potential, SampleStats, NutsSampler, Sampler, AdaptivePotential},
-    stepsize::DualAverage,
+    mass_matrix::{DiagAdaptExpSettings, DiagMassMatrix},
+    nuts::{SampleStats, Sampler, NutsError, NutsSampler},
+    stepsize::DualAverageSettings, CpuLogpFunc, adapt_strategy::{DualAverageStrategy, ExpWindowDiagAdapt, CombinedStrategy}, cpu_potential::EuclideanPotential, NutsOptions
 };
 
-pub use crate::cpu_potential::CpuLogpFunc;
-pub use crate::stepsize::DualAverageSettings;
-pub use crate::mass_matrix::DiagAdaptExpSettings;
-pub use crate::nuts::NutsError;
-
-
-
-pub struct EuclideanSampler<F: CpuLogpFunc, M: MassMatrix, C: Collector> {
-    sampler: NutsSampler<EuclideanPotential<F, DiagAdaptExp>, rand::rngs::StdRng, GlobalCollector>
-}
-
-
-impl<F: CpuLogpFunc, M: MassMatrix, C: Collector> EuclideanSampler<F, M, C> {
-    pub fn new(
-        logp: F,
-        args: SamplerArgs,
-        mass_matrix_settings: DiagAdaptExpSettings,
-        chain: u64,
-        seed: u64,
-    ) -> EuclideanSampler<F, M, C> {
-        let dim = logp.dim();
-
-        let mass_matrix = DiagAdaptExp::new(dim, mass_matrix_settings);
-        let potential = EuclideanPotential::new(logp, mass_matrix, args.max_energy_error, args.initial_step);
-        let collector = GlobalCollector::new(dim);
-        let options = NutsOptions {
-            step_size: args.initial_step,
-            maxdepth: args.maxdepth,
-            max_energy_error: args.max_energy_error,
-        };
-        let rng = rand::rngs::StdRng::seed_from_u64(seed);
-        EuclideanSampler {
-            sampler: NutsSampler::new(potential, collector, options, rng, chain)
-        }
-    }
-}
-
-impl<F: CpuLogpFunc, M: MassMatrix, C: Collector> Sampler for EuclideanSampler<F, M, C> {
-    type Potential = EuclideanPotential<F, M>;
-    type Collector = C;
-
-    fn set_position(&mut self, position: &[f64]) -> Result<(), F::Err> {
-        self.sampler.set_position(position)
-    }
-
-    fn draw(&mut self) -> Result<(Box<[f64]>, SampleStats<EuclideanPotential<F, DiagAdaptExp>, GlobalCollector>), NutsError> {
-        self.sampler.draw()
-    }
-
-    fn dim(&self) -> usize {
-        self.dim
-    }
-}
 
 #[derive(Clone, Copy)]
 pub struct SamplerArgs {
     pub num_tune: u64,
-    pub initial_step: f64,
     pub maxdepth: u64,
     pub max_energy_error: f64,
     pub step_size_adapt: DualAverageSettings,
@@ -80,7 +24,6 @@ impl Default for SamplerArgs {
     fn default() -> Self {
         Self {
             num_tune: 1000,
-            initial_step: 0.1,
             maxdepth: 10,
             max_energy_error: 1000f64,
             step_size_adapt: DualAverageSettings::default(),
@@ -89,84 +32,6 @@ impl Default for SamplerArgs {
     }
 }
 
-pub struct AdaptiveSampler<F: CpuLogpFunc> {
-    num_tune: u64,
-    sampler: EuclideanSampler<F, DiagAdaptExp, GlobalCollector>,
-    step_size_adapt: DualAverage,
-    draw_count: u64,
-}
-
-impl<F: CpuLogpFunc> AdaptiveSampler<F> {
-    pub fn new(logp: F, args: SamplerArgs, chain: u64, seed: u64) -> Self {
-        let sampler = EuclideanSampler::new(logp, args, args.mass_matrix, chain, seed);
-        let step_size_adapt = DualAverage::new(args.step_size_adapt, args.initial_step);
-
-        Self {
-            num_tune: args.num_tune,
-            sampler,
-            step_size_adapt,
-            draw_count: 0,
-        }
-    }
-
-    pub fn set_position(&mut self, position: &[f64]) -> Result<(), F::Err> {
-        self.sampler.set_position(position)
-    }
-
-    pub fn init_random<R: Rng + ?Sized, I: InitPointFunc>(
-        &mut self,
-        rng: &mut R,
-        func: &mut I,
-        n_try: u64,
-    ) -> Result<(), F::Err> {
-        let mut last_error: Option<F::Err> = None;
-        let mut position = vec![0.; self.dim()];
-        for _ in 0..n_try {
-            func.new_init_point(rng, &mut position);
-            match self.set_position(&position) {
-                Ok(_) => return Ok(()),
-                Err(e) => last_error = Some(e),
-            }
-        }
-        Err(last_error.unwrap())
-    }
-
-    pub fn tuning(&self) -> bool {
-        self.draw_count <= self.num_tune
-    }
-
-    pub fn draw(&mut self) -> Result<(Box<[f64]>, SampleStats<EuclideanPotential<F, DiagAdaptExp>, GlobalCollector>), NutsError> {
-        let step_size = if self.tuning() {
-            self.step_size_adapt.current_step_size()
-        } else {
-            self.step_size_adapt.current_step_size_adapted()
-        };
-        let step_size_bar = self.step_size_adapt.current_step_size_adapted();
-
-        self.sampler.sampler.options.step_size = step_size;
-
-        self.draw_count += 1;
-        let (position, mut stats) = self.sampler.draw()?;
-
-        stats.step_size_bar = step_size_bar;
-
-        if self.tuning() {
-            self.step_size_adapt.advance(stats.mean_acceptance_rate);
-            let reset_step_size = self.sampler
-                .potential
-                .mass_matrix_mut()
-                .adapt(&self.sampler.collector.mass_matrix_tuning);
-            if reset_step_size {
-                self.step_size_adapt.reset(self.step_size_adapt.current_step_size_adapted())
-            }
-        }
-        Ok((position, stats))
-    }
-
-    pub fn dim(&self) -> usize {
-        self.sampler.dim()
-    }
-}
 
 pub trait InitPointFunc {
     fn new_init_point<R: Rng + ?Sized>(&mut self, rng: &mut R, out: &mut [f64]);
@@ -176,18 +41,21 @@ pub trait InitPointFunc {
 #[derive(Error, Debug)]
 pub enum ParallelSamplingError {
     #[error("Could not send sample to controller thread")]
-    ChannelClosed {
-        #[from]
-        source: flume::SendError<()>
-    },
+    ChannelClosed(),
     #[error("Nuts failed because of unrecoverable logp function error")]
     NutsError {
         #[from]
         source: NutsError
+    },
+    #[error("Initialization of first point failed")]
+    InitError {
+        source: NutsError,
     }
 }
 
-pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc>(
+pub type ParallelChainResult = Result<(), ParallelSamplingError>;
+
+pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc> (
     func: F,
     init_point_func: &mut I,
     settings: SamplerArgs,
@@ -197,13 +65,10 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
     n_try_init: u64,
 ) -> Result<
     (
-        JoinHandle<Vec<Result<(), ParallelSamplingError>>>,
-        flume::Receiver<(
-            Box<[f64]>,
-            SampleStats<EuclideanPotential<F, DiagAdaptExp>, GlobalCollector>
-        )>,
+        JoinHandle<Vec<ParallelChainResult>>,
+        flume::Receiver<(Box<[f64]>, impl SampleStats)>,
     ),
-    F::Err,
+    ParallelSamplingError
 > {
     let mut func = func;
     let draws = settings.num_tune + n_draws;
@@ -232,29 +97,27 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
         .collect();
 
     let points: Result<Vec<Box<[f64]>>, _> = points.drain(..).collect();
-    let points = points?;
+    let points = points.map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
 
     let (sender, receiver) = flume::bounded(128);
 
     let funcs = (0..n_chains).map(|_| func.clone()).collect_vec();
     let handle = spawn(move || {
-        let results: Vec<Result<(), ParallelSamplingError<F::Err>>> = points
+        let results: Vec<Result<(), ParallelSamplingError>> = points
             .into_par_iter()
             .zip(funcs)
             //.with_max_len(1)
             .enumerate()
             .map_with(sender, |sender, (chain, (point, func))| {
-                let mut sampler = AdaptiveSampler::new(
-                    func,
-                    settings,
-                    chain as u64,
-                    (chain as u64).wrapping_add(seed),
-                );
+                let mut sampler = new_sampler(func, settings, chain as u64, seed);
+                sampler.set_position(&point)?;
                 sampler
                     .set_position(&point)
                     .expect("Could not eval logp at initial positon, though we could previously.");
                 for _ in 0..draws {
-                    sender.send(sampler.draw()?)?;
+                    let (point, info) = sampler.draw()?;
+                    sender.send((point, info))
+                        .map_err(|_| ParallelSamplingError::ChannelClosed())?;
                 }
                 Ok(())
             })
@@ -263,6 +126,35 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
     });
 
     Ok((handle, receiver))
+}
+
+pub fn new_sampler<F: CpuLogpFunc>(
+    logp: F,
+    settings: SamplerArgs,
+    chain: u64,
+    seed: u64,
+) -> impl Sampler {
+    use crate::nuts::AdaptStrategy;
+    let num_tune = settings.num_tune;
+    let step_size_adapt =
+        DualAverageStrategy::new(DualAverageSettings::default(), num_tune, logp.dim());
+    let mass_matrix_adapt =
+        ExpWindowDiagAdapt::new(DiagAdaptExpSettings::default(), num_tune, logp.dim());
+
+    let strategy = CombinedStrategy::new(step_size_adapt, mass_matrix_adapt);
+
+    let mass_matrix = DiagMassMatrix::new(vec![1f64; logp.dim()].into());
+    let max_energy_error = settings.max_energy_error;
+    let step_size = settings.step_size_adapt.initial_step;
+
+    let potential = EuclideanPotential::new(logp, mass_matrix, max_energy_error, step_size);
+    let options = NutsOptions { maxdepth: settings.maxdepth };
+
+    let rng = {
+        rand::rngs::StdRng::seed_from_u64(seed)
+    };
+
+    NutsSampler::new(potential, strategy, options, rng, chain)
 }
 
 pub mod test_logps {
@@ -325,10 +217,11 @@ impl InitPointFunc for JitterInitFunc {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use crate::{
-        cpu_sampler::{SamplerArgs, EuclideanSampler},
+        cpu_sampler::SamplerArgs,
         mass_matrix::DiagAdaptExpSettings,
     };
 
@@ -337,7 +230,6 @@ mod tests {
 
     #[test]
     fn make_state() {
-        /*
         let _ = State::new(10);
         let mut storage = Rc::new(StateStorage::with_capacity(0));
         let a = new_state(&mut storage, 10);
@@ -348,7 +240,6 @@ mod tests {
         assert!(storage.free_states.borrow_mut().len() == 0);
         drop(a);
         assert!(storage.free_states.borrow_mut().len() == 1);
-        */
     }
 
     #[test]
@@ -378,3 +269,4 @@ mod tests {
         assert_eq!(sample1, sample2);
     }
 }
+*/

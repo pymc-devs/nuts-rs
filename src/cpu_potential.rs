@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use crate::cpu_state::{InnerState, State, StatePool};
 use crate::mass_matrix::MassMatrix;
-use crate::nuts::{Collector, Direction, DivergenceInfo, LogpError, NutsError, Potential};
+use crate::nuts::{Collector, Direction, DivergenceInfo, LogpError, NutsError, Hamiltonian};
 
 pub trait CpuLogpFunc {
     type Err: Debug + Send + LogpError + 'static;
@@ -12,7 +12,7 @@ pub trait CpuLogpFunc {
 }
 
 #[derive(Debug)]
-pub struct DivergenceInfoImpl<E: Send> {
+pub(crate) struct DivergenceInfoImpl<E: Send> {
     pub logp_function_error: Option<E>,
     start: Option<InnerState>,
     right: Option<InnerState>,
@@ -29,7 +29,7 @@ impl<E: Debug + Send> DivergenceInfo for DivergenceInfoImpl<E> {
     }
 
     fn energy_error(&self) -> Option<f64> {
-        Some(self.energy_error?)
+        self.energy_error
     }
 
     fn end_idx_in_trajectory(&self) -> Option<i64> {
@@ -62,7 +62,7 @@ impl<F: CpuLogpFunc, M: MassMatrix> EuclideanPotential<F, M> {
 #[derive(Copy, Clone)]
 pub(crate) struct PotentialStats {}
 
-impl<F: CpuLogpFunc, M: MassMatrix> Potential for EuclideanPotential<F, M> {
+impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
     type State = State;
     type DivergenceInfo = DivergenceInfoImpl<F::Err>;
     type LogpError = F::Err;

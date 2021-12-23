@@ -19,7 +19,7 @@ pub(crate) struct DualAverageStrategy<F, M> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct DualAverageStats {
+pub struct DualAverageStats {
     step_size_bar: f64,
     mean_tree_accept: f64,
 }
@@ -68,13 +68,18 @@ pub(crate) struct ExpWindowDiagAdapt<F> {
     _phantom: PhantomData<F>,
 }
 
+#[derive(Clone, Copy)]
+pub struct ExpWindowDiagAdaptStats {
+
+}
+
 impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
     type Potential = EuclideanPotential<F, DiagMassMatrix>;
     type Collector = DrawGradCollector;
-    type Stats = ();
+    type Stats = ExpWindowDiagAdaptStats;
     type Options = DiagAdaptExpSettings;
 
-    fn new(options: Self::Options, num_tune: u64, dim: usize) -> Self {
+    fn new(options: Self::Options, _num_tune: u64, dim: usize) -> Self {
         Self {
             dim,
             exp_variance_draw: ExpWeightedVariance::new(dim, options.variance_decay, true),
@@ -119,7 +124,7 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
     }
 
     fn current_stats(&self, _collector: &Self::Collector) -> Self::Stats {
-        ()
+        ExpWindowDiagAdaptStats {}
     }
 }
 
@@ -129,7 +134,7 @@ pub(crate) struct CombinedStrategy<S1, S2> {
 }
 
 impl<S1, S2> CombinedStrategy<S1, S2> {
-    fn new(s1: S1, s2: S2) -> Self {
+    pub(crate) fn new(s1: S1, s2: S2) -> Self {
         Self {
             data1: s1,
             data2: s2,
@@ -138,7 +143,7 @@ impl<S1, S2> CombinedStrategy<S1, S2> {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub(crate) struct CombinedStats<D1: Copy, D2: Copy> {
+pub struct CombinedStats<D1: Copy, D2: Copy> {
     stats1: D1,
     stats2: D2,
 }

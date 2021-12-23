@@ -186,7 +186,7 @@ impl crate::nuts::State for State {
         self.idx_in_trajectory
     }
 
-    fn into_init_point(&mut self) {
+    fn make_init_point(&mut self) {
         let inner = self.try_mut_inner().unwrap();
         inner.idx_in_trajectory = 0;
         inner.p_sum.copy_from_slice(&inner.p);
