@@ -115,11 +115,17 @@ impl ExpWeightedVariance {
     }
 }
 
+/// Settings for mass matrix adaptation
 #[derive(Clone, Copy)]
 pub struct DiagAdaptExpSettings {
+    /// An exponenital decay parameter for the variance estimator
     pub variance_decay: f64,
+    /// The number of initial samples during which no mass matrix adaptation occurs.
     pub discard_window: u64,
+    /// Stop adaptation ofter stop_at_draw draws. Should be smaller that `num_tune`.
     pub stop_at_draw: u64,
+    /// Save the current adapted mass matrix as sampler stat
+    pub save_mass_matrix: bool,
 }
 
 impl Default for DiagAdaptExpSettings {
@@ -128,6 +134,7 @@ impl Default for DiagAdaptExpSettings {
             variance_decay: 0.05,
             discard_window: 50,
             stop_at_draw: 920,
+            save_mass_matrix: false,
         }
     }
 }

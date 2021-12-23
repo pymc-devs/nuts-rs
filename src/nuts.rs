@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use std::{collections::HashMap, marker::PhantomData};
+use std::{collections::HashMap, marker::PhantomData, fmt::Debug};
 
 use crate::math::logaddexp;
 
@@ -88,7 +88,7 @@ pub trait Hamiltonian {
     /// Errors that happen during logp evaluation
     type LogpError: LogpError + Send;
     /// Statistics that should be exported to the trace as part of the sampler stats
-    type Stats: Copy + Send + AsSampleStatMap;
+    type Stats: Send + AsSampleStatMap;
 
     /// Perform one leapfrog step.
     ///
@@ -133,7 +133,7 @@ pub trait Hamiltonian {
 /// from the initial point of the trajectory to this point,
 /// so that it can compute the termination criterion in
 /// `is_turming`.
-pub trait State: Clone {
+pub trait State: Clone + Debug {
     /// The state pool can be used to crate new states
     type Pool;
 
@@ -411,7 +411,7 @@ where
 }
 
 #[derive(Debug)]
-pub(crate) struct NutsSampleStats<HStats: Send, AdaptStats: Send> {
+pub(crate) struct NutsSampleStats<HStats: Send + Debug, AdaptStats: Send + Debug> {
     pub depth: u64,
     pub maxdepth_reached: bool,
     pub idx_in_trajectory: i64,
@@ -424,8 +424,10 @@ pub(crate) struct NutsSampleStats<HStats: Send, AdaptStats: Send> {
     pub strategy_stats: AdaptStats,
 }
 
+#[derive(Debug, Clone)]
 pub enum SampleStatValue {
     Array(Box<[f64]>),
+    OptionArray(Option<Box<[f64]>>),
     U64(u64),
     I64(i64),
     F64(f64),
@@ -462,11 +464,11 @@ impl From<bool> for SampleStatValue {
     }
 }
 
-pub trait AsSampleStatMap {
+pub trait AsSampleStatMap: Debug {
     fn as_map(&self) -> HashMap<&'static str, SampleStatValue>;
 }
 
-pub trait SampleStats: Send + AsSampleStatMap {
+pub trait SampleStats: Send + AsSampleStatMap + Debug {
     fn depth(&self) -> u64;
     fn maxdepth_reached(&self) -> bool;
     fn index_in_trajectory(&self) -> i64;
@@ -479,8 +481,8 @@ pub trait SampleStats: Send + AsSampleStatMap {
 
 impl<HStats, AdaptStats> AsSampleStatMap for NutsSampleStats<HStats, AdaptStats>
 where
-    HStats: Send + AsSampleStatMap,
-    AdaptStats: Send + AsSampleStatMap,
+    HStats: Send + AsSampleStatMap + Debug,
+    AdaptStats: Send + AsSampleStatMap + Debug,
 {
     fn as_map(&self) -> HashMap<&'static str, SampleStatValue> {
         let mut map: HashMap<_, SampleStatValue> = HashMap::with_capacity(20);
@@ -498,8 +500,8 @@ where
 
 impl<HStats, AdaptStats> SampleStats for NutsSampleStats<HStats, AdaptStats>
 where
-    HStats: Send + AsSampleStatMap,
-    AdaptStats: Send + AsSampleStatMap,
+    HStats: Send + AsSampleStatMap + Debug,
+    AdaptStats: Send + AsSampleStatMap + Debug,
 {
     fn depth(&self) -> u64 {
         self.depth
@@ -582,7 +584,7 @@ where
 pub trait AdaptStrategy {
     type Potential: Hamiltonian;
     type Collector: Collector<State = <Self::Potential as Hamiltonian>::State>;
-    type Stats: Copy + Send + AsSampleStatMap;
+    type Stats: Send + AsSampleStatMap;
     type Options: Copy + Send + Default;
 
     fn new(options: Self::Options, num_tune: u64, dim: usize) -> Self;
@@ -605,9 +607,9 @@ where
     type Stats = NutsSampleStats<H::Stats, S::Stats>;
 
     fn set_position(&mut self, position: &[f64]) -> Result<()> {
-        self.potential
-            .init_state(&mut self.pool, position)
-            .map(|_| ())
+        let state = self.potential.init_state(&mut self.pool, position)?;
+        self.init = state;
+        Ok(())
     }
 
     fn draw(&mut self) -> Result<(Box<[f64]>, Self::Stats)> {
@@ -619,7 +621,8 @@ where
             &self.options,
             &mut self.collector,
         )?;
-        let position: Box<[f64]> = vec![0f64; self.potential.dim()].into();
+        let mut position: Box<[f64]> = vec![0f64; self.potential.dim()].into();
+        state.write_position(&mut position);
         let stats = NutsSampleStats {
             depth: info.depth,
             maxdepth_reached: info.reached_maxdepth,

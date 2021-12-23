@@ -1,6 +1,6 @@
-use std::{collections::HashMap, marker::PhantomData};
+use std::{collections::HashMap, marker::PhantomData, fmt::Debug};
 
-use itertools::izip;
+use itertools::{izip, Itertools};
 
 use crate::{
     cpu_potential::{CpuLogpFunc, EuclideanPotential},
@@ -80,12 +80,16 @@ pub(crate) struct ExpWindowDiagAdapt<F> {
     _phantom: PhantomData<F>,
 }
 
-#[derive(Clone, Copy)]
-pub struct ExpWindowDiagAdaptStats {}
+#[derive(Clone, Debug)]
+pub struct ExpWindowDiagAdaptStats {
+    current_mass_matrix_inv_diag: Option<Box<[f64]>>
+}
 
 impl AsSampleStatMap for ExpWindowDiagAdaptStats {
     fn as_map(&self) -> std::collections::HashMap<&'static str, crate::nuts::SampleStatValue> {
-        HashMap::new()
+        let mut map = HashMap::new();
+        map.insert("current_mass_matrix_inv_diag", SampleStatValue::OptionArray(self.current_mass_matrix_inv_diag.clone()));
+        map
     }
 }
 
@@ -140,7 +144,24 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
     }
 
     fn current_stats(&self, _collector: &Self::Collector) -> Self::Stats {
-        ExpWindowDiagAdaptStats {}
+        dbg!(self.settings.save_mass_matrix);
+        // TODO pass potential to current_stats?
+        let diag = if self.settings.save_mass_matrix {
+            Some(
+                // TODO reuse function in adapt
+                izip!(
+                    self.exp_variance_draw.current(),
+                    self.exp_variance_grad.current(),
+                )
+                .map(|(&draw, &grad)| (draw / grad).sqrt().clamp(1e-12, 1e10))
+                .collect_vec().into()
+            )
+        } else {
+            None
+        };
+        ExpWindowDiagAdaptStats {
+            current_mass_matrix_inv_diag: diag,
+        }
     }
 }
 
@@ -158,13 +179,13 @@ impl<S1, S2> CombinedStrategy<S1, S2> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct CombinedStats<D1: Copy, D2: Copy> {
+#[derive(Debug, Clone)]
+pub struct CombinedStats<D1: Debug, D2: Debug> {
     stats1: D1,
     stats2: D2,
 }
 
-impl<D1: AsSampleStatMap + Copy, D2: AsSampleStatMap + Copy> AsSampleStatMap
+impl<D1: AsSampleStatMap, D2: AsSampleStatMap> AsSampleStatMap
     for CombinedStats<D1, D2>
 {
     fn as_map(&self) -> HashMap<&'static str, SampleStatValue> {

@@ -2,8 +2,12 @@ use std::marker::PhantomData;
 
 use crate::nuts::{Collector, NutsOptions, State};
 
+/// Settings for step size adaptation
 #[derive(Clone, Copy)]
 pub struct DualAverageSettings {
+    /// The target acceptance rate. Must be between 0 and 1, usually >= 0.6.
+    /// The large the target acceptance rate the smaller the steps will be
+    /// that each leapfrog step takes.
     pub target: f64,
     pub k: f64,
     pub t0: f64,

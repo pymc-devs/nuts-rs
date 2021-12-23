@@ -69,7 +69,7 @@ impl<F: CpuLogpFunc, M: MassMatrix> EuclideanPotential<F, M> {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub(crate) struct PotentialStats {}
 
 impl AsSampleStatMap for PotentialStats {
@@ -165,8 +165,9 @@ impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
         self.mass_matrix.randomize_momentum(inner, rng);
         self.mass_matrix.update_velocity(inner);
         self.mass_matrix.update_kinetic_energy(inner);
-        inner.idx_in_trajectory = 0;
-        inner.p_sum.copy_from_slice(&inner.p);
+        // TODO
+        //inner.idx_in_trajectory = 0;
+        //inner.p_sum.copy_from_slice(&inner.p);
     }
 
     fn current_stats(&self) -> Self::Stats {

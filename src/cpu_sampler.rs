@@ -13,13 +13,21 @@ use crate::{
     CpuLogpFunc, NutsOptions,
 };
 
+/// Settings for the NUTS sampler
 #[derive(Clone, Copy)]
 pub struct SamplerArgs {
+    /// The number of tuning steps, where we fit the step size and mass matrix.
     pub num_tune: u64,
+    /// The maximum tree depth during sampling. The number of leapfrog steps
+    /// is smaller than 2 ^ maxdepth.
     pub maxdepth: u64,
+    /// If the energy error is larger than this threshold we treat the leapfrog
+    /// step as a divergence.
     pub max_energy_error: f64,
+    /// Settings for step size adaptation.
     pub step_size_adapt: DualAverageSettings,
-    pub mass_matrix: DiagAdaptExpSettings,
+    /// Settings for mass matrix adaptation.
+    pub mass_matrix_adapt: DiagAdaptExpSettings,
 }
 
 impl Default for SamplerArgs {
@@ -29,7 +37,7 @@ impl Default for SamplerArgs {
             maxdepth: 10,
             max_energy_error: 1000f64,
             step_size_adapt: DualAverageSettings::default(),
-            mass_matrix: DiagAdaptExpSettings::default(),
+            mass_matrix_adapt: DiagAdaptExpSettings::default(),
         }
     }
 }
@@ -53,6 +61,7 @@ pub enum ParallelSamplingError {
 
 pub type ParallelChainResult = Result<(), ParallelSamplingError>;
 
+/// Sample several chains in parallel and return all of the samples live in a channel
 pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc>(
     func: F,
     init_point_func: &mut I,
@@ -127,6 +136,7 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
     Ok((handle, receiver))
 }
 
+/// Create a new sampler
 pub fn new_sampler<F: CpuLogpFunc>(
     logp: F,
     settings: SamplerArgs,
@@ -136,9 +146,9 @@ pub fn new_sampler<F: CpuLogpFunc>(
     use crate::nuts::AdaptStrategy;
     let num_tune = settings.num_tune;
     let step_size_adapt =
-        DualAverageStrategy::new(DualAverageSettings::default(), num_tune, logp.dim());
+        DualAverageStrategy::new(settings.step_size_adapt, num_tune, logp.dim());
     let mass_matrix_adapt =
-        ExpWindowDiagAdapt::new(DiagAdaptExpSettings::default(), num_tune, logp.dim());
+        ExpWindowDiagAdapt::new(settings.mass_matrix_adapt, num_tune, logp.dim());
 
     let strategy = CombinedStrategy::new(step_size_adapt, mass_matrix_adapt);
 
