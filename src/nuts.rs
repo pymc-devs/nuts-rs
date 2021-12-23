@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use std::marker::PhantomData;
+use std::{marker::PhantomData, collections::HashMap};
 
 use crate::math::logaddexp;
 
@@ -14,27 +14,31 @@ pub type Result<T> = std::result::Result<T, NutsError>;
 
 pub trait DivergenceInfo: std::fmt::Debug + Send {
     /// The position in parameter space where the diverging leapfrog started
-    fn start_location(&self) -> Option<&[f64]> {
-        None
-    }
+    fn start_location(&self) -> Option<&[f64]>;
 
     /// The position in parameter space where the diverging leapfrog ended
-    fn end_location(&self) -> Option<&[f64]> {
-        None
-    }
+    fn end_location(&self) -> Option<&[f64]>;
 
     /// The difference between the energy at the initial location of the trajectory and
     /// the energy at the end of the diverging leapfrog step.
-    fn energy_error(&self) -> Option<f64> {
-        None
-    }
+    ///
+    /// This is not available if the divergence was caused by a logp function error
+    fn energy_error(&self) -> Option<f64>;
+
     /// The index of the end location of the diverging leapfrog.
-    fn end_idx_in_trajectory(&self) -> Option<i64> {
-        None
-    }
+    fn end_idx_in_trajectory(&self) -> Option<i64>;
+
+    /// The index of the start location of the diverging leapfrog.
+    fn start_idx_in_trajectory(&self) -> Option<i64>;
+
+    /// Return the logp function error that caused the divergence if there was any
+    ///
+    /// This is not available if the divergence was cause because of a large energy
+    /// difference.
+    fn logp_function_error(&self) -> Option<&dyn std::error::Error>;
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum Direction {
     Forward,
     Backward,
@@ -84,7 +88,7 @@ pub trait Hamiltonian {
     /// Errors that happen during logp evaluation
     type LogpError: LogpError + Send;
     /// Statistics that should be exported to the trace as part of the sampler stats
-    type Stats: Copy + Send;
+    type Stats: Copy + Send + AsSampleStatMap;
 
     /// Perform one leapfrog step.
     ///
@@ -420,7 +424,49 @@ pub(crate) struct NutsSampleStats<HStats: Send, AdaptStats: Send> {
     pub strategy_stats: AdaptStats,
 }
 
-pub trait SampleStats: Send {
+pub enum SampleStatValue {
+    Array(Box<[f64]>),
+    U64(u64),
+    I64(i64),
+    F64(f64),
+    Bool(bool)
+}
+
+impl From<Box<[f64]>> for SampleStatValue {
+    fn from(val: Box<[f64]>) -> Self {
+        SampleStatValue::Array(val)
+    }
+}
+
+impl From<u64> for SampleStatValue {
+    fn from(val: u64) -> Self {
+        SampleStatValue::U64(val)
+    }
+}
+
+impl From<i64> for SampleStatValue {
+    fn from(val: i64) -> Self {
+        SampleStatValue::I64(val)
+    }
+}
+
+impl From<f64> for SampleStatValue {
+    fn from(val: f64) -> Self {
+        SampleStatValue::F64(val)
+    }
+}
+
+impl From<bool> for SampleStatValue {
+    fn from(val: bool) -> Self {
+        SampleStatValue::Bool(val)
+    }
+}
+
+pub trait AsSampleStatMap {
+    fn as_map(&self) -> HashMap<&'static str, SampleStatValue>;
+}
+
+pub trait SampleStats: Send + AsSampleStatMap {
     fn depth(&self) -> u64;
     fn maxdepth_reached(&self) -> bool;
     fn index_in_trajectory(&self) -> i64;
@@ -431,7 +477,26 @@ pub trait SampleStats: Send {
     fn draw(&self) -> u64;
 }
 
-impl<HStats: Send, AdaptStats: Send> SampleStats for NutsSampleStats<HStats, AdaptStats> {
+impl<HStats, AdaptStats> AsSampleStatMap for NutsSampleStats<HStats, AdaptStats>
+where HStats: Send + AsSampleStatMap, AdaptStats: Send + AsSampleStatMap
+{
+    fn as_map(&self) -> HashMap<&'static str, SampleStatValue> {
+        let mut map: HashMap<_, SampleStatValue> = HashMap::with_capacity(20);
+        map.insert("depth", self.depth.into());
+        map.insert("maxdepth_reached", self.maxdepth_reached.into());
+        map.insert("index_in_trajectory", self.idx_in_trajectory.into());
+        map.insert("logp", self.logp.into());
+        map.insert("energy", self.energy.into());
+        map.insert("diverging", self.divergence_info.is_some().into());
+        map.extend(self.potential_stats.as_map());
+        map.extend(self.strategy_stats.as_map());
+        map
+    }
+}
+
+impl<HStats, AdaptStats> SampleStats for NutsSampleStats<HStats, AdaptStats>
+where HStats: Send + AsSampleStatMap, AdaptStats: Send + AsSampleStatMap
+{
     fn depth(&self) -> u64 {self.depth}
     fn maxdepth_reached(&self) -> bool {self.maxdepth_reached}
     fn index_in_trajectory(&self) -> i64 {self.idx_in_trajectory}
@@ -507,7 +572,7 @@ where
 pub trait AdaptStrategy {
     type Potential: Hamiltonian;
     type Collector: Collector<State = <Self::Potential as Hamiltonian>::State>;
-    type Stats: Copy + Send;
+    type Stats: Copy + Send + AsSampleStatMap;
     type Options: Copy + Send + Default;
 
     fn new(options: Self::Options, num_tune: u64, dim: usize) -> Self;

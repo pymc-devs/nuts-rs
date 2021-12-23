@@ -132,32 +132,6 @@ impl Default for DiagAdaptExpSettings {
     }
 }
 
-pub(crate) struct DiagAdaptExp {
-    exp_variance_draw: ExpWeightedVariance,
-    exp_variance_grad: ExpWeightedVariance,
-    pub(crate) current: DiagMassMatrix,
-    draw_count: u64,
-    settings: DiagAdaptExpSettings,
-}
-
-impl DiagAdaptExp {
-    pub(crate) fn new(dim: usize, settings: DiagAdaptExpSettings) -> Self {
-        DiagAdaptExp {
-            exp_variance_draw: ExpWeightedVariance::new(dim, settings.variance_decay, true),
-            exp_variance_grad: ExpWeightedVariance::new(dim, settings.variance_decay, false),
-            current: DiagMassMatrix::new(vec![1f64; dim].into()),
-            draw_count: 0,
-            settings,
-        }
-    }
-}
-
-/*
-    fn adapt(&mut self, draw: u64, collector: &mut Self::Collector) {
-    }
-}
-*/
-
 pub(crate) struct DrawGradCollector {
     pub(crate) draw: Box<[f64]>,
     pub(crate) grad: Box<[f64]>,

@@ -157,6 +157,22 @@ pub fn new_sampler<F: CpuLogpFunc>(
     NutsSampler::new(potential, strategy, options, rng, chain)
 }
 
+pub struct JitterInitFunc {}
+
+impl JitterInitFunc {
+    pub fn new() -> JitterInitFunc {
+        JitterInitFunc {}
+    }
+}
+
+impl InitPointFunc for JitterInitFunc {
+    fn new_init_point<R: Rng + ?Sized>(&mut self, rng: &mut R, out: &mut [f64]) {
+        rng.fill(out);
+        out.iter_mut().for_each(|val| *val = 2. * *val - 1.);
+    }
+}
+
+#[cfg(test)]
 pub mod test_logps {
     use crate::{cpu_potential::CpuLogpFunc, nuts::LogpError};
     use thiserror::Error;
@@ -199,21 +215,6 @@ pub mod test_logps {
             }
             Ok(logp)
         }
-    }
-}
-
-pub struct JitterInitFunc {}
-
-impl JitterInitFunc {
-    pub fn new() -> JitterInitFunc {
-        JitterInitFunc {}
-    }
-}
-
-impl InitPointFunc for JitterInitFunc {
-    fn new_init_point<R: Rng + ?Sized>(&mut self, rng: &mut R, out: &mut [f64]) {
-        rng.fill(out);
-        out.iter_mut().for_each(|val| *val = 2. * *val - 1.);
     }
 }
 

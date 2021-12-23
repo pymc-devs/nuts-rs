@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, collections::HashMap};
 
 use itertools::izip;
 
@@ -7,7 +7,7 @@ use crate::{
     mass_matrix::{
         DiagAdaptExpSettings, DiagMassMatrix, DrawGradCollector, ExpWeightedVariance, MassMatrix,
     },
-    nuts::{AdaptStrategy, Collector},
+    nuts::{AdaptStrategy, Collector, AsSampleStatMap, SampleStatValue},
     stepsize::{AcceptanceRateCollector, DualAverage, DualAverageSettings},
 };
 
@@ -22,6 +22,15 @@ pub(crate) struct DualAverageStrategy<F, M> {
 pub struct DualAverageStats {
     step_size_bar: f64,
     mean_tree_accept: f64,
+}
+
+impl AsSampleStatMap for DualAverageStats {
+    fn as_map(&self) -> HashMap<&'static str, crate::nuts::SampleStatValue> {
+        let mut map = HashMap::with_capacity(2);
+        map.insert("step_size_bar", SampleStatValue::F64(self.step_size_bar));
+        map.insert("mean_tree_accept", SampleStatValue::F64(self.mean_tree_accept));
+        map
+    }
 }
 
 impl<F: CpuLogpFunc, M: MassMatrix> AdaptStrategy for DualAverageStrategy<F, M> {
@@ -69,9 +78,15 @@ pub(crate) struct ExpWindowDiagAdapt<F> {
 }
 
 #[derive(Clone, Copy)]
-pub struct ExpWindowDiagAdaptStats {
+pub struct ExpWindowDiagAdaptStats {}
 
+
+impl AsSampleStatMap for ExpWindowDiagAdaptStats {
+    fn as_map(&self) -> std::collections::HashMap<&'static str, crate::nuts::SampleStatValue> {
+        HashMap::new()
+    }
 }
+
 
 impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
     type Potential = EuclideanPotential<F, DiagMassMatrix>;
@@ -146,6 +161,16 @@ impl<S1, S2> CombinedStrategy<S1, S2> {
 pub struct CombinedStats<D1: Copy, D2: Copy> {
     stats1: D1,
     stats2: D2,
+}
+
+impl<D1: AsSampleStatMap + Copy, D2: AsSampleStatMap + Copy> AsSampleStatMap for CombinedStats<D1, D2>
+{
+    fn as_map(&self) -> HashMap<&'static str, SampleStatValue> {
+        let mut map1 = self.stats1.as_map();
+        let map2 = self.stats2.as_map();
+        map1.extend(map2);
+        map1
+    }
 }
 
 #[derive(Debug, Copy, Clone, Default)]
@@ -226,6 +251,7 @@ where
     }
 }
 
+#[cfg(test)]
 pub mod test_logps {
     use crate::{cpu_potential::CpuLogpFunc, nuts::LogpError};
     use thiserror::Error;
@@ -237,7 +263,7 @@ pub mod test_logps {
     }
 
     impl NormalLogp {
-        pub fn new(dim: usize, mu: f64) -> NormalLogp {
+        pub(crate) fn new(dim: usize, mu: f64) -> NormalLogp {
             NormalLogp { dim, mu }
         }
     }

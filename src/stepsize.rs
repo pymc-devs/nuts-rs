@@ -63,6 +63,7 @@ impl DualAverage {
         self.log_step_adapted.exp()
     }
 
+    #[allow(dead_code)]
     pub fn reset(&mut self, initial_step: f64) {
         self.log_step = initial_step.ln();
         self.log_step_adapted = initial_step.ln();

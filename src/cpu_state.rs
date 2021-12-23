@@ -198,23 +198,6 @@ impl crate::nuts::State for State {
 }
 
 impl State {
-    pub(crate) fn new(pool: &mut StatePool, init: &[f64]) -> Self {
-        let mut state = pool.new_state();
-
-        let inner = state.try_mut_inner().expect("State already in use");
-        for (i, val) in inner.q.iter_mut().enumerate() {
-            *val = init[i];
-        }
-
-        for val in inner.p_sum.iter_mut() {
-            *val = 0.;
-        }
-
-        inner.idx_in_trajectory = 0;
-
-        state
-    }
-
     pub(crate) fn first_momentum_halfstep(&self, out: &mut Self, epsilon: f64) {
         axpy_out(
             &self.grad,
@@ -255,10 +238,6 @@ impl State {
             .try_mut_inner()
             .expect("State already in use")
             .idx_in_trajectory
-    }
-
-    pub(crate) fn new_empty(pool: &mut StatePool) -> Self {
-        pool.new_state()
     }
 }
 

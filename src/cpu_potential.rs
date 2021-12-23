@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::fmt::Debug;
 
 use crate::cpu_state::{InnerState, State, StatePool};
 use crate::mass_matrix::MassMatrix;
-use crate::nuts::{Collector, Direction, DivergenceInfo, LogpError, NutsError, Hamiltonian};
+use crate::nuts::{Collector, Direction, DivergenceInfo, LogpError, NutsError, Hamiltonian, AsSampleStatMap, SampleStatValue};
 
 pub trait CpuLogpFunc {
     type Err: Debug + Send + LogpError + 'static;
@@ -12,20 +13,20 @@ pub trait CpuLogpFunc {
 }
 
 #[derive(Debug)]
-pub(crate) struct DivergenceInfoImpl<E: Send> {
-    pub logp_function_error: Option<E>,
+pub(crate) struct DivergenceInfoImpl<E: Send + std::error::Error> {
+    logp_function_error: Option<E>,
     start: Option<InnerState>,
-    right: Option<InnerState>,
+    end: Option<InnerState>,
     energy_error: Option<f64>,
 }
 
-impl<E: Debug + Send> DivergenceInfo for DivergenceInfoImpl<E> {
+impl<E: Debug + Send + std::error::Error> DivergenceInfo for DivergenceInfoImpl<E> {
     fn start_location(&self) -> Option<&[f64]> {
         Some(&self.start.as_ref()?.q)
     }
 
     fn end_location(&self) -> Option<&[f64]> {
-        Some(&self.right.as_ref()?.q)
+        Some(&self.end.as_ref()?.q)
     }
 
     fn energy_error(&self) -> Option<f64> {
@@ -33,7 +34,15 @@ impl<E: Debug + Send> DivergenceInfo for DivergenceInfoImpl<E> {
     }
 
     fn end_idx_in_trajectory(&self) -> Option<i64> {
-        Some(self.right.as_ref()?.idx_in_trajectory)
+        Some(self.end.as_ref()?.idx_in_trajectory)
+    }
+
+    fn start_idx_in_trajectory(&self) -> Option<i64> {
+        Some(self.end.as_ref()?.idx_in_trajectory)
+    }
+
+    fn logp_function_error(&self) -> Option<&dyn std::error::Error> {
+        self.logp_function_error.as_ref().map(|x| x as &dyn std::error::Error)
     }
 }
 
@@ -53,14 +62,16 @@ impl<F: CpuLogpFunc, M: MassMatrix> EuclideanPotential<F, M> {
             step_size,
         }
     }
-
-    pub(crate) fn mass_matrix_mut(&mut self) -> &mut M {
-        &mut self.mass_matrix
-    }
 }
 
 #[derive(Copy, Clone)]
 pub(crate) struct PotentialStats {}
+
+impl AsSampleStatMap for PotentialStats {
+    fn as_map(&self) -> std::collections::HashMap<&'static str, SampleStatValue> {
+        HashMap::new()
+    }
+}
 
 impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
     type State = State;
@@ -96,7 +107,7 @@ impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
             let div_info = DivergenceInfoImpl {
                 logp_function_error: Some(logp_error),
                 start: Some(start.clone_inner()),
-                right: None,
+                end: None,
                 energy_error: None,
             };
             collector.register_leapfrog(start, &out, Some(&div_info));
@@ -117,8 +128,12 @@ impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
             out.energy() - initial_energy
         };
         if (energy_error.abs() > self.max_energy_error) | !energy_error.is_finite() {
-            let divergence_info =
-                self.new_divergence_info(start.clone(), out.clone(), energy_error);
+            let divergence_info = DivergenceInfoImpl {
+                logp_function_error: None,
+                start: Some(start.clone_inner()),
+                end: Some(out.clone_inner()),
+                energy_error: Some(energy_error),
+            };
             collector.register_leapfrog(start, &out, Some(&divergence_info));
             return Ok(Err(divergence_info));
         }
@@ -186,19 +201,5 @@ impl<F: CpuLogpFunc, M: MassMatrix> EuclideanPotential<F, M> {
     fn update_kinetic_energy(&mut self, state: &mut State) {
         self.mass_matrix
             .update_kinetic_energy(state.try_mut_inner().expect("State already in us"))
-    }
-
-    fn new_divergence_info(
-        &mut self,
-        left: State,
-        end: State,
-        energy_error: f64,
-    ) -> DivergenceInfoImpl<F::Err> {
-        DivergenceInfoImpl {
-            logp_function_error: None,
-            start: Some(left.clone_inner()),
-            right: Some(end.clone_inner()),
-            energy_error: Some(energy_error),
-        }
     }
 }
