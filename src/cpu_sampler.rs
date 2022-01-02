@@ -8,9 +8,9 @@ use crate::{
     adapt_strategy::{CombinedStrategy, DualAverageStrategy, ExpWindowDiagAdapt},
     cpu_potential::EuclideanPotential,
     mass_matrix::{DiagAdaptExpSettings, DiagMassMatrix},
-    nuts::{NutsError, NutsSampler, SampleStats, Sampler},
+    nuts::{NutsError, NutsOptions, NutsSampler, SampleStats, Sampler},
     stepsize::DualAverageSettings,
-    CpuLogpFunc, NutsOptions,
+    CpuLogpFunc,
 };
 
 /// Settings for the NUTS sampler
@@ -42,6 +42,10 @@ impl Default for SamplerArgs {
     }
 }
 
+/// Propose new initial points for a sampler
+///
+/// This trait can be implemented by users to control how the different
+/// chains should be initialized when using [`sample_parallel`].
 pub trait InitPointFunc {
     fn new_init_point<R: Rng + ?Sized>(&mut self, rng: &mut R, out: &mut [f64]);
 }
@@ -61,6 +65,11 @@ pub enum ParallelSamplingError {
 
 pub type ParallelChainResult = Result<(), ParallelSamplingError>;
 
+pub struct Draw<S: SampleStats> {
+    position: Box<[f64]>,
+    stats: S,
+}
+
 /// Sample several chains in parallel and return all of the samples live in a channel
 pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc>(
     func: F,
@@ -73,7 +82,7 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
 ) -> Result<
     (
         JoinHandle<Vec<ParallelChainResult>>,
-        flume::Receiver<(Box<[f64]>, impl SampleStats)>,
+        impl Iter<(Box<[f64]>, impl SampleStats)>,
     ),
     ParallelSamplingError,
 > {
@@ -140,13 +149,14 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
 pub fn new_sampler<F: CpuLogpFunc>(
     logp: F,
     settings: SamplerArgs,
+    //start: &[f64],  // TODO add start
     chain: u64,
     seed: u64,
 ) -> impl Sampler {
+    // TODO return impl Iter
     use crate::nuts::AdaptStrategy;
     let num_tune = settings.num_tune;
-    let step_size_adapt =
-        DualAverageStrategy::new(settings.step_size_adapt, num_tune, logp.dim());
+    let step_size_adapt = DualAverageStrategy::new(settings.step_size_adapt, num_tune, logp.dim());
     let mass_matrix_adapt =
         ExpWindowDiagAdapt::new(settings.mass_matrix_adapt, num_tune, logp.dim());
 
@@ -166,18 +176,34 @@ pub fn new_sampler<F: CpuLogpFunc>(
     NutsSampler::new(potential, strategy, options, rng, chain)
 }
 
-pub struct JitterInitFunc {}
+/// Initialize chains using uniform jitter around zero or some other provided value
+pub struct JitterInitFunc {
+    mu: Option<Box<[f64]>>,
+}
 
 impl JitterInitFunc {
+    /// Initialize new chains with jitter in [-1, 1] around zero
     pub fn new() -> JitterInitFunc {
-        JitterInitFunc {}
+        JitterInitFunc { mu: None }
+    }
+
+    /// Initialize new chains with jitter in [mu - 1, mu + 1].
+    pub fn new_with_mean(mu: Box<[f64]>) -> Self {
+        Self { mu: Some(mu) }
     }
 }
 
 impl InitPointFunc for JitterInitFunc {
     fn new_init_point<R: Rng + ?Sized>(&mut self, rng: &mut R, out: &mut [f64]) {
         rng.fill(out);
-        out.iter_mut().for_each(|val| *val = 2. * *val - 1.);
+        if self.mu.is_none() {
+            out.iter_mut().for_each(|val| *val = 2. * *val - 1.);
+        } else {
+            let mu = self.mu.as_ref().unwrap();
+            out.iter_mut()
+                .zip(mu.iter().copied())
+                .for_each(|(val, mu)| *val = 2. * *val - 1. + mu);
+        }
     }
 }
 

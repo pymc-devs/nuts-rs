@@ -1,13 +1,19 @@
-use std::collections::HashMap;
 use std::fmt::Debug;
 
 use crate::cpu_state::{InnerState, State, StatePool};
 use crate::mass_matrix::MassMatrix;
 use crate::nuts::{
-    AsSampleStatMap, Collector, Direction, DivergenceInfo, Hamiltonian, LogpError, NutsError,
-    SampleStatValue,
+    AsSampleStatVec, Collector, Direction, DivergenceInfo, Hamiltonian, LogpError, NutsError,
 };
 
+/// Compute the unnormalized log probability density of the posterior
+///
+/// This needs to be implemnted by users of the library to define
+/// what distribution the users wants to sample from.
+///
+/// Errors during that computation can be recoverable or non-recoverable.
+/// If a non-recoverable error occurs during sampling, the sampler will
+/// stop and return an error.
 pub trait CpuLogpFunc {
     type Err: Debug + Send + LogpError + 'static;
 
@@ -70,11 +76,13 @@ impl<F: CpuLogpFunc, M: MassMatrix> EuclideanPotential<F, M> {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub(crate) struct PotentialStats {}
+pub(crate) struct PotentialStats {
+    step_size: f64,
+}
 
-impl AsSampleStatMap for PotentialStats {
-    fn as_map(&self) -> std::collections::HashMap<&'static str, SampleStatValue> {
-        HashMap::new()
+impl AsSampleStatVec for PotentialStats {
+    fn add_to_vec(&self, vec: &mut Vec<crate::nuts::SampleStatItem>) {
+        vec.push(("step_size", self.step_size.into()));
     }
 }
 
@@ -171,7 +179,9 @@ impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
     }
 
     fn current_stats(&self) -> Self::Stats {
-        PotentialStats {}
+        PotentialStats {
+            step_size: self.step_size,
+        }
     }
 
     fn new_empty_state(&mut self, pool: &mut StatePool) -> Self::State {

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, marker::PhantomData, fmt::Debug};
+use std::{fmt::Debug, marker::PhantomData};
 
 use itertools::{izip, Itertools};
 
@@ -7,7 +7,7 @@ use crate::{
     mass_matrix::{
         DiagAdaptExpSettings, DiagMassMatrix, DrawGradCollector, ExpWeightedVariance, MassMatrix,
     },
-    nuts::{AdaptStrategy, AsSampleStatMap, Collector, SampleStatValue},
+    nuts::{AdaptStrategy, AsSampleStatVec, Collector, SampleStatItem, SampleStatValue},
     stepsize::{AcceptanceRateCollector, DualAverage, DualAverageSettings},
 };
 
@@ -24,15 +24,13 @@ pub struct DualAverageStats {
     mean_tree_accept: f64,
 }
 
-impl AsSampleStatMap for DualAverageStats {
-    fn as_map(&self) -> HashMap<&'static str, crate::nuts::SampleStatValue> {
-        let mut map = HashMap::with_capacity(2);
-        map.insert("step_size_bar", SampleStatValue::F64(self.step_size_bar));
-        map.insert(
+impl AsSampleStatVec for DualAverageStats {
+    fn add_to_vec(&self, vec: &mut Vec<SampleStatItem>) {
+        vec.push(("step_size_bar", SampleStatValue::F64(self.step_size_bar)));
+        vec.push((
             "mean_tree_accept",
             SampleStatValue::F64(self.mean_tree_accept),
-        );
-        map
+        ));
     }
 }
 
@@ -82,14 +80,15 @@ pub(crate) struct ExpWindowDiagAdapt<F> {
 
 #[derive(Clone, Debug)]
 pub struct ExpWindowDiagAdaptStats {
-    current_mass_matrix_inv_diag: Option<Box<[f64]>>
+    current_mass_matrix_inv_diag: Option<Box<[f64]>>,
 }
 
-impl AsSampleStatMap for ExpWindowDiagAdaptStats {
-    fn as_map(&self) -> std::collections::HashMap<&'static str, crate::nuts::SampleStatValue> {
-        let mut map = HashMap::new();
-        map.insert("current_mass_matrix_inv_diag", SampleStatValue::OptionArray(self.current_mass_matrix_inv_diag.clone()));
-        map
+impl AsSampleStatVec for ExpWindowDiagAdaptStats {
+    fn add_to_vec(&self, vec: &mut Vec<SampleStatItem>) {
+        vec.push((
+            "current_mass_matrix_inv_diag",
+            SampleStatValue::OptionArray(self.current_mass_matrix_inv_diag.clone()),
+        ));
     }
 }
 
@@ -154,7 +153,8 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
                     self.exp_variance_grad.current(),
                 )
                 .map(|(&draw, &grad)| (draw / grad).sqrt().clamp(1e-12, 1e10))
-                .collect_vec().into()
+                .collect_vec()
+                .into(),
             )
         } else {
             None
@@ -185,14 +185,10 @@ pub struct CombinedStats<D1: Debug, D2: Debug> {
     stats2: D2,
 }
 
-impl<D1: AsSampleStatMap, D2: AsSampleStatMap> AsSampleStatMap
-    for CombinedStats<D1, D2>
-{
-    fn as_map(&self) -> HashMap<&'static str, SampleStatValue> {
-        let mut map1 = self.stats1.as_map();
-        let map2 = self.stats2.as_map();
-        map1.extend(map2);
-        map1
+impl<D1: AsSampleStatVec, D2: AsSampleStatVec> AsSampleStatVec for CombinedStats<D1, D2> {
+    fn add_to_vec(&self, vec: &mut Vec<SampleStatItem>) {
+        self.stats1.add_to_vec(vec);
+        self.stats2.add_to_vec(vec);
     }
 }
 

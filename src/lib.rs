@@ -10,7 +10,7 @@
 //! ## Usage
 //!
 //! ```
-//! use nuts_rs::{CpuLogpFunc, LogpError, new_sampler, SamplerArgs, Sampler, AsSampleStatMap};
+//! use nuts_rs::{CpuLogpFunc, LogpError, new_sampler, SamplerArgs, Sampler, SampleStats};
 //! use thiserror::Error;
 //!
 //! // Define a function that computes the unnormalized posterior density
@@ -26,7 +26,7 @@
 //!
 //! impl CpuLogpFunc for PosteriorDensity {
 //!     type Err = PosteriorLogpError;
-//! 
+//!
 //!     // We define a 10 dimensional normal distribution
 //!     fn dim(&self) -> usize { 10 }
 //!
@@ -70,7 +70,11 @@
 //! for _ in 0..2000 {
 //!     let (draw, info) = sampler.draw().expect("Unrecoverable error during sampling");
 //!     trace.push(draw);
-//!     let info = info.as_map();  // We can convert the stats to a HashMap
+//!     let _info_vec = info.to_vec();  // We can collect the stats in a Vec
+//!     // Or get more detailed information about divergences
+//!     if let Some(div_info) = info.divergence_info() {
+//!         println!("Divergence at position {:?}", div_info.start_location());
+//!     }
 //!     dbg!(&info);
 //!     stats.push(info);
 //! }
@@ -102,5 +106,5 @@ pub(crate) mod stepsize;
 pub use cpu_potential::CpuLogpFunc;
 pub use cpu_sampler::{new_sampler, sample_parallel, InitPointFunc, JitterInitFunc, SamplerArgs};
 pub use mass_matrix::DiagAdaptExpSettings;
-pub use nuts::{AsSampleStatMap, LogpError, NutsOptions, SampleStatValue, SampleStats, Sampler};
+pub use nuts::{DivergenceInfo, LogpError, SampleStatValue, SampleStats, Sampler};
 pub use stepsize::DualAverageSettings;

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use std::{collections::HashMap, marker::PhantomData, fmt::Debug};
+use std::{fmt::Debug, marker::PhantomData};
 
 use crate::math::logaddexp;
 
@@ -12,6 +12,14 @@ pub enum NutsError {
 
 pub type Result<T> = std::result::Result<T, NutsError>;
 
+// TODO This should be an Box<enum> instead of a trait object?
+/// Details about a divergence that might have occured during sampling
+///
+/// There are two reasons why we might observe a divergence:
+/// - The integration error of the Hamiltonian is larger than
+///   a cutoff value or nan.
+/// - The logp function caused a recoverable error (eg if an ODE solver
+///   failed)
 pub trait DivergenceInfo: std::fmt::Debug + Send {
     /// The position in parameter space where the diverging leapfrog started
     fn start_location(&self) -> Option<&[f64]>;
@@ -88,7 +96,7 @@ pub trait Hamiltonian {
     /// Errors that happen during logp evaluation
     type LogpError: LogpError + Send;
     /// Statistics that should be exported to the trace as part of the sampler stats
-    type Stats: Send + AsSampleStatMap;
+    type Stats: Send + AsSampleStatVec;
 
     /// Perform one leapfrog step.
     ///
@@ -464,44 +472,40 @@ impl From<bool> for SampleStatValue {
     }
 }
 
-pub trait AsSampleStatMap: Debug {
-    fn as_map(&self) -> HashMap<&'static str, SampleStatValue>;
+pub trait AsSampleStatVec: Debug {
+    fn add_to_vec(&self, vec: &mut Vec<SampleStatItem>);
 }
 
-pub trait SampleStats: Send + AsSampleStatMap + Debug {
+pub type SampleStatItem = (&'static str, SampleStatValue);
+
+/// Diagnostic information about draws and the state of the sampler for each draw
+pub trait SampleStats: Send + Debug {
+    /// The depth of the NUTS tree that the draw was sampled from
     fn depth(&self) -> u64;
+    /// Whether the trajectory was stopped because the maximum size
+    /// was reached.
     fn maxdepth_reached(&self) -> bool;
+    /// The index of the accepted sample in the trajectory
     fn index_in_trajectory(&self) -> i64;
+    /// The unnormalized posterior density at the draw
     fn logp(&self) -> f64;
+    /// The value of the hamiltonian of the draw
     fn energy(&self) -> f64;
+    /// More detailed information if the draw came from a diverging trajectory.
     fn divergence_info(&self) -> Option<&dyn DivergenceInfo>;
+    /// An ID for the chain that the sample produce the draw.
     fn chain(&self) -> u64;
+    /// The draw number
     fn draw(&self) -> u64;
+    /// Export the sample statisitcs to a vector. This might include some additional
+    /// diagnostics coming from the step size and matrix adaptation strategies.
+    fn to_vec(&self) -> Vec<SampleStatItem>;
 }
 
-impl<HStats, AdaptStats> AsSampleStatMap for NutsSampleStats<HStats, AdaptStats>
+impl<H, A> SampleStats for NutsSampleStats<H, A>
 where
-    HStats: Send + AsSampleStatMap + Debug,
-    AdaptStats: Send + AsSampleStatMap + Debug,
-{
-    fn as_map(&self) -> HashMap<&'static str, SampleStatValue> {
-        let mut map: HashMap<_, SampleStatValue> = HashMap::with_capacity(20);
-        map.insert("depth", self.depth.into());
-        map.insert("maxdepth_reached", self.maxdepth_reached.into());
-        map.insert("index_in_trajectory", self.idx_in_trajectory.into());
-        map.insert("logp", self.logp.into());
-        map.insert("energy", self.energy.into());
-        map.insert("diverging", self.divergence_info.is_some().into());
-        map.extend(self.potential_stats.as_map());
-        map.extend(self.strategy_stats.as_map());
-        map
-    }
-}
-
-impl<HStats, AdaptStats> SampleStats for NutsSampleStats<HStats, AdaptStats>
-where
-    HStats: Send + AsSampleStatMap + Debug,
-    AdaptStats: Send + AsSampleStatMap + Debug,
+    H: Send + Debug + AsSampleStatVec,
+    A: Send + Debug + AsSampleStatVec,
 {
     fn depth(&self) -> u64 {
         self.depth
@@ -527,15 +531,36 @@ where
     fn draw(&self) -> u64 {
         self.draw
     }
+    fn to_vec(&self) -> Vec<SampleStatItem> {
+        let mut vec = Vec::with_capacity(20);
+        vec.push(("depth", self.depth.into()));
+        vec.push(("maxdepth_reached", self.maxdepth_reached.into()));
+        vec.push(("index_in_trajectory", self.idx_in_trajectory.into()));
+        vec.push(("logp", self.logp.into()));
+        vec.push(("energy", self.energy.into()));
+        vec.push(("diverging", self.divergence_info.is_some().into()));
+        self.potential_stats.add_to_vec(&mut vec);
+        self.strategy_stats.add_to_vec(&mut vec);
+        vec
+    }
 }
 
+/// Draw samples from the posterior distribution using Hamiltonian MCMC.
 pub trait Sampler {
     type Hamiltonian: Hamiltonian;
     type AdaptStrategy: AdaptStrategy;
     type Stats: SampleStats;
 
+    /// Initialize the sampler to a position. This should be called
+    /// before calling draw.
+    ///
+    /// This fails if the logp function returns an error.
     fn set_position(&mut self, position: &[f64]) -> Result<()>;
+
+    /// Draw a new sample and return the position and some diagnosic information.
     fn draw(&mut self) -> Result<(Box<[f64]>, Self::Stats)>;
+
+    /// The dimensionality of the posterior.
     fn dim(&self) -> usize;
 }
 
@@ -584,7 +609,7 @@ where
 pub trait AdaptStrategy {
     type Potential: Hamiltonian;
     type Collector: Collector<State = <Self::Potential as Hamiltonian>::State>;
-    type Stats: Send + AsSampleStatMap;
+    type Stats: Send + AsSampleStatVec;
     type Options: Copy + Send + Default;
 
     fn new(options: Self::Options, num_tune: u64, dim: usize) -> Self;
