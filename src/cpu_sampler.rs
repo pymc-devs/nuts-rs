@@ -82,7 +82,7 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
 ) -> Result<
     (
         JoinHandle<Vec<ParallelChainResult>>,
-        impl Iter<(Box<[f64]>, impl SampleStats)>,
+        flume::Receiver<(Box<[f64]>, impl SampleStats)>,
     ),
     ParallelSamplingError,
 > {
@@ -207,7 +207,6 @@ impl InitPointFunc for JitterInitFunc {
     }
 }
 
-#[cfg(test)]
 pub mod test_logps {
     use crate::{cpu_potential::CpuLogpFunc, nuts::LogpError};
     use thiserror::Error;

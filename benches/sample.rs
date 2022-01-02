@@ -1,15 +1,12 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use nuts_rs::cpu_sampler::test_logps::NormalLogp;
-use nuts_rs::cpu_sampler::{
-    sample_parallel, AdaptiveSampler, JitterInitFunc, SamplerArgs, StaticSampler,
-};
-use nuts_rs::mass_matrix::DiagAdaptExpSettings;
-use nuts_rs::math::{axpy, axpy_out, scalar_prods_of_diff, vector_dot};
+use itertools::Itertools;
+use nuts_rs::math::{axpy, axpy_out, vector_dot};
+use nuts_rs::test_logps::NormalLogp;
+use nuts_rs::{new_sampler, sample_parallel, JitterInitFunc, Sampler, SamplerArgs};
 
-fn make_sampler(dim: usize, mu: f64) -> StaticSampler<NormalLogp> {
+fn make_sampler(dim: usize, mu: f64) -> impl Sampler {
     let func = NormalLogp::new(dim, mu);
-    let settings = DiagAdaptExpSettings::default();
-    StaticSampler::new(func, SamplerArgs::default(), settings, 0, 42)
+    new_sampler(func, SamplerArgs::default(), 0, 0)
 }
 
 pub fn sample_one(mu: f64, out: &mut [f64]) {
@@ -17,7 +14,7 @@ pub fn sample_one(mu: f64, out: &mut [f64]) {
     let init = vec![3.5; out.len()];
     sampler.set_position(&init).unwrap();
     for _ in 0..1000 {
-        let (state, _stats) = sampler.draw();
+        let (state, _stats) = sampler.draw().unwrap();
         out.copy_from_slice(&state);
     }
 }
@@ -49,12 +46,14 @@ fn criterion_benchmark(c: &mut Criterion) {
         c.bench_function(&format!("vector_dot {}", n), |b| {
             b.iter(|| vector_dot(black_box(&x), black_box(&y)));
         });
+        /*
         scalar_prods_of_diff(&x, &y, &a, &d);
         c.bench_function(&format!("scalar_prods_of_diff {}", n), |b| {
             b.iter(|| {
                 scalar_prods_of_diff(black_box(&x), black_box(&y), black_box(&a), black_box(&d))
             });
         });
+        */
     }
 
     let mut out = vec![0.; 10];
@@ -68,18 +67,6 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 
     for n in [10, 12, 1000] {
-        c.bench_function(&format!("sample_adaptive {}", n), |b| {
-            b.iter(|| {
-                let func = NormalLogp::new(n, 0.);
-                let settings = SamplerArgs::default();
-                let n_draws = 2000;
-                let seed = 42;
-                let mut sampler = AdaptiveSampler::new(func, settings, 0, seed);
-                let draws: Vec<_> = (0..n_draws).map(|_| sampler.draw()).collect();
-                draws
-            });
-        });
-
         c.bench_function(&format!("sample_parallel {}", n), |b| {
             b.iter(|| {
                 let func = NormalLogp::new(n, 0.);
@@ -102,7 +89,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 //let draws: Vec<_> = channel.iter().collect();
                 let draws = channel.iter().count();
                 //assert_eq!(draws.len() as u64, (n_draws + settings.num_tune) * n_chains);
-                handle.join().unwrap().unwrap();
+                handle.join().unwrap();
                 draws
             });
         });

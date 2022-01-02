@@ -143,7 +143,6 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
     }
 
     fn current_stats(&self, _collector: &Self::Collector) -> Self::Stats {
-        dbg!(self.settings.save_mass_matrix);
         // TODO pass potential to current_stats?
         let diag = if self.settings.save_mass_matrix {
             Some(

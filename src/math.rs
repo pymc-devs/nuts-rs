@@ -21,12 +21,7 @@ pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
 #[multiversion]
 #[clone(target = "[x84|x86_64]+avx+avx2")]
 #[clone(target = "x86+sse")]
-pub(crate) fn scalar_prods2(
-    positive1: &[f64],
-    positive2: &[f64],
-    x: &[f64],
-    y: &[f64],
-) -> (f64, f64) {
+pub fn scalar_prods2(positive1: &[f64], positive2: &[f64], x: &[f64], y: &[f64]) -> (f64, f64) {
     let n = positive1.len();
 
     assert!(positive1.len() == n);
@@ -81,7 +76,7 @@ pub(crate) fn scalar_prods2(
 #[multiversion]
 #[clone(target = "[x84|x86_64]+avx+avx2")]
 #[clone(target = "x86+sse")]
-pub(crate) fn scalar_prods3(
+pub fn scalar_prods3(
     positive1: &[f64],
     negative1: &[f64],
     positive2: &[f64],
@@ -146,7 +141,7 @@ pub(crate) fn scalar_prods3(
 #[multiversion]
 #[clone(target = "[x86|x86_64]+avx+avx2")]
 #[clone(target = "x86+sse")]
-pub(crate) fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
+pub fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
     let n = a.len();
     assert!(a.len() == b.len());
     //assert_eq!(&*&a[0] as *const f64 as usize % 16, 0);
@@ -183,7 +178,7 @@ pub(crate) fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
 #[multiversion]
 #[clone(target = "[x86|x86_64]+avx+avx2")]
 #[clone(target = "x86+sse")]
-pub(crate) fn axpy(x: &[f64], y: &mut [f64], a: f64) {
+pub fn axpy(x: &[f64], y: &mut [f64], a: f64) {
     let n = x.len();
     assert!(y.len() == n);
 
@@ -215,7 +210,7 @@ pub(crate) fn axpy(x: &[f64], y: &mut [f64], a: f64) {
 #[multiversion]
 #[clone(target = "[x86|x86_64]+avx+avx2")]
 #[clone(target = "x86+sse")]
-pub(crate) fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
+pub fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
     let n = x.len();
     assert!(y.len() == n);
     assert!(out.len() == n);
