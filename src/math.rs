@@ -1,6 +1,6 @@
 use itertools::izip;
 use multiversion::multiversion;
-use std::simd::f64x4;
+use std::simd::{f64x4, StdFloat};
 
 #[inline]
 pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
@@ -19,7 +19,34 @@ pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
 }
 
 #[multiversion]
-#[clone(target = "[x84|x86_64]+avx+avx2")]
+#[clone(target = "[x64|x86_64]+avx+avx2+fma")]
+#[clone(target = "x86+sse")]
+pub fn multiply(x: &[f64], y: &[f64], out: &mut [f64]) {
+    let n = x.len();
+    assert!(y.len() == n);
+    assert!(out.len() == n);
+
+    let (out, out_tail) = out.as_chunks_mut();
+    let (x, x_tail) = x.as_chunks();
+    let (y, y_tail) = y.as_chunks();
+
+    izip!(out, x, y)
+    .for_each(|(out, x, y)| {
+        let x = f64x4::from_array(*x);
+        let y = f64x4::from_array(*y);
+        *out = (x * y).to_array();
+    });
+
+    izip!(out_tail.iter_mut(), x_tail.iter(), y_tail.iter()).for_each(
+        |(out, &x, &y)| {
+            *out = x * y;
+        },
+    );
+}
+
+
+#[multiversion]
+#[clone(target = "[x84|x86_64]+avx+avx2+fma")]
 #[clone(target = "x86+sse")]
 pub fn scalar_prods2(positive1: &[f64], positive2: &[f64], x: &[f64], y: &[f64]) -> (f64, f64) {
     let n = positive1.len();
@@ -29,42 +56,27 @@ pub fn scalar_prods2(positive1: &[f64], positive2: &[f64], x: &[f64], y: &[f64])
     assert!(x.len() == n);
     assert!(y.len() == n);
 
-    /*
-    izip!(positive1, positive2, x, y)
-        .map(|(a, b, x, y)| {
-            ((a + b) * x, (a + b) * y)
-        })
-        .fold((0f64, 0f64), |(s1, s2), (x, y)| (s1 + x, s2 + y))
-
-    */
-
     let zero = f64x4::splat(0.);
 
-    let head_length = n - n % 4;
+    let (a, a_tail) = positive1.as_chunks();
+    let (b, b_tail) = positive2.as_chunks();
+    let (c, c_tail) = x.as_chunks();
+    let (d, d_tail) = y.as_chunks();
 
-    let (a, a_tail) = positive1.split_at(head_length);
-    let (b, b_tail) = positive2.split_at(head_length);
-    let (c, c_tail) = x.split_at(head_length);
-    let (d, d_tail) = y.split_at(head_length);
-
-    let out = izip!(
-        a.chunks_exact(4),
-        b.chunks_exact(4),
-        c.chunks_exact(4),
-        d.chunks_exact(4)
-    )
-    .map(|(a, b, c, d)| {
+    let out = izip!(a, b, c, d)
+    .map(|(&a, &b, &c, &d)| {
         (
-            f64x4::from_slice(a),
-            f64x4::from_slice(b),
-            f64x4::from_slice(c),
-            f64x4::from_slice(d),
+            f64x4::from_array(a),
+            f64x4::from_array(b),
+            f64x4::from_array(c),
+            f64x4::from_array(d),
         )
     })
     .fold((zero, zero), |(s1, s2), (a, b, c, d)| {
-        (s1 + c * (a + b), s2 + d * (a + b))
+        let sum = a + b;
+        (c.mul_add(sum, s1), d.mul_add(sum, s2))
     });
-    let out_head = (out.0.horizontal_sum(), out.1.horizontal_sum());
+    let out_head = (out.0.reduce_sum(), out.1.reduce_sum());
 
     let out = izip!(a_tail, b_tail, c_tail, d_tail,).fold((0., 0.), |(s1, s2), (a, b, c, d)| {
         (s1 + c * (a + b), s2 + d * (a + b))
@@ -74,7 +86,7 @@ pub fn scalar_prods2(positive1: &[f64], positive2: &[f64], x: &[f64], y: &[f64])
 }
 
 #[multiversion]
-#[clone(target = "[x84|x86_64]+avx+avx2")]
+#[clone(target = "[x84|x86_64]+avx+avx2+fma")]
 #[clone(target = "x86+sse")]
 pub fn scalar_prods3(
     positive1: &[f64],
@@ -91,46 +103,32 @@ pub fn scalar_prods3(
     assert!(x.len() == n);
     assert!(y.len() == n);
 
-    /*
-    izip!(positive1, negative1, positive2, x, y)
-        .map(|(a, b, c, x, y)| {
-            ((a - b + c) * x, (a - b + c) * y)
-        })
-        .fold((0f64, 0f64), |(s1, s2), (x, y)| (s1 + x, s2 + y))
-    */
-
     let zero = f64x4::splat(0.);
 
-    let head_length = n - n % 4;
+    let (a, a_tail) = positive1.as_chunks();
+    let (b, b_tail) = negative1.as_chunks();
+    let (c, c_tail) = positive2.as_chunks();
+    let (x, x_tail) = x.as_chunks();
+    let (y, y_tail) = y.as_chunks();
 
-    let (a, a_tail) = positive1.split_at(head_length);
-    let (b, b_tail) = negative1.split_at(head_length);
-    let (c, c_tail) = positive2.split_at(head_length);
-    let (x, x_tail) = x.split_at(head_length);
-    let (y, y_tail) = y.split_at(head_length);
-
-    let out = izip!(
-        a.chunks_exact(4),
-        b.chunks_exact(4),
-        c.chunks_exact(4),
-        x.chunks_exact(4),
-        y.chunks_exact(4),
-    )
-    .map(|(a, b, c, x, y)| {
+    let out = izip!(a, b, c, x, y)
+    .map(|(&a, &b, &c, &x, &y)| {
         (
-            f64x4::from_slice(a),
-            f64x4::from_slice(b),
-            f64x4::from_slice(c),
-            f64x4::from_slice(x),
-            f64x4::from_slice(y),
+            f64x4::from_array(a),
+            f64x4::from_array(b),
+            f64x4::from_array(c),
+            f64x4::from_array(x),
+            f64x4::from_array(y),
         )
     })
     .fold((zero, zero), |(s1, s2), (a, b, c, x, y)| {
-        (s1 + x * (a - b + c), s2 + y * (a - b + c))
+        let sum = a - b + c;
+        (x.mul_add(sum, s1), y.mul_add(sum, s2))
     });
-    let out_head = (out.0.horizontal_sum(), out.1.horizontal_sum());
+    let out_head = (out.0.reduce_sum(), out.1.reduce_sum());
 
     let out = izip!(a_tail, b_tail, c_tail, x_tail, y_tail)
+        .take(3)
         .fold((0., 0.), |(s1, s2), (a, b, c, x, y)| {
             (s1 + x * (a - b + c), s2 + y * (a - b + c))
         });
@@ -139,110 +137,78 @@ pub fn scalar_prods3(
 }
 
 #[multiversion]
-#[clone(target = "[x86|x86_64]+avx+avx2")]
+#[clone(target = "[x86|x86_64]+avx+avx2+fma")]
 #[clone(target = "x86+sse")]
 pub fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
-    let n = a.len();
     assert!(a.len() == b.len());
-    //assert_eq!(&*&a[0] as *const f64 as usize % 16, 0);
-    //assert_eq!(&*&b[0] as *const f64 as usize % 16, 0);
 
-    /*
-    let mut result = 0.;
-    for (val1, val2) in a.iter().zip(b) {
-        result += *val1 * *val2;
-    }
-    result
-    */
+    let (x, x_tail) = a.as_chunks();
+    let (y, y_tail) = b.as_chunks();
 
-    let head_length = n - n % 4;
-
-    let (x, x_tail) = a.split_at(head_length);
-    let (y, y_tail) = b.split_at(head_length);
-
-    let sum: f64x4 = izip!(x.chunks_exact(4), y.chunks_exact(4),)
-        .map(|(x, y)| {
-            let x = f64x4::from_slice(x);
-            let y = f64x4::from_slice(y);
+    let sum: f64x4 = izip!(x, y)
+        .map(|(&x, &y)| {
+            let x = f64x4::from_array(x);
+            let y = f64x4::from_array(y);
             x * y
         })
         .sum();
 
-    let mut result = sum.horizontal_sum();
-    for (val1, val2) in x_tail.iter().zip(y_tail) {
+    let mut result = sum.reduce_sum();
+    for (val1, val2) in x_tail.iter().zip(y_tail).take(3) {
         result += *val1 * *val2;
     }
     result
 }
 
 #[multiversion]
-#[clone(target = "[x86|x86_64]+avx+avx2")]
+#[clone(target = "[x86|x86_64]+avx+avx2+fma")]
 #[clone(target = "x86+sse")]
 pub fn axpy(x: &[f64], y: &mut [f64], a: f64) {
     let n = x.len();
     assert!(y.len() == n);
 
-    /*
-    for i in 0..n {
-        y[i] += a * x[i];
-    }
-    */
-
-    let head_length = n - n % 4;
-
-    let (x, x_tail) = x.split_at(head_length);
-    let (y, y_tail) = y.split_at_mut(head_length);
+    let (x, x_tail) = x.as_chunks();
+    let (y, y_tail) = y.as_chunks_mut();
 
     let a_splat = f64x4::splat(a);
 
-    izip!(x.chunks_exact(4), y.chunks_exact_mut(4),).for_each(|(x, y)| {
-        let x = f64x4::from_slice(x);
-        let y_val = f64x4::from_slice(y);
-        let out = a_splat * x + y_val;
-        y.copy_from_slice(&out.to_array())
+    izip!(x, y).for_each(|(x, y)| {
+        let x = f64x4::from_array(*x);
+        let y_val = f64x4::from_array(*y);
+        let out = x.mul_add(a_splat, y_val);
+        *y = out.to_array();
     });
 
-    izip!(x_tail, y_tail).for_each(|(x, y)| {
-        *y += a * x;
+    izip!(x_tail, y_tail).take(3).for_each(|(x, y)| {
+        *y = x.mul_add(a, *y);
     });
 }
 
 #[multiversion]
-#[clone(target = "[x86|x86_64]+avx+avx2")]
-#[clone(target = "x86+sse")]
+#[clone(target = "[x86|x86_64]+avx+avx2+fma")]
+#[clone(target = "x86+sse+fma")]
 pub fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
     let n = x.len();
     assert!(y.len() == n);
     assert!(out.len() == n);
 
-    /*
-    for i in 0..n {
-        out[i] = y[i] + a * x[i];
-    }
-    */
-
-    let head_length = 4 * (n / 4);
-
-    let (x, x_tail) = x.split_at(head_length);
-    let (y, y_tail) = y.split_at(head_length);
-    let (out, out_tail) = out.split_at_mut(head_length);
+    let (x, x_tail) = x.as_chunks();
+    let (y, y_tail) = y.as_chunks();
+    let (out, out_tail) = out.as_chunks_mut();
 
     let a_splat = f64x4::splat(a);
 
-    izip!(
-        x.chunks_exact(4),
-        y.chunks_exact(4),
-        out.chunks_exact_mut(4),
-    )
-    .for_each(|(x, y, out)| {
-        let x = f64x4::from_slice(x);
-        let y_val = f64x4::from_slice(y);
-        let out_val = a_splat * x + y_val;
-        out.copy_from_slice(&out_val.to_array())
+    izip!(x, y, out)
+    .for_each(|(&x, &y, out)| {
+        let x = f64x4::from_array(x);
+        let y_val = f64x4::from_array(y);
+
+        //let out_val = a_splat * x + y_val;
+        *out = x.mul_add(a_splat, y_val).to_array();
     });
 
-    izip!(x_tail, y_tail, out_tail).for_each(|(x, y, out)| {
-        *out = a * x + y;
+    izip!(x_tail, y_tail, out_tail).take(3).for_each(|(&x, &y, out)| {
+        *out = a.mul_add(x, y);
     });
 }
 

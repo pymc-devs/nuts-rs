@@ -8,7 +8,7 @@ use crate::{
     adapt_strategy::{CombinedStrategy, DualAverageStrategy, ExpWindowDiagAdapt},
     cpu_potential::EuclideanPotential,
     mass_matrix::{DiagAdaptExpSettings, DiagMassMatrix},
-    nuts::{NutsError, NutsOptions, NutsSampler, SampleStats, Sampler},
+    nuts::{NutsError, NutsOptions, NutsChain, SampleStats, Chain},
     stepsize::DualAverageSettings,
     CpuLogpFunc,
 };
@@ -61,14 +61,28 @@ pub enum ParallelSamplingError {
     },
     #[error("Initialization of first point failed")]
     InitError { source: NutsError },
+    #[error("Timeout occured while waiting for next sample")]
+    Timeout,
+    #[error("Drawing sample paniced")]
+    Panic,
 }
 
 pub type ParallelChainResult = Result<(), ParallelSamplingError>;
 
-pub struct Draw<S: SampleStats> {
-    position: Box<[f64]>,
-    stats: S,
+/*
+pub type Draw = (Box<[f64]>, Box<dyn SampleStats>);
+
+pub trait Sampler {
+    fn next_draw(&mut self) -> Result<Draw, ParallelSamplingError>;
+    fn next_draw_timeout(&mut self, timeout: Duration) -> Result<Draw, ParallelSamplingError>;
 }
+
+
+struct ParallelSampler<F: CpuLogpFunc + Clone + Send + 'static> {
+
+}
+*/
+
 
 /// Sample several chains in parallel and return all of the samples live in a channel
 pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc>(
@@ -82,7 +96,7 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
 ) -> Result<
     (
         JoinHandle<Vec<ParallelChainResult>>,
-        flume::Receiver<(Box<[f64]>, impl SampleStats)>,
+        crossbeam::channel::Receiver<(Box<[f64]>, Box<dyn SampleStats>)>,
     ),
     ParallelSamplingError,
 > {
@@ -115,7 +129,7 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
     let points: Result<Vec<Box<[f64]>>, _> = points.drain(..).collect();
     let points = points.map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
 
-    let (sender, receiver) = flume::bounded(128);
+    let (sender, receiver) = crossbeam::channel::bounded(128);
 
     let funcs = (0..n_chains).map(|_| func.clone()).collect_vec();
     let handle = spawn(move || {
@@ -127,13 +141,13 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
             .map_with(sender, |sender, (chain, (point, func))| {
                 let mut sampler = new_sampler(func, settings, chain as u64, seed);
                 sampler.set_position(&point)?;
-                sampler
-                    .set_position(&point)
-                    .expect("Could not eval logp at initial positon, though we could previously.");
+                //sampler
+                //    .set_position(&point)
+                //    .expect("Could not eval logp at initial positon, though we could previously.");
                 for _ in 0..draws {
                     let (point, info) = sampler.draw()?;
                     sender
-                        .send((point, info))
+                        .send((point, Box::new(info) as Box<dyn SampleStats>))
                         .map_err(|_| ParallelSamplingError::ChannelClosed())?;
                 }
                 Ok(())
@@ -149,11 +163,9 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
 pub fn new_sampler<F: CpuLogpFunc>(
     logp: F,
     settings: SamplerArgs,
-    //start: &[f64],  // TODO add start
     chain: u64,
     seed: u64,
-) -> impl Sampler {
-    // TODO return impl Iter
+) -> impl Chain {
     use crate::nuts::AdaptStrategy;
     let num_tune = settings.num_tune;
     let step_size_adapt = DualAverageStrategy::new(settings.step_size_adapt, num_tune, logp.dim());
@@ -171,10 +183,32 @@ pub fn new_sampler<F: CpuLogpFunc>(
         maxdepth: settings.maxdepth,
     };
 
-    let rng = { rand::rngs::StdRng::seed_from_u64(seed) };
+    //let rng = { rand::rngs::StdRng::seed_from_u64(seed) };
+    let rng = rand::rngs::SmallRng::seed_from_u64(seed);
 
-    NutsSampler::new(potential, strategy, options, rng, chain)
+    NutsChain::new(potential, strategy, options, rng, chain)
 }
+
+pub fn sample_sequentially<F: CpuLogpFunc>(
+    logp: F,
+    settings: SamplerArgs,
+    start: &[f64],
+    draws: u64,
+    chain: u64,
+    seed: u64,
+) -> Result<
+    impl Iterator<
+        Item = Result<(Box<[f64]>, impl SampleStats),
+        NutsError>
+    >,
+    NutsError
+>
+{
+    let mut sampler = new_sampler(logp, settings, chain, seed);
+    sampler.set_position(start)?;
+    Ok((0..draws).into_iter().map(move |_| sampler.draw()))
+}
+
 
 /// Initialize chains using uniform jitter around zero or some other provided value
 pub struct JitterInitFunc {
@@ -209,6 +243,7 @@ impl InitPointFunc for JitterInitFunc {
 
 pub mod test_logps {
     use crate::{cpu_potential::CpuLogpFunc, nuts::LogpError};
+    use multiversion::multiversion;
     use thiserror::Error;
 
     #[derive(Clone)]
@@ -241,12 +276,43 @@ pub mod test_logps {
             let n = position.len();
             assert!(gradient.len() == n);
 
-            let mut logp = 0f64;
-            for (p, g) in position.iter().zip(gradient.iter_mut()) {
-                let val = *p - self.mu;
-                logp -= val * val / 2.;
-                *g = -val;
+            #[multiversion]
+            #[clone(target = "[x64|x86_64]+avx+avx2+fma")]
+            #[clone(target = "x86+sse")]
+            fn logp_inner(mu: f64, position: &[f64], gradient: &mut [f64]) -> f64 {
+                use std::simd::f64x4;
+
+                let n = position.len();
+                assert!(gradient.len() == n);
+
+                let head_length = n - n % 4;
+
+                let (pos, pos_tail) = position.split_at(head_length);
+                let (grad, grad_tail) = gradient.split_at_mut(head_length);
+
+                let mu_splat = f64x4::splat(mu);
+
+                let mut logp = f64x4::splat(0f64);
+
+                for (p, g) in pos.chunks_exact(4).zip(grad.chunks_exact_mut(4)) {
+                    let p = f64x4::from_slice(p);
+                    let val = mu_splat - p;
+                    logp = logp - val * val * f64x4::splat(0.5);
+                    g.copy_from_slice(&val.to_array());
+                }
+
+                let mut logp_tail = 0f64;
+                for (p, g) in pos_tail.iter().zip(grad_tail.iter_mut()).take(3) {
+                    let val = mu - p;
+                    logp_tail -= val * val / 2.;
+                    *g = val;
+                }
+
+                logp.reduce_sum() + logp_tail
             }
+
+            let logp = logp_inner(self.mu, position, gradient);
+
             Ok(logp)
         }
     }

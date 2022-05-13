@@ -319,7 +319,7 @@ pub mod test_logps {
 mod test {
     use super::test_logps::NormalLogp;
     use super::*;
-    use crate::nuts::{AdaptStrategy, NutsOptions, NutsSampler, Sampler};
+    use crate::nuts::{AdaptStrategy, NutsOptions, NutsChain, Chain};
 
     #[test]
     fn instanciate_adaptive_sampler() {
@@ -345,7 +345,7 @@ mod test {
         };
         let chain = 0u64;
 
-        let mut sampler = NutsSampler::new(potential, strategy, options, rng, chain);
+        let mut sampler = NutsChain::new(potential, strategy, options, rng, chain);
         sampler.set_position(&vec![1.5f64; ndim]).unwrap();
         sampler.draw().unwrap();
     }

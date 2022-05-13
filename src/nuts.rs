@@ -292,7 +292,6 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
         }
     }
 
-    #[inline]
     fn merge_into<R: rand::Rng + ?Sized>(
         &mut self,
         other: NutsTree<P, C>,
@@ -329,7 +328,6 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
         self.log_size = log_size;
     }
 
-    #[inline]
     fn single_step(
         &self,
         pool: &mut <P::State as State>::Pool,
@@ -546,7 +544,7 @@ where
 }
 
 /// Draw samples from the posterior distribution using Hamiltonian MCMC.
-pub trait Sampler {
+pub trait Chain {
     type Hamiltonian: Hamiltonian;
     type AdaptStrategy: AdaptStrategy;
     type Stats: SampleStats;
@@ -564,7 +562,8 @@ pub trait Sampler {
     fn dim(&self) -> usize;
 }
 
-pub(crate) struct NutsSampler<P, R, S>
+
+pub(crate) struct NutsChain<P, R, S>
 where
     P: Hamiltonian,
     R: rand::Rng,
@@ -581,7 +580,7 @@ where
     strategy: S,
 }
 
-impl<P, R, S> NutsSampler<P, R, S>
+impl<P, R, S> NutsChain<P, R, S>
 where
     P: Hamiltonian,
     R: rand::Rng,
@@ -592,7 +591,7 @@ where
         let mut pool = potential.new_pool(pool_size);
         let init = potential.new_empty_state(&mut pool);
         let collector = strategy.new_collector();
-        NutsSampler {
+        NutsChain {
             pool,
             potential,
             collector,
@@ -621,7 +620,7 @@ pub trait AdaptStrategy {
     fn current_stats(&self, collector: &Self::Collector) -> Self::Stats;
 }
 
-impl<H, R, S> Sampler for NutsSampler<H, R, S>
+impl<H, R, S> Chain for NutsChain<H, R, S>
 where
     H: Hamiltonian,
     R: rand::Rng,

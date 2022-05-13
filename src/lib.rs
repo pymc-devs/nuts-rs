@@ -1,4 +1,5 @@
 #![feature(portable_simd)]
+#![feature(slice_as_chunks)]
 //! Sample from posterior distributions using the No U-turn Sampler (NUTS).
 //! For details see the original [NUTS paper](https://arxiv.org/abs/1111.4246)
 //! and the more recent [introduction](https://arxiv.org/abs/1701.02434).
@@ -10,7 +11,7 @@
 //! ## Usage
 //!
 //! ```
-//! use nuts_rs::{CpuLogpFunc, LogpError, new_sampler, SamplerArgs, Sampler, SampleStats};
+//! use nuts_rs::{CpuLogpFunc, LogpError, new_sampler, SamplerArgs, Chain, SampleStats};
 //! use thiserror::Error;
 //!
 //! // Define a function that computes the unnormalized posterior density
@@ -99,14 +100,13 @@ pub(crate) mod cpu_potential;
 pub(crate) mod cpu_sampler;
 pub(crate) mod cpu_state;
 pub(crate) mod mass_matrix;
-//pub(crate) mod math;
 pub mod math;
 pub(crate) mod nuts;
 pub(crate) mod stepsize;
 
 pub use cpu_potential::CpuLogpFunc;
 pub use cpu_sampler::test_logps;
-pub use cpu_sampler::{new_sampler, sample_parallel, InitPointFunc, JitterInitFunc, SamplerArgs};
+pub use cpu_sampler::{new_sampler, sample_parallel, InitPointFunc, JitterInitFunc, SamplerArgs, sample_sequentially, ParallelChainResult};
 pub use mass_matrix::DiagAdaptExpSettings;
-pub use nuts::{DivergenceInfo, LogpError, SampleStatValue, SampleStats, Sampler};
+pub use nuts::{DivergenceInfo, LogpError, SampleStatValue, SampleStats, Chain, NutsError};
 pub use stepsize::DualAverageSettings;

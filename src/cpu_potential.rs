@@ -140,7 +140,7 @@ impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
             use crate::nuts::State;
             out.energy() - initial_energy
         };
-        if (energy_error.abs() > self.max_energy_error) | !energy_error.is_finite() {
+        if (energy_error > self.max_energy_error) | !energy_error.is_finite() {
             let divergence_info = DivergenceInfoImpl {
                 logp_function_error: None,
                 start: Some(start.clone_inner()),
@@ -173,9 +173,6 @@ impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
         self.mass_matrix.randomize_momentum(inner, rng);
         self.mass_matrix.update_velocity(inner);
         self.mass_matrix.update_kinetic_energy(inner);
-        // TODO
-        //inner.idx_in_trajectory = 0;
-        //inner.p_sum.copy_from_slice(&inner.p);
     }
 
     fn current_stats(&self) -> Self::Stats {

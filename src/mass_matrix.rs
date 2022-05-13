@@ -1,8 +1,9 @@
-use itertools::{izip, Itertools};
+use itertools::izip;
+use multiversion::multiversion;
 
 use crate::{
-    cpu_state::{InnerState, State},
-    math::vector_dot,
+    cpu_state::{InnerState, State, AlignedArray},
+    math::{vector_dot, multiply},
     nuts::Collector,
 };
 
@@ -20,19 +21,27 @@ impl Collector for NullCollector {
 
 #[derive(Debug)]
 pub(crate) struct DiagMassMatrix {
-    inv_stds: Box<[f64]>,
-    pub(crate) variance: Box<[f64]>,
+    //inv_stds: Box<[f64]>,
+    inv_stds: AlignedArray,
+    //pub(crate) variance: Box<[f64]>,
+    pub(crate) variance: AlignedArray,
 }
 
 impl DiagMassMatrix {
     pub(crate) fn new(variance: Box<[f64]>) -> Self {
-        DiagMassMatrix {
-            inv_stds: variance.iter().map(|x| 1. / x.sqrt()).collect_vec().into(),
-            variance,
-        }
+        let variance_aligned = AlignedArray::new(variance.len());
+        let inv_stds_aligned = AlignedArray::new(variance.len());
+        let mut out = Self {
+            inv_stds: inv_stds_aligned,
+            variance: variance_aligned,
+        };
+        out.update_diag(variance.iter().copied());
+        out
     }
 
     pub(crate) fn update_diag(&mut self, new_variance: impl Iterator<Item = f64>) {
+        update_diag(&mut self.variance, &mut self.inv_stds, new_variance);
+        /*
         izip!(
             self.variance.iter_mut(),
             self.inv_stds.iter_mut(),
@@ -42,17 +51,28 @@ impl DiagMassMatrix {
             *var = x;
             *inv_std = (1. / x).sqrt();
         });
+        */
     }
+}
+
+#[multiversion]
+#[clone(target = "[x64|x86_64]+avx+avx2+fma")]
+#[clone(target = "x86+sse")]
+fn update_diag(variance_out: &mut [f64], inv_std_out: &mut [f64], new_variance: impl Iterator<Item = f64>) {
+    izip!(
+        variance_out.iter_mut(),
+        inv_std_out.iter_mut(),
+        new_variance
+    )
+    .for_each(|(var, inv_std, x)| {
+        *var = x;
+        *inv_std = (1. / x).sqrt();
+    });
 }
 
 impl MassMatrix for DiagMassMatrix {
     fn update_velocity(&self, state: &mut InnerState) {
-        //axpy_out(&self.variance, &state.p, 1., &mut state.v);
-        izip!(state.v.iter_mut(), self.variance.iter(), state.p.iter()).for_each(
-            |(out, &var, &p)| {
-                *out = var * p;
-            },
-        );
+        multiply(&self.variance, &state.p, &mut state.v);
     }
 
     fn update_kinetic_energy(&self, state: &mut InnerState) {
@@ -98,6 +118,8 @@ impl ExpWeightedVariance {
     }
 
     pub(crate) fn add_sample(&mut self, value: impl Iterator<Item = f64>) {
+        add_sample(self, value);
+        /*
         izip!(value, self.mean.iter_mut(), self.variance.iter_mut()).for_each(|(x, mean, var)| {
             let delta = if self.use_mean {
                 let delta = x - *mean;
@@ -108,10 +130,30 @@ impl ExpWeightedVariance {
             };
             *var = (1. - self.alpha) * (*var + self.alpha * delta * delta);
         });
+        */
     }
 
     pub(crate) fn current(&self) -> &[f64] {
         &self.variance
+    }
+}
+
+#[multiversion]
+#[clone(target = "[x64|x86_64]+avx+avx2+fma")]
+#[clone(target = "x86+sse")]
+fn add_sample(self_: &mut ExpWeightedVariance, value: impl Iterator<Item = f64>) {
+    if self_.use_mean {
+        izip!(value, self_.mean.iter_mut(), self_.variance.iter_mut()).for_each(|(x, mean, var)| {
+            let delta = x - *mean;
+            *mean += self_.alpha * delta;
+            *var = (1. - self_.alpha) * (*var + self_.alpha * delta * delta);
+        });
+    }
+    else {
+        izip!(value, self_.mean.iter_mut(), self_.variance.iter_mut()).for_each(|(x, _mean, var)| {
+            let delta = x;
+            *var = (1. - self_.alpha) * (*var + self_.alpha * delta * delta);
+        });
     }
 }
 

@@ -1,10 +1,13 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use itertools::Itertools;
+use nix::sched::{CpuSet, sched_setaffinity};
+use nix::unistd::Pid;
 use nuts_rs::math::{axpy, axpy_out, vector_dot};
 use nuts_rs::test_logps::NormalLogp;
-use nuts_rs::{new_sampler, sample_parallel, JitterInitFunc, Sampler, SamplerArgs};
+use nuts_rs::{new_sampler, sample_parallel, JitterInitFunc, Chain, SamplerArgs};
+use rayon::ThreadPoolBuilder;
 
-fn make_sampler(dim: usize, mu: f64) -> impl Sampler {
+
+fn make_sampler(dim: usize, mu: f64) -> impl Chain {
     let func = NormalLogp::new(dim, mu);
     new_sampler(func, SamplerArgs::default(), 0, 0)
 }
@@ -20,18 +23,31 @@ pub fn sample_one(mu: f64, out: &mut [f64]) {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
+    ThreadPoolBuilder::new()
+        .num_threads(10)
+        .start_handler(|idx| {
+            let mut cpu_set = CpuSet::new();
+            cpu_set.set(idx + 1).unwrap();
+            sched_setaffinity(Pid::from_raw(0), &cpu_set).unwrap();
+        })
+        .build_global()
+        .unwrap();
+
+    let mut cpu_set = CpuSet::new();
+    cpu_set.set(0).unwrap();
+    sched_setaffinity(Pid::from_raw(0), &cpu_set).unwrap();
+
+
     for n in [10, 12, 100, 800] {
         let x = vec![2.5; n];
         let mut y = vec![3.5; n];
-        let a = vec![3.5; n];
-        let d = vec![3.5; n];
         let mut out = vec![0.; n];
 
-        axpy(&x, &mut y, 4.);
+        //axpy(&x, &mut y, 4.);
         c.bench_function(&format!("axpy {}", n), |b| {
             b.iter(|| axpy(black_box(&x), black_box(&mut y), black_box(4.)));
         });
-        axpy_out(&x, &y, 4., &mut out);
+        //axpy_out(&x, &y, 4., &mut out);
         c.bench_function(&format!("axpy_out {}", n), |b| {
             b.iter(|| {
                 axpy_out(
@@ -42,7 +58,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 )
             });
         });
-        vector_dot(&x, &y);
+        //vector_dot(&x, &y);
         c.bench_function(&format!("vector_dot {}", n), |b| {
             b.iter(|| vector_dot(black_box(&x), black_box(&y)));
         });
@@ -57,17 +73,17 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
 
     let mut out = vec![0.; 10];
-    c.bench_function("sample_1000 10", |b| {
+    c.bench_function("sample_1000_10", |b| {
         b.iter(|| sample_one(black_box(3.), black_box(&mut out)))
     });
 
     let mut out = vec![0.; 1000];
-    c.bench_function("sample_1000 1000", |b| {
+    c.bench_function("sample_1000_1000", |b| {
         b.iter(|| sample_one(black_box(3.), black_box(&mut out)))
     });
 
     for n in [10, 12, 1000] {
-        c.bench_function(&format!("sample_parallel {}", n), |b| {
+        c.bench_function(&format!("sample_parallel_{}", n), |b| {
             b.iter(|| {
                 let func = NormalLogp::new(n, 0.);
                 let settings = black_box(SamplerArgs::default());
@@ -86,21 +102,13 @@ fn criterion_benchmark(c: &mut Criterion) {
                     n_try_init,
                 )
                 .unwrap();
-                //let draws: Vec<_> = channel.iter().collect();
-                let draws = channel.iter().count();
+                let draws: Vec<_> = channel.iter().collect();
                 //assert_eq!(draws.len() as u64, (n_draws + settings.num_tune) * n_chains);
                 handle.join().unwrap();
                 draws
             });
         });
     }
-
-    /*
-    let mut out = vec![0.; 100_000];
-    c.bench_function("sample_1000 100_000", |b| {
-        b.iter(|| sample_one(black_box(3.), black_box(&mut out)))
-    });
-    */
 }
 
 criterion_group!(benches, criterion_benchmark);
