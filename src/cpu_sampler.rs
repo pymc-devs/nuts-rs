@@ -8,7 +8,7 @@ use crate::{
     adapt_strategy::{CombinedStrategy, DualAverageStrategy, ExpWindowDiagAdapt},
     cpu_potential::EuclideanPotential,
     mass_matrix::{DiagAdaptExpSettings, DiagMassMatrix},
-    nuts::{NutsError, NutsOptions, NutsChain, SampleStats, Chain},
+    nuts::{Chain, NutsChain, NutsError, NutsOptions, SampleStats},
     stepsize::DualAverageSettings,
     CpuLogpFunc,
 };
@@ -82,7 +82,6 @@ struct ParallelSampler<F: CpuLogpFunc + Clone + Send + 'static> {
 
 }
 */
-
 
 /// Sample several chains in parallel and return all of the samples live in a channel
 pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc>(
@@ -196,19 +195,11 @@ pub fn sample_sequentially<F: CpuLogpFunc>(
     draws: u64,
     chain: u64,
     seed: u64,
-) -> Result<
-    impl Iterator<
-        Item = Result<(Box<[f64]>, impl SampleStats),
-        NutsError>
-    >,
-    NutsError
->
-{
+) -> Result<impl Iterator<Item = Result<(Box<[f64]>, impl SampleStats), NutsError>>, NutsError> {
     let mut sampler = new_sampler(logp, settings, chain, seed);
     sampler.set_position(start)?;
     Ok((0..draws).into_iter().map(move |_| sampler.draw()))
 }
-
 
 /// Initialize chains using uniform jitter around zero or some other provided value
 pub struct JitterInitFunc {

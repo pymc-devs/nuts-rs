@@ -1,11 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use nix::sched::{CpuSet, sched_setaffinity};
+use nix::sched::{sched_setaffinity, CpuSet};
 use nix::unistd::Pid;
 use nuts_rs::math::{axpy, axpy_out, vector_dot};
 use nuts_rs::test_logps::NormalLogp;
-use nuts_rs::{new_sampler, sample_parallel, JitterInitFunc, Chain, SamplerArgs};
+use nuts_rs::{new_sampler, sample_parallel, Chain, JitterInitFunc, SamplerArgs};
 use rayon::ThreadPoolBuilder;
-
 
 fn make_sampler(dim: usize, mu: f64) -> impl Chain {
     let func = NormalLogp::new(dim, mu);
@@ -37,8 +36,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     cpu_set.set(0).unwrap();
     sched_setaffinity(Pid::from_raw(0), &cpu_set).unwrap();
 
-
-    for n in [10, 12, 100, 800] {
+    for n in [10, 12, 14, 100, 800, 802] {
         let x = vec![2.5; n];
         let mut y = vec![3.5; n];
         let mut out = vec![0.; n];
@@ -47,6 +45,16 @@ fn criterion_benchmark(c: &mut Criterion) {
         c.bench_function(&format!("axpy {}", n), |b| {
             b.iter(|| axpy(black_box(&x), black_box(&mut y), black_box(4.)));
         });
+
+        c.bench_function(&format!("axpy_ndarray {}", n), |b| {
+            b.iter(|| {
+                let x = ndarray::aview1(black_box(&x));
+                let mut y = ndarray::aview_mut1(black_box(&mut y));
+                //y *= &x;// * black_box(4.);
+                y.scaled_add(black_box(4f64), &x);
+            });
+        });
+
         //axpy_out(&x, &y, 4., &mut out);
         c.bench_function(&format!("axpy_out {}", n), |b| {
             b.iter(|| {

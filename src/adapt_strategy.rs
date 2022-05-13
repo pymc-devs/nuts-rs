@@ -50,8 +50,8 @@ impl<F: CpuLogpFunc, M: MassMatrix> AdaptStrategy for DualAverageStrategy<F, M> 
     }
 
     fn adapt(&mut self, potential: &mut Self::Potential, draw: u64, collector: &Self::Collector) {
-        self.step_size_adapt.advance(collector.mean.current());
         if draw < self.num_tune {
+            self.step_size_adapt.advance(collector.mean.current());
             potential.step_size = self.step_size_adapt.current_step_size()
         } else {
             potential.step_size = self.step_size_adapt.current_step_size_adapted()
@@ -319,7 +319,7 @@ pub mod test_logps {
 mod test {
     use super::test_logps::NormalLogp;
     use super::*;
-    use crate::nuts::{AdaptStrategy, NutsOptions, NutsChain, Chain};
+    use crate::nuts::{AdaptStrategy, Chain, NutsChain, NutsOptions};
 
     #[test]
     fn instanciate_adaptive_sampler() {

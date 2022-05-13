@@ -94,14 +94,18 @@ impl AlignedArray {
         if ptr.is_null() {
             std::alloc::handle_alloc_error(layout);
         }
-        Self { data: ptr as *mut f64, size }
+        Self {
+            data: ptr as *mut f64,
+            size,
+        }
     }
 
     fn make_layout(size: usize) -> std::alloc::Layout {
         std::alloc::Layout::from_size_align(
             std::mem::size_of::<f64>().checked_mul(size).unwrap(),
             64,
-        ).unwrap()
+        )
+        .unwrap()
     }
 }
 

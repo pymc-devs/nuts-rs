@@ -2,7 +2,6 @@ use itertools::izip;
 use multiversion::multiversion;
 use std::simd::{f64x4, StdFloat};
 
-#[inline]
 pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
     if a == b {
         return a + 2f64.ln();
@@ -30,20 +29,16 @@ pub fn multiply(x: &[f64], y: &[f64], out: &mut [f64]) {
     let (x, x_tail) = x.as_chunks();
     let (y, y_tail) = y.as_chunks();
 
-    izip!(out, x, y)
-    .for_each(|(out, x, y)| {
+    izip!(out, x, y).for_each(|(out, x, y)| {
         let x = f64x4::from_array(*x);
         let y = f64x4::from_array(*y);
         *out = (x * y).to_array();
     });
 
-    izip!(out_tail.iter_mut(), x_tail.iter(), y_tail.iter()).for_each(
-        |(out, &x, &y)| {
-            *out = x * y;
-        },
-    );
+    izip!(out_tail.iter_mut(), x_tail.iter(), y_tail.iter()).for_each(|(out, &x, &y)| {
+        *out = x * y;
+    });
 }
-
 
 #[multiversion]
 #[clone(target = "[x84|x86_64]+avx+avx2+fma")]
@@ -64,18 +59,18 @@ pub fn scalar_prods2(positive1: &[f64], positive2: &[f64], x: &[f64], y: &[f64])
     let (d, d_tail) = y.as_chunks();
 
     let out = izip!(a, b, c, d)
-    .map(|(&a, &b, &c, &d)| {
-        (
-            f64x4::from_array(a),
-            f64x4::from_array(b),
-            f64x4::from_array(c),
-            f64x4::from_array(d),
-        )
-    })
-    .fold((zero, zero), |(s1, s2), (a, b, c, d)| {
-        let sum = a + b;
-        (c.mul_add(sum, s1), d.mul_add(sum, s2))
-    });
+        .map(|(&a, &b, &c, &d)| {
+            (
+                f64x4::from_array(a),
+                f64x4::from_array(b),
+                f64x4::from_array(c),
+                f64x4::from_array(d),
+            )
+        })
+        .fold((zero, zero), |(s1, s2), (a, b, c, d)| {
+            let sum = a + b;
+            (c.mul_add(sum, s1), d.mul_add(sum, s2))
+        });
     let out_head = (out.0.reduce_sum(), out.1.reduce_sum());
 
     let out = izip!(a_tail, b_tail, c_tail, d_tail,).fold((0., 0.), |(s1, s2), (a, b, c, d)| {
@@ -112,23 +107,22 @@ pub fn scalar_prods3(
     let (y, y_tail) = y.as_chunks();
 
     let out = izip!(a, b, c, x, y)
-    .map(|(&a, &b, &c, &x, &y)| {
-        (
-            f64x4::from_array(a),
-            f64x4::from_array(b),
-            f64x4::from_array(c),
-            f64x4::from_array(x),
-            f64x4::from_array(y),
-        )
-    })
-    .fold((zero, zero), |(s1, s2), (a, b, c, x, y)| {
-        let sum = a - b + c;
-        (x.mul_add(sum, s1), y.mul_add(sum, s2))
-    });
+        .map(|(&a, &b, &c, &x, &y)| {
+            (
+                f64x4::from_array(a),
+                f64x4::from_array(b),
+                f64x4::from_array(c),
+                f64x4::from_array(x),
+                f64x4::from_array(y),
+            )
+        })
+        .fold((zero, zero), |(s1, s2), (a, b, c, x, y)| {
+            let sum = a - b + c;
+            (x.mul_add(sum, s1), y.mul_add(sum, s2))
+        });
     let out_head = (out.0.reduce_sum(), out.1.reduce_sum());
 
     let out = izip!(a_tail, b_tail, c_tail, x_tail, y_tail)
-        .take(3)
         .fold((0., 0.), |(s1, s2), (a, b, c, x, y)| {
             (s1 + x * (a - b + c), s2 + y * (a - b + c))
         });
@@ -160,6 +154,12 @@ pub fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
     result
 }
 
+pub fn axpy_ndarray(x: &[f64], y: &mut [f64], a: f64) {
+    let x = ndarray::aview1(x);
+    let mut y = ndarray::aview_mut1(y);
+    y.scaled_add(a, &x);
+}
+
 #[multiversion]
 #[clone(target = "[x86|x86_64]+avx+avx2+fma")]
 #[clone(target = "x86+sse")]
@@ -179,9 +179,27 @@ pub fn axpy(x: &[f64], y: &mut [f64], a: f64) {
         *y = out.to_array();
     });
 
-    izip!(x_tail, y_tail).take(3).for_each(|(x, y)| {
+    izip!(x_tail, y_tail).for_each(|(x, y)| {
         *y = x.mul_add(a, *y);
     });
+    /*
+    let (x_pre, x, x_tail) = x.as_simd();
+    let (y_pre, y, y_tail) = y.as_simd_mut();
+
+    let a_splat = f64x4::splat(a);
+
+    izip!(x_pre, y_pre).for_each(|(x, y)| {
+        *y = x.mul_add(a, *y);
+    });
+
+    izip!(x, y).for_each(|(&x, y)| {
+        *y = x.mul_add(a_splat, *y);
+    });
+
+    izip!(x_tail, y_tail).for_each(|(x, y)| {
+        *y = x.mul_add(a, *y);
+    });
+    */
 }
 
 #[multiversion]
@@ -198,8 +216,7 @@ pub fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
 
     let a_splat = f64x4::splat(a);
 
-    izip!(x, y, out)
-    .for_each(|(&x, &y, out)| {
+    izip!(x, y, out).for_each(|(&x, &y, out)| {
         let x = f64x4::from_array(x);
         let y_val = f64x4::from_array(y);
 
@@ -207,9 +224,11 @@ pub fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
         *out = x.mul_add(a_splat, y_val).to_array();
     });
 
-    izip!(x_tail, y_tail, out_tail).take(3).for_each(|(&x, &y, out)| {
-        *out = a.mul_add(x, y);
-    });
+    izip!(x_tail, y_tail, out_tail)
+        .take(3)
+        .for_each(|(&x, &y, out)| {
+            *out = a.mul_add(x, y);
+        });
 }
 
 #[cfg(test)]

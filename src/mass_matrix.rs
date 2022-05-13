@@ -2,8 +2,8 @@ use itertools::izip;
 use multiversion::multiversion;
 
 use crate::{
-    cpu_state::{InnerState, State, AlignedArray},
-    math::{vector_dot, multiply},
+    cpu_state::{InnerState, State},
+    math::{multiply, vector_dot},
     nuts::Collector,
 };
 
@@ -21,19 +21,15 @@ impl Collector for NullCollector {
 
 #[derive(Debug)]
 pub(crate) struct DiagMassMatrix {
-    //inv_stds: Box<[f64]>,
-    inv_stds: AlignedArray,
-    //pub(crate) variance: Box<[f64]>,
-    pub(crate) variance: AlignedArray,
+    inv_stds: Box<[f64]>,
+    pub(crate) variance: Box<[f64]>,
 }
 
 impl DiagMassMatrix {
     pub(crate) fn new(variance: Box<[f64]>) -> Self {
-        let variance_aligned = AlignedArray::new(variance.len());
-        let inv_stds_aligned = AlignedArray::new(variance.len());
         let mut out = Self {
-            inv_stds: inv_stds_aligned,
-            variance: variance_aligned,
+            inv_stds: vec![0f64; variance.len()].into(),
+            variance: vec![0f64; variance.len()].into(),
         };
         out.update_diag(variance.iter().copied());
         out
@@ -41,28 +37,22 @@ impl DiagMassMatrix {
 
     pub(crate) fn update_diag(&mut self, new_variance: impl Iterator<Item = f64>) {
         update_diag(&mut self.variance, &mut self.inv_stds, new_variance);
-        /*
-        izip!(
-            self.variance.iter_mut(),
-            self.inv_stds.iter_mut(),
-            new_variance
-        )
-        .for_each(|(var, inv_std, x)| {
-            *var = x;
-            *inv_std = (1. / x).sqrt();
-        });
-        */
     }
 }
 
 #[multiversion]
 #[clone(target = "[x64|x86_64]+avx+avx2+fma")]
 #[clone(target = "x86+sse")]
-fn update_diag(variance_out: &mut [f64], inv_std_out: &mut [f64], new_variance: impl Iterator<Item = f64>) {
+fn update_diag(
+    variance_out: &mut [f64],
+    inv_std_out: &mut [f64],
+    new_variance: impl Iterator<Item = f64>,
+) {
+
     izip!(
-        variance_out.iter_mut(),
-        inv_std_out.iter_mut(),
-        new_variance
+        variance_out,
+        inv_std_out,
+        new_variance,
     )
     .for_each(|(var, inv_std, x)| {
         *var = x;
@@ -143,17 +133,20 @@ impl ExpWeightedVariance {
 #[clone(target = "x86+sse")]
 fn add_sample(self_: &mut ExpWeightedVariance, value: impl Iterator<Item = f64>) {
     if self_.use_mean {
-        izip!(value, self_.mean.iter_mut(), self_.variance.iter_mut()).for_each(|(x, mean, var)| {
-            let delta = x - *mean;
-            *mean += self_.alpha * delta;
-            *var = (1. - self_.alpha) * (*var + self_.alpha * delta * delta);
-        });
-    }
-    else {
-        izip!(value, self_.mean.iter_mut(), self_.variance.iter_mut()).for_each(|(x, _mean, var)| {
-            let delta = x;
-            *var = (1. - self_.alpha) * (*var + self_.alpha * delta * delta);
-        });
+        izip!(value, self_.mean.iter_mut(), self_.variance.iter_mut()).for_each(
+            |(x, mean, var)| {
+                let delta = x - *mean;
+                *mean += self_.alpha * delta;
+                *var = (1. - self_.alpha) * (*var + self_.alpha * delta * delta);
+            },
+        );
+    } else {
+        izip!(value, self_.mean.iter_mut(), self_.variance.iter_mut()).for_each(
+            |(x, _mean, var)| {
+                let delta = x;
+                *var = (1. - self_.alpha) * (*var + self_.alpha * delta * delta);
+            },
+        );
     }
 }
 

@@ -562,7 +562,6 @@ pub trait Chain {
     fn dim(&self) -> usize;
 }
 
-
 pub(crate) struct NutsChain<P, R, S>
 where
     P: Hamiltonian,
