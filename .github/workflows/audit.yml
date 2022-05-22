@@ -2,11 +2,12 @@ name: Security audit
 
 on:
   schedule:
-    - cron: '0 0 0 * *'
+    - cron: '40 10 * * *'
   push:
     paths:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
+      - '**/audit.yml'
   pull_request:
 
 jobs:
