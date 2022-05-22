@@ -1,4 +1,7 @@
-# nuts-rs
+[![Workflow Status](https://github.com/aseyboldt/nuts-rs/workflows/main/badge.svg)](https://github.com/aseyboldt/nuts-rs/actions?query=workflow%3A%22main%22)
+[![dependency status](https://deps.rs/repo/github/aseyboldt/nuts-rs/status.svg)](https://deps.rs/repo/github/aseyboldt/nuts-rs)
+
+<!-- cargo-rdme start -->
 
 Sample from posterior distributions using the No U-turn Sampler (NUTS).
 For details see the original [NUTS paper](https://arxiv.org/abs/1111.4246)
@@ -8,7 +11,7 @@ This crate was developed as a faster replacement of the sampler in PyMC,
 to be used with the new numba backend of aesara. The work-in-progress
 python wrapper for this sampler is [nuts-py](https://github.com/aseyboldt/nuts-py).
 
-### Usage
+## Usage
 
 ```rust
 use nuts_rs::{CpuLogpFunc, LogpError, new_sampler, SamplerArgs, Chain, SampleStats};
@@ -84,7 +87,7 @@ for _ in 0..2000 {
 Sampling several chains in parallel so that samples are accessable as they are generated
 is implemented in [`sample_parallel`].
 
-### Implementation details
+## Implementation details
 
 This crate mostly follows the implementation of NUTS in [Stan](https://mc-stan.org) and
 [PyMC](https://docs.pymc.io/en/v3/), only tuning of mass matrix and step size differs:
@@ -94,3 +97,5 @@ After `discard_window` draws we start computing a diagonal mass matrix using
 an exponentially decaying estimate for `sqrt(sample_var / grad_var)`.
 After `2 * discard_window` draws we switch to the entimated mass mass_matrix
 and keep adapting it live until `stop_tune_at`.
+
+<!-- cargo-rdme end -->
