@@ -1,4 +1,4 @@
-[![Workflow Status](https://github.com/aseyboldt/nuts-rs/workflows/main/badge.svg)](https://github.com/aseyboldt/nuts-rs/actions?query=workflow%3A%22main%22)
+![Workflow Status](https://github.com/aseyboldt/nuts-rs/actions/workflows/test.yml/badge.svg)
 [![dependency status](https://deps.rs/repo/github/aseyboldt/nuts-rs/status.svg)](https://deps.rs/repo/github/aseyboldt/nuts-rs)
 
 <!-- cargo-rdme start -->
