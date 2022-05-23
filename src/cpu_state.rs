@@ -308,6 +308,8 @@ impl State {
 
 #[cfg(test)]
 mod tests {
+    use crate::nuts::State;
+
     use super::*;
 
     #[test]
@@ -320,5 +322,19 @@ mod tests {
         let mut state2 = state.clone();
         assert!(state.try_mut_inner().is_err());
         assert!(state2.try_mut_inner().is_err());
+    }
+
+    #[test]
+    fn make_state() {
+        let dim = 10;
+        let mut pool = StatePool::new(dim);
+        let a = pool.new_state();
+
+        assert_eq!(a.idx_in_trajectory, 0);
+        assert!(a.p_sum.iter().all(|&x| x == 0f64));
+        assert_eq!(a.p_sum.len(), dim);
+        assert_eq!(a.grad.len(), dim);
+        assert_eq!(a.q.len(), dim);
+        assert_eq!(a.p.len(), dim);
     }
 }

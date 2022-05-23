@@ -309,56 +309,38 @@ pub mod test_logps {
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
-    use crate::{
-        cpu_sampler::SamplerArgs,
-        mass_matrix::DiagAdaptExpSettings,
-    };
+    use crate::{test_logps::NormalLogp, sample_sequentially, SamplerArgs, SampleStats, sample_parallel, JitterInitFunc};
 
-    use super::test_logps::*;
+    use itertools::Itertools;
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn make_state() {
-        let _ = State::new(10);
-        let mut storage = Rc::new(StateStorage::with_capacity(0));
-        let a = new_state(&mut storage, 10);
-        assert!(storage.free_states.borrow_mut().len() == 0);
-        drop(a);
-        assert!(storage.free_states.borrow_mut().len() == 1);
-        let a = new_state(&mut storage, 10);
-        assert!(storage.free_states.borrow_mut().len() == 0);
-        drop(a);
-        assert!(storage.free_states.borrow_mut().len() == 1);
-    }
+    fn sample_seq() {
+        let logp = NormalLogp::new(10, 0.1);
+        let settings = SamplerArgs::default();
+        let start = vec![0.2; 10];
 
-    #[test]
-    fn deterministic() {
-        let dim = 3usize;
-        let func = NormalLogp::new(dim, 3.);
-        let init = vec![3.5; dim];
+        let chain = sample_sequentially(logp.clone(), settings, &start, 2000, 1, 42).unwrap();
+        let mut draws = chain.collect_vec();
+        assert_eq!(draws.len(), 2000);
 
-        let settings = DiagAdaptExpSettings::default();
-        let mut sampler = EuclideanSampler::new(func, SamplerArgs::default(), settings, 10, 42);
+        let draw0 = draws.remove(100).unwrap();
+        let (vals, stats) = draw0;
+        assert_eq!(vals.len(), 10);
+        assert_eq!(stats.chain(), 1);
+        assert_eq!(stats.draw(), 100);
+        assert!(stats.to_vec().iter().any(|(key, _)| *key == "index_in_trajectory"));
 
-        sampler.set_position(&init).unwrap();
-        let (sample1, stats1) = sampler.draw().unwrap();
+        let (handles, chains) = sample_parallel(logp, &mut JitterInitFunc::new(), settings, 4, 1000, 42, 10).unwrap();
+        let mut draws = chains.iter().collect_vec();
+        assert_eq!(draws.len(), 8000);
+        assert!(handles.join().is_ok());
 
-        let func = NormalLogp::new(dim, 3.);
-        let mut sampler = EuclideanSampler::new(func, SamplerArgs::default(), settings, 10, 42);
-
-        sampler.set_position(&init).unwrap();
-        let (sample2, stats2) = sampler.draw().unwrap();
-
-        dbg!(&sample1);
-        dbg!(stats1);
-
-        dbg!(&sample2);
-        dbg!(stats2);
-
-        assert_eq!(sample1, sample2);
+        let draw0 = draws.remove(100);
+        let (vals, stats) = draw0;
+        assert_eq!(vals.len(), 10);
+        assert!(stats.to_vec().iter().any(|(key, _)| *key == "index_in_trajectory"));
     }
 }
-*/
