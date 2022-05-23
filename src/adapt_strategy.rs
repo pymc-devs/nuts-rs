@@ -347,6 +347,8 @@ mod test {
 
         let mut sampler = NutsChain::new(potential, strategy, options, rng, chain);
         sampler.set_position(&vec![1.5f64; ndim]).unwrap();
-        sampler.draw().unwrap();
+        for _ in 0..200 {
+            sampler.draw().unwrap();
+        }
     }
 }

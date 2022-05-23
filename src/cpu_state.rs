@@ -308,8 +308,6 @@ impl State {
 
 #[cfg(test)]
 mod tests {
-    use crate::nuts::State;
-
     use super::*;
 
     #[test]
