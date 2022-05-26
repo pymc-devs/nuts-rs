@@ -135,14 +135,11 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
         let results: Vec<Result<(), ParallelSamplingError>> = points
             .into_par_iter()
             .zip(funcs)
-            //.with_max_len(1)
+            .with_max_len(1)
             .enumerate()
             .map_with(sender, |sender, (chain, (point, func))| {
-                let mut sampler = new_sampler(func, settings, chain as u64, seed);
+                let mut sampler = new_sampler(func, settings, chain as u64, seed.wrapping_add(chain as u64));
                 sampler.set_position(&point)?;
-                //sampler
-                //    .set_position(&point)
-                //    .expect("Could not eval logp at initial positon, though we could previously.");
                 for _ in 0..draws {
                     let (point, info) = sampler.draw()?;
                     sender
