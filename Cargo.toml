@@ -4,7 +4,6 @@ version = "0.1.0"
 authors = ["Adrian Seyboldt <adrian.seyboldt@gmail.com>"]
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [profile.release]
 debug = true
 lto = "fat"
@@ -34,15 +33,12 @@ proptest = "1.0.0"
 pretty_assertions = "1.2.1"
 criterion = "0.3.5"
 nix = "0.24.1"
+approx = "0.5.1"
 #ndarray = "0.15.4"
 
 [[bench]]
 name = "sample"
 harness = false
-
-[target.x86_64-unknown-linux-gnu]
-linker = "/usr/bin/clang"
-rustflags = ["-Clink-arg=-fuse-ld=lld", "-Clink-arg=-Wl,--no-rosegment"]
 
 [features]
 nightly = ["simd_support"]

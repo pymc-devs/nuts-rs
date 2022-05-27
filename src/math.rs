@@ -57,7 +57,6 @@ pub fn multiply(x: &[f64], y: &[f64], out: &mut [f64]) {
     });
 }
 
-
 #[cfg(feature = "simd_support")]
 #[multiversion]
 #[clone(target = "[x84|x86_64]+avx+avx2+fma")]
@@ -186,7 +185,7 @@ pub fn scalar_prods3(
     assert!(x.len() == n);
     assert!(y.len() == n);
 
-    izip!(positive1, positive2, negative1, x, y)
+    izip!(positive1, negative1, positive2, x, y)
         .fold((0., 0.), |(s1, s2), (a, b, c, x, y)| {
             (s1 + x * (a - b + c), s2 + y * (a - b + c))
         })
@@ -319,6 +318,69 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use proptest::prelude::*;
+    use approx::assert_ulps_eq;
+    use ndarray::prelude::*;
+
+    fn assert_approx_eq(a: f64, b: f64) {
+        if a.is_nan() {
+            if b.is_nan() | b.is_infinite() {
+                return;
+            }
+        }
+        if b.is_nan() {
+            if a.is_nan() | a.is_infinite() {
+                return;
+            }
+        }
+        assert_ulps_eq!(a, b);
+    }
+
+
+    prop_compose! {
+        fn array2(maxsize: usize) (size in 0..maxsize) (
+            vec1 in prop::collection::vec(prop::num::f64::ANY, size),
+            vec2 in prop::collection::vec(prop::num::f64::ANY, size)
+        )
+        -> (Vec<f64>, Vec<f64>) {
+            (vec1, vec2)
+        }
+    }
+
+    prop_compose! {
+        fn array3(maxsize: usize) (size in 0..maxsize) (
+            vec1 in prop::collection::vec(prop::num::f64::ANY, size),
+            vec2 in prop::collection::vec(prop::num::f64::ANY, size),
+            vec3 in prop::collection::vec(prop::num::f64::ANY, size)
+        )
+        -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+            (vec1, vec2, vec3)
+        }
+    }
+
+    prop_compose! {
+        fn array4(maxsize: usize) (size in 0..maxsize) (
+            vec1 in prop::collection::vec(prop::num::f64::ANY, size),
+            vec2 in prop::collection::vec(prop::num::f64::ANY, size),
+            vec3 in prop::collection::vec(prop::num::f64::ANY, size),
+            vec4 in prop::collection::vec(prop::num::f64::ANY, size)
+        )
+        -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+            (vec1, vec2, vec3, vec4)
+        }
+    }
+
+    prop_compose! {
+        fn array5(maxsize: usize) (size in 0..maxsize) (
+            vec1 in prop::collection::vec(prop::num::f64::ANY, size),
+            vec2 in prop::collection::vec(prop::num::f64::ANY, size),
+            vec3 in prop::collection::vec(prop::num::f64::ANY, size),
+            vec4 in prop::collection::vec(prop::num::f64::ANY, size),
+            vec5 in prop::collection::vec(prop::num::f64::ANY, size)
+        )
+        -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+            (vec1, vec2, vec3, vec4, vec5)
+        }
+    }
 
     proptest! {
         #[test]
@@ -332,6 +394,61 @@ mod tests {
             prop_assert_eq!(x, logaddexp(x, neginf));
             prop_assert_eq!(logaddexp(neginf, neginf), neginf);
             prop_assert!(logaddexp(nan, x).is_nan());
+        }
+
+        #[test]
+        fn test_axpy((x, y) in array2(10), a in prop::num::f64::ANY) {
+            let orig = y.clone();
+            let mut y = y.clone();
+            axpy(&x[..], &mut y[..], a);
+            for ((&x, y), out) in x.iter().zip(orig).zip(y) {
+                assert_approx_eq(out, a * x + y);
+            }
+        }
+
+        #[test]
+        fn test_scalar_prods2((x1, x2, y1, y2) in array4(10)) {
+            let (p1, p2) = scalar_prods2(&x1[..], &x2[..], &y1[..], &y2[..]);
+            let x1 = ndarray::Array1::from_vec(x1);
+            let x2 = ndarray::Array1::from_vec(x2);
+            let y1 = ndarray::Array1::from_vec(y1);
+            let y2 = ndarray::Array1::from_vec(y2);
+            assert_approx_eq(p1, (&x1 + &x2).dot(&y1));
+            assert_approx_eq(p2, (&x1 + &x2).dot(&y2));
+        }
+
+        #[test]
+        fn test_scalar_prods3((x1, x2, x3, y1, y2) in array5(10)) {
+            let (p1, p2) = scalar_prods3(&x1[..], &x2[..], &x3[..], &y1[..], &y2[..]);
+            let x1 = ndarray::Array1::from_vec(x1);
+            let x2 = ndarray::Array1::from_vec(x2);
+            let x3 = ndarray::Array1::from_vec(x3);
+            let y1 = ndarray::Array1::from_vec(y1);
+            let y2 = ndarray::Array1::from_vec(y2);
+            assert_approx_eq(p1, (&x1 - &x2 + &x3).dot(&y1));
+            assert_approx_eq(p2, (&x1 - &x2 + &x3).dot(&y2));
+        }
+
+        #[test]
+        fn test_axpy_out(a in prop::num::f64::ANY, (x, y, out) in array3(10)) {
+            let mut out = out.clone();
+            axpy_out(&x[..], &y[..], a, &mut out[..]);
+            let x = ndarray::Array1::from_vec(x);
+            let y = ndarray::Array1::from_vec(y);
+            for (&out1, out2) in out.iter().zip(a * &x + y) {
+                assert_approx_eq(out1, out2);
+            }
+        }
+
+        #[test]
+        fn test_multiplty((x, y, out) in array3(10)) {
+            let mut out = out.clone();
+            multiply(&x[..], &y[..], &mut out[..]);
+            let x = ndarray::Array1::from_vec(x);
+            let y = ndarray::Array1::from_vec(y);
+            for (&out1, out2) in out.iter().zip(&x * &y) {
+                assert_approx_eq(out1, out2);
+            }
         }
     }
 

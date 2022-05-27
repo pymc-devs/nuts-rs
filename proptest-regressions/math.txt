@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc ea2a2598ee637946e47a8a744d25f76239671b82c5971a56b14ce5ee06838cb4 # shrinks to x = 4.8329699435311735, y = 9.38911339170414
+cc cf16a8d08e8ee8f7f3d3cfd60840e136ac51d130dffcd42db1a9a68d7e51f394 # shrinks to (x, y) = ([2.9394791070664547e110, 0.0], [inf, 0.0]), a = -2.4153502104628106e222
+cc 28897b64919482133f3885c3de51da0895409d23c9dd503a7b51a3e949bda307 # shrinks to (x1, x2, x3, y1, y2) = ([0.0], [0.0], [-4.0946726283401733e139], [0.0], [1.3157422010991668e73])

@@ -335,12 +335,13 @@ mod tests {
     #[test]
     fn sample_seq() {
         let logp = NormalLogp::new(10, 0.1);
-        let settings = SamplerArgs::default();
+        let mut settings = SamplerArgs::default();
+        settings.num_tune = 100;
         let start = vec![0.2; 10];
 
-        let chain = sample_sequentially(logp.clone(), settings, &start, 2000, 1, 42).unwrap();
+        let chain = sample_sequentially(logp.clone(), settings, &start, 200, 1, 42).unwrap();
         let mut draws = chain.collect_vec();
-        assert_eq!(draws.len(), 2000);
+        assert_eq!(draws.len(), 200);
 
         let draw0 = draws.remove(100).unwrap();
         let (vals, stats) = draw0;
@@ -349,9 +350,9 @@ mod tests {
         assert_eq!(stats.draw(), 100);
         assert!(stats.to_vec().iter().any(|(key, _)| *key == "index_in_trajectory"));
 
-        let (handles, chains) = sample_parallel(logp, &mut JitterInitFunc::new(), settings, 4, 1000, 42, 10).unwrap();
+        let (handles, chains) = sample_parallel(logp, &mut JitterInitFunc::new(), settings, 4, 100, 42, 10).unwrap();
         let mut draws = chains.iter().collect_vec();
-        assert_eq!(draws.len(), 8000);
+        assert_eq!(draws.len(), 800);
         assert!(handles.join().is_ok());
 
         let draw0 = draws.remove(100);
