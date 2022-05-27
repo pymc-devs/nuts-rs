@@ -264,6 +264,7 @@ pub mod test_logps {
             let n = position.len();
             assert!(gradient.len() == n);
 
+            #[cfg(feature = "simd_support")]
             #[multiversion]
             #[clone(target = "[x64|x86_64]+avx+avx2+fma")]
             #[clone(target = "x86+sse")]
@@ -297,6 +298,24 @@ pub mod test_logps {
                 }
 
                 logp.reduce_sum() + logp_tail
+            }
+
+            #[cfg(not(feature = "simd_support"))]
+            #[multiversion]
+            #[clone(target = "[x64|x86_64]+avx+avx2+fma")]
+            #[clone(target = "x86+sse")]
+            fn logp_inner(mu: f64, position: &[f64], gradient: &mut [f64]) -> f64 {
+                let n = position.len();
+                assert!(gradient.len() == n);
+
+                let mut logp = 0f64;
+                for (p, g) in position.iter().zip(gradient.iter_mut()) {
+                    let val = mu - p;
+                    logp -= val * val / 2.;
+                    *g = val;
+                }
+
+                logp
             }
 
             let logp = logp_inner(self.mu, position, gradient);

@@ -23,10 +23,10 @@ pub fn sample_one(mu: f64, out: &mut [f64]) {
 
 fn criterion_benchmark(c: &mut Criterion) {
     ThreadPoolBuilder::new()
-        .num_threads(10)
+        .num_threads(4)
         .start_handler(|idx| {
             let mut cpu_set = CpuSet::new();
-            cpu_set.set(idx + 1).unwrap();
+            cpu_set.set(idx).unwrap();
             sched_setaffinity(Pid::from_raw(0), &cpu_set).unwrap();
         })
         .build_global()

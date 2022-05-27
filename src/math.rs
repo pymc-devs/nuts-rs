@@ -1,5 +1,7 @@
 use itertools::izip;
 use multiversion::multiversion;
+
+#[cfg(feature = "simd_support")]
 use std::simd::{f64x4, StdFloat};
 
 pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
@@ -17,6 +19,7 @@ pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
     }
 }
 
+#[cfg(feature = "simd_support")]
 #[multiversion]
 #[clone(target = "[x64|x86_64]+avx+avx2+fma")]
 #[clone(target = "x86+sse")]
@@ -40,6 +43,22 @@ pub fn multiply(x: &[f64], y: &[f64], out: &mut [f64]) {
     });
 }
 
+#[cfg(not(feature = "simd_support"))]
+#[multiversion]
+#[clone(target = "[x64|x86_64]+avx+avx2+fma")]
+#[clone(target = "x86+sse")]
+pub fn multiply(x: &[f64], y: &[f64], out: &mut [f64]) {
+    let n = x.len();
+    assert!(y.len() == n);
+    assert!(out.len() == n);
+
+    izip!(out.iter_mut(), x.iter(), y.iter()).for_each(|(out, &x, &y)| {
+        *out = x * y;
+    });
+}
+
+
+#[cfg(feature = "simd_support")]
 #[multiversion]
 #[clone(target = "[x84|x86_64]+avx+avx2+fma")]
 #[clone(target = "x86+sse")]
@@ -80,6 +99,24 @@ pub fn scalar_prods2(positive1: &[f64], positive2: &[f64], x: &[f64], y: &[f64])
     (out_head.0 + out.0, out_head.1 + out.1)
 }
 
+#[cfg(not(feature = "simd_support"))]
+#[multiversion]
+#[clone(target = "[x84|x86_64]+avx+avx2+fma")]
+#[clone(target = "x86+sse")]
+pub fn scalar_prods2(positive1: &[f64], positive2: &[f64], x: &[f64], y: &[f64]) -> (f64, f64) {
+    let n = positive1.len();
+
+    assert!(positive1.len() == n);
+    assert!(positive2.len() == n);
+    assert!(x.len() == n);
+    assert!(y.len() == n);
+
+    izip!(positive1, positive2, x, y).fold((0., 0.), |(s1, s2), (a, b, c, d)| {
+        (s1 + c * (a + b), s2 + d * (a + b))
+    })
+}
+
+#[cfg(feature = "simd_support")]
 #[multiversion]
 #[clone(target = "[x84|x86_64]+avx+avx2+fma")]
 #[clone(target = "x86+sse")]
@@ -130,6 +167,32 @@ pub fn scalar_prods3(
     (out_head.0 + out.0, out_head.1 + out.1)
 }
 
+#[cfg(not(feature = "simd_support"))]
+#[multiversion]
+#[clone(target = "[x84|x86_64]+avx+avx2+fma")]
+#[clone(target = "x86+sse")]
+pub fn scalar_prods3(
+    positive1: &[f64],
+    negative1: &[f64],
+    positive2: &[f64],
+    x: &[f64],
+    y: &[f64],
+) -> (f64, f64) {
+    let n = positive1.len();
+
+    assert!(positive1.len() == n);
+    assert!(positive2.len() == n);
+    assert!(negative1.len() == n);
+    assert!(x.len() == n);
+    assert!(y.len() == n);
+
+    izip!(positive1, positive2, negative1, x, y)
+        .fold((0., 0.), |(s1, s2), (a, b, c, x, y)| {
+            (s1 + x * (a - b + c), s2 + y * (a - b + c))
+        })
+}
+
+#[cfg(feature = "simd_support")]
 #[multiversion]
 #[clone(target = "[x86|x86_64]+avx+avx2+fma")]
 #[clone(target = "x86+sse")]
@@ -154,12 +217,21 @@ pub fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
     result
 }
 
-pub fn axpy_ndarray(x: &[f64], y: &mut [f64], a: f64) {
-    let x = ndarray::aview1(x);
-    let mut y = ndarray::aview_mut1(y);
-    y.scaled_add(a, &x);
+#[cfg(not(feature = "simd_support"))]
+#[multiversion]
+#[clone(target = "[x86|x86_64]+avx+avx2+fma")]
+#[clone(target = "x86+sse")]
+pub fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
+    assert!(a.len() == b.len());
+
+    let mut result = 0f64;
+    for (val1, val2) in a.iter().zip(b) {
+        result += *val1 * *val2;
+    }
+    result
 }
 
+#[cfg(feature = "simd_support")]
 #[multiversion]
 #[clone(target = "[x86|x86_64]+avx+avx2+fma")]
 #[clone(target = "x86+sse")]
@@ -182,26 +254,22 @@ pub fn axpy(x: &[f64], y: &mut [f64], a: f64) {
     izip!(x_tail, y_tail).for_each(|(x, y)| {
         *y = x.mul_add(a, *y);
     });
-    /*
-    let (x_pre, x, x_tail) = x.as_simd();
-    let (y_pre, y, y_tail) = y.as_simd_mut();
-
-    let a_splat = f64x4::splat(a);
-
-    izip!(x_pre, y_pre).for_each(|(x, y)| {
-        *y = x.mul_add(a, *y);
-    });
-
-    izip!(x, y).for_each(|(&x, y)| {
-        *y = x.mul_add(a_splat, *y);
-    });
-
-    izip!(x_tail, y_tail).for_each(|(x, y)| {
-        *y = x.mul_add(a, *y);
-    });
-    */
 }
 
+#[cfg(not(feature = "simd_support"))]
+#[multiversion]
+#[clone(target = "[x86|x86_64]+avx+avx2+fma")]
+#[clone(target = "x86+sse")]
+pub fn axpy(x: &[f64], y: &mut [f64], a: f64) {
+    let n = x.len();
+    assert!(y.len() == n);
+
+    izip!(x, y).for_each(|(x, y)| {
+        *y = x.mul_add(a, *y);
+    });
+}
+
+#[cfg(feature = "simd_support")]
 #[multiversion]
 #[clone(target = "[x86|x86_64]+avx+avx2+fma")]
 #[clone(target = "x86+sse+fma")]
@@ -226,6 +294,21 @@ pub fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
 
     izip!(x_tail, y_tail, out_tail)
         .take(3)
+        .for_each(|(&x, &y, out)| {
+            *out = a.mul_add(x, y);
+        });
+}
+
+#[cfg(not(feature = "simd_support"))]
+#[multiversion]
+#[clone(target = "[x86|x86_64]+avx+avx2+fma")]
+#[clone(target = "x86+sse+fma")]
+pub fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
+    let n = x.len();
+    assert!(y.len() == n);
+    assert!(out.len() == n);
+
+    izip!(x, y, out)
         .for_each(|(&x, &y, out)| {
             *out = a.mul_add(x, y);
         });
