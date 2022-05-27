@@ -5,6 +5,11 @@ name: Run tests
 jobs:
   check:
     name: Check
+    strategy:
+      matrix:
+        rust:
+          - stable
+          - nightly
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
@@ -14,9 +19,15 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           profile: minimal
-          toolchain: nightly
+          toolchain: ${{ matrix.rust }}
           override: true
 
+      - name: Run cargo check nightly features
+        if: ${{ matrix.rust == 'nightly' }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+          args: --features=nightly
       - name: Run cargo check
         uses: actions-rs/cargo@v1
         with:
@@ -25,6 +36,11 @@ jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust:
+          - stable
+          - nightly
     steps:
       - name: Checkout sources
         uses: actions/checkout@v2
@@ -36,6 +52,12 @@ jobs:
           toolchain: nightly
           override: true
 
+      - name: Run cargo test with nightly features
+        if: ${{ matrix.rust == 'nightly' }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --features=nightly
       - name: Run cargo test
         uses: actions-rs/cargo@v1
         with:
