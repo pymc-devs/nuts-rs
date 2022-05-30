@@ -287,7 +287,6 @@ pub fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
         let x = f64x4::from_array(x);
         let y_val = f64x4::from_array(y);
 
-        //let out_val = a_splat * x + y_val;
         *out = x.mul_add(a_splat, y_val).to_array();
     });
 
@@ -434,8 +433,9 @@ mod tests {
             let mut out = out.clone();
             axpy_out(&x[..], &y[..], a, &mut out[..]);
             let x = ndarray::Array1::from_vec(x);
-            let y = ndarray::Array1::from_vec(y);
-            for (&out1, out2) in out.iter().zip(a * &x + y) {
+            let mut y = ndarray::Array1::from_vec(y);
+            y.scaled_add(a, &x);
+            for (&out1, out2) in out.iter().zip(y) {
                 assert_approx_eq(out1, out2);
             }
         }
