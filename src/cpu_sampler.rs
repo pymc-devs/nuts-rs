@@ -101,11 +101,11 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
 > {
     let mut func = func;
     let draws = settings.num_tune + n_draws;
-    let mut grad = vec![0.; func.dim()];
     let mut rng = StdRng::seed_from_u64(seed.wrapping_sub(1));
-    let mut points: Vec<Result<Box<[f64]>, F::Err>> = (0..n_chains)
+    let mut points: Vec<Result<(Box<[f64]>, Box<[f64]>), F::Err>> = (0..n_chains)
         .map(|_| {
             let mut position = vec![0.; func.dim()];
+            let mut grad = vec![0.; func.dim()];
             init_point_func.new_init_point(&mut rng, &mut position);
 
             let mut error = None;
@@ -120,12 +120,12 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
             }
             match error {
                 Some(e) => Err(e),
-                None => Ok(position.into()),
+                None => Ok((position.into(), grad.into())),
             }
         })
         .collect();
 
-    let points: Result<Vec<Box<[f64]>>, _> = points.drain(..).collect();
+    let points: Result<Vec<(Box<[f64]>, Box<[f64]>)>, _> = points.drain(..).collect();
     let points = points.map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
 
     let (sender, receiver) = crossbeam::channel::bounded(128);
@@ -138,12 +138,13 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
             .with_max_len(1)
             .enumerate()
             .map_with(sender, |sender, (chain, (point, func))| {
-                let mut sampler = new_sampler(func, settings, chain as u64, seed.wrapping_add(chain as u64));
-                sampler.set_position(&point)?;
+                //let (position, grad) = point;
+                let mut sampler = new_sampler(func, settings, chain as u64, seed.wrapping_add(chain as u64), point.1);
+                sampler.set_position(&point.0)?;
                 for _ in 0..draws {
-                    let (point, info) = sampler.draw()?;
+                    let (point2, info) = sampler.draw()?;
                     sender
-                        .send((point, Box::new(info) as Box<dyn SampleStats>))
+                        .send((point2, Box::new(info) as Box<dyn SampleStats>))
                         .map_err(|_| ParallelSamplingError::ChannelClosed())?;
                 }
                 Ok(())
@@ -161,6 +162,7 @@ pub fn new_sampler<F: CpuLogpFunc>(
     settings: SamplerArgs,
     chain: u64,
     seed: u64,
+    init_gradient: Box<[f64]>,
 ) -> impl Chain {
     use crate::nuts::AdaptStrategy;
     let num_tune = settings.num_tune;
@@ -170,7 +172,7 @@ pub fn new_sampler<F: CpuLogpFunc>(
 
     let strategy = CombinedStrategy::new(step_size_adapt, mass_matrix_adapt);
 
-    let mass_matrix = DiagMassMatrix::new(vec![1f64; logp.dim()].into());
+    let mass_matrix = DiagMassMatrix::new(logp.dim(), init_gradient.iter().map(|&x| (1f64 / (x * x)).clamp(1e-12, 1e12)));
     let max_energy_error = settings.max_energy_error;
     let step_size = settings.step_size_adapt.initial_step;
 
@@ -186,14 +188,16 @@ pub fn new_sampler<F: CpuLogpFunc>(
 }
 
 pub fn sample_sequentially<F: CpuLogpFunc>(
-    logp: F,
+    mut logp: F,
     settings: SamplerArgs,
     start: &[f64],
     draws: u64,
     chain: u64,
     seed: u64,
 ) -> Result<impl Iterator<Item = Result<(Box<[f64]>, impl SampleStats), NutsError>>, NutsError> {
-    let mut sampler = new_sampler(logp, settings, chain, seed);
+    let mut grad: Box<[f64]> = vec![0f64; logp.dim()].into();
+    logp.logp(start, &mut grad).map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
+    let mut sampler = new_sampler(logp, settings, chain, seed, grad.into());
     sampler.set_position(start)?;
     Ok((0..draws).into_iter().map(move |_| sampler.draw()))
 }

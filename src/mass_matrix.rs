@@ -26,12 +26,12 @@ pub(crate) struct DiagMassMatrix {
 }
 
 impl DiagMassMatrix {
-    pub(crate) fn new(variance: Box<[f64]>) -> Self {
+    pub(crate) fn new(ndim: usize, variance: impl Iterator<Item = f64>) -> Self {
         let mut out = Self {
-            inv_stds: vec![0f64; variance.len()].into(),
-            variance: vec![0f64; variance.len()].into(),
+            inv_stds: vec![0f64; ndim].into(),
+            variance: vec![0f64; ndim].into(),
         };
-        out.update_diag(variance.iter().copied());
+        out.update_diag(variance);
         out
     }
 
@@ -83,11 +83,42 @@ impl MassMatrix for DiagMassMatrix {
 }
 
 #[derive(Debug)]
+pub(crate) struct WelfordVariance {
+    count: u64,
+    mean: Box<[f64]>,
+    m2: Box<[f64]>,
+}
+
+impl WelfordVariance {
+    pub(crate) fn new(dim: usize) -> Self {
+        Self {
+            count: 0u64,
+            mean: vec![0f64; dim].into(),
+            m2: vec![0f64; dim].into(),
+        }
+    }
+
+    pub(crate) fn add_sample(&mut self, value: impl Iterator<Item = f64>) {
+        self.count += 1;
+        izip!(value, self.mean.iter_mut(), self.m2.iter_mut()).for_each(|(x, mean, m2)| {
+            let delta = x - *mean;
+            *mean += delta / self.count as f64;
+            let delta2 = x - *mean;
+            *m2 += delta * delta2;
+        });
+    }
+
+    pub(crate) fn current<'a>(&'a self) -> impl Iterator<Item = f64> + 'a {
+        self.m2.iter().map(|&x| x / self.count as f64)
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct ExpWeightedVariance {
     mean: Box<[f64]>,
     variance: Box<[f64]>,
-    alpha: f64,
-    use_mean: bool,
+    pub(crate) alpha: f64,  // TODO
+    pub(crate) use_mean: bool,
 }
 
 impl ExpWeightedVariance {
@@ -108,8 +139,9 @@ impl ExpWeightedVariance {
     }
 
     pub(crate) fn add_sample(&mut self, value: impl Iterator<Item = f64>) {
-        add_sample(self, value);
-        /*
+        // TODO Keep windows and discard old draws
+        // TODO Also implement early_max_treedepth
+        //add_sample(self, value);
         izip!(value, self.mean.iter_mut(), self.variance.iter_mut()).for_each(|(x, mean, var)| {
             let delta = if self.use_mean {
                 let delta = x - *mean;
@@ -120,7 +152,6 @@ impl ExpWeightedVariance {
             };
             *var = (1. - self.alpha) * (*var + self.alpha * delta * delta);
         });
-        */
     }
 
     pub(crate) fn current(&self) -> &[f64] {
@@ -136,7 +167,8 @@ fn add_sample(self_: &mut ExpWeightedVariance, value: impl Iterator<Item = f64>)
         izip!(value, self_.mean.iter_mut(), self_.variance.iter_mut()).for_each(
             |(x, mean, var)| {
                 let delta = x - *mean;
-                *mean += self_.alpha * delta;
+                //*mean += self_.alpha * delta;
+                *mean = self_.alpha.mul_add(delta, *mean);
                 *var = (1. - self_.alpha) * (*var + self_.alpha * delta * delta);
             },
         );
@@ -155,21 +187,27 @@ fn add_sample(self_: &mut ExpWeightedVariance, value: impl Iterator<Item = f64>)
 pub struct DiagAdaptExpSettings {
     /// An exponenital decay parameter for the variance estimator
     pub variance_decay: f64,
+    /// Exponenital decay parameter for the variance estimator in the first adaptation window
+    pub early_variance_decay: f64,
     /// The number of initial samples during which no mass matrix adaptation occurs.
     pub discard_window: u64,
     /// Stop adaptation ofter stop_at_draw draws. Should be smaller that `num_tune`.
     pub stop_at_draw: u64,
     /// Save the current adapted mass matrix as sampler stat
     pub save_mass_matrix: bool,
+    /// Switch to a new variance estimator every `window_switch_freq` draws.
+    pub window_switch_freq: u64,
 }
 
 impl Default for DiagAdaptExpSettings {
     fn default() -> Self {
         Self {
-            variance_decay: 0.05,
-            discard_window: 50,
+            variance_decay: 0.02,
+            discard_window: 10,
             stop_at_draw: 920,
             save_mass_matrix: false,
+            window_switch_freq: 50,
+            early_variance_decay: 0.8,
         }
     }
 }
@@ -177,6 +215,7 @@ impl Default for DiagAdaptExpSettings {
 pub(crate) struct DrawGradCollector {
     pub(crate) draw: Box<[f64]>,
     pub(crate) grad: Box<[f64]>,
+    pub(crate) is_good: bool,
 }
 
 impl DrawGradCollector {
@@ -184,6 +223,7 @@ impl DrawGradCollector {
         DrawGradCollector {
             draw: vec![0f64; dim].into(),
             grad: vec![0f64; dim].into(),
+            is_good: false,
         }
     }
 }
@@ -195,6 +235,7 @@ impl Collector for DrawGradCollector {
         if info.divergence_info.is_none() {
             self.draw.copy_from_slice(&state.q);
             self.grad.copy_from_slice(&state.grad);
+            self.is_good = state.index_in_trajectory() != 0;
         }
     }
 }

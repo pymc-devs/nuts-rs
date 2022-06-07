@@ -1,4 +1,4 @@
-use std::{fmt::Debug, marker::PhantomData};
+use std::{fmt::Debug, marker::PhantomData, mem::swap};
 
 use itertools::{izip, Itertools};
 
@@ -74,6 +74,14 @@ pub(crate) struct ExpWindowDiagAdapt<F> {
     dim: usize,
     exp_variance_draw: ExpWeightedVariance,
     exp_variance_grad: ExpWeightedVariance,
+    exp_variance_draw_bg: ExpWeightedVariance,
+    exp_variance_grad_bg: ExpWeightedVariance,
+    /*
+    exp_variance_draw: WelfordVariance,
+    exp_variance_grad: WelfordVariance,
+    exp_variance_draw_bg: WelfordVariance,
+    exp_variance_grad_bg: WelfordVariance,
+    */
     settings: DiagAdaptExpSettings,
     _phantom: PhantomData<F>,
 }
@@ -101,8 +109,16 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
     fn new(options: Self::Options, _num_tune: u64, dim: usize) -> Self {
         Self {
             dim,
-            exp_variance_draw: ExpWeightedVariance::new(dim, options.variance_decay, true),
-            exp_variance_grad: ExpWeightedVariance::new(dim, options.variance_decay, true),
+            exp_variance_draw: ExpWeightedVariance::new(dim, options.early_variance_decay, true),
+            exp_variance_grad: ExpWeightedVariance::new(dim, options.early_variance_decay, true),
+            exp_variance_draw_bg: ExpWeightedVariance::new(dim, options.early_variance_decay, true),
+            exp_variance_grad_bg: ExpWeightedVariance::new(dim, options.early_variance_decay, true),
+            /*
+            exp_variance_draw: WelfordVariance::new(dim),
+            exp_variance_grad: WelfordVariance::new(dim),
+            exp_variance_draw_bg: WelfordVariance::new(dim),
+            exp_variance_grad_bg: WelfordVariance::new(dim),
+            */
             settings: options,
             _phantom: PhantomData::default(),
         }
@@ -117,15 +133,33 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
             return;
         }
 
-        if draw == self.settings.discard_window {
-            self.exp_variance_draw
+        if (draw > 2 * self.settings.discard_window) & (draw % self.settings.window_switch_freq == 0) {
+            self.exp_variance_draw.alpha = self.settings.variance_decay;
+            self.exp_variance_grad.alpha = self.settings.variance_decay;
+            //swap(&mut self.exp_variance_draw, &mut self.exp_variance_draw_bg);
+            //swap(&mut self.exp_variance_grad, &mut self.exp_variance_grad_bg);
+            /*
+            self.exp_variance_draw_bg = ExpWeightedVariance::new(self.dim, self.settings.variance_decay, true);
+            self.exp_variance_grad_bg = ExpWeightedVariance::new(self.dim, self.settings.variance_decay, true);
+            self.exp_variance_draw_bg
                 .set_mean(collector.draw.iter().copied());
+            self.exp_variance_grad_bg
+                .set_mean(collector.grad.iter().copied().map(|_| 0f64));
+            */
         }
 
-        self.exp_variance_draw
-            .add_sample(collector.draw.iter().copied());
-        self.exp_variance_grad
-            .add_sample(collector.grad.iter().copied());
+        if collector.is_good {
+            self.exp_variance_draw
+                .add_sample(collector.draw.iter().copied());
+            self.exp_variance_grad
+                .add_sample(collector.grad.iter().copied());
+            /*
+            self.exp_variance_draw_bg
+                .add_sample(collector.draw.iter().copied());
+            self.exp_variance_grad_bg
+                .add_sample(collector.grad.iter().copied());
+            */
+        }
 
         if draw > 2 * self.settings.discard_window {
             potential.mass_matrix.update_diag(
@@ -133,7 +167,8 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
                     self.exp_variance_draw.current(),
                     self.exp_variance_grad.current(),
                 )
-                .map(|(&draw, &grad)| (draw / grad).sqrt().clamp(1e-12, 1e10)),
+                //.map(|(draw, grad)| (draw / grad).sqrt().clamp(1e-12, 1e12)),
+                .map(|(draw, grad)| (draw / grad).sqrt()),
             );
         }
     }
@@ -151,7 +186,7 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
                     self.exp_variance_draw.current(),
                     self.exp_variance_grad.current(),
                 )
-                .map(|(&draw, &grad)| (draw / grad).sqrt().clamp(1e-12, 1e10))
+                .map(|(draw, grad)| (draw / grad).sqrt().clamp(1e-12, 1e12))
                 .collect_vec()
                 .into(),
             )
