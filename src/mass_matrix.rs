@@ -48,13 +48,9 @@ fn update_diag(
     inv_std_out: &mut [f64],
     new_variance: impl Iterator<Item = f64>,
 ) {
-
-    izip!(
-        variance_out,
-        inv_std_out,
-        new_variance,
-    )
-    .for_each(|(var, inv_std, x)| {
+    izip!(variance_out, inv_std_out, new_variance,).for_each(|(var, inv_std, x)| {
+        assert!(x.is_finite(), "Illegal value on mass matrix: {}", x);
+        assert!(x > 0f64, "Illegal value on mass matrix: {}", x);
         *var = x;
         *inv_std = (1. / x).sqrt();
     });
@@ -111,13 +107,18 @@ impl WelfordVariance {
     pub(crate) fn current<'a>(&'a self) -> impl Iterator<Item = f64> + 'a {
         self.m2.iter().map(|&x| x / self.count as f64)
     }
+
+    pub(crate) fn count(&self) -> u64 {
+        self.count
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct ExpWeightedVariance {
     mean: Box<[f64]>,
     variance: Box<[f64]>,
-    pub(crate) alpha: f64,  // TODO
+    count: u64,
+    pub(crate) alpha: f64, // TODO
     pub(crate) use_mean: bool,
 }
 
@@ -126,6 +127,7 @@ impl ExpWeightedVariance {
         ExpWeightedVariance {
             mean: vec![0f64; dim].into(),
             variance: vec![0f64; dim].into(),
+            count: 0,
             alpha,
             use_mean,
         }
@@ -141,9 +143,14 @@ impl ExpWeightedVariance {
     pub(crate) fn add_sample(&mut self, value: impl Iterator<Item = f64>) {
         // TODO Keep windows and discard old draws
         // TODO Also implement early_max_treedepth
-        //add_sample(self, value);
+        add_sample(self, value);
+        self.count += 1;
+        /*
         izip!(value, self.mean.iter_mut(), self.variance.iter_mut()).for_each(|(x, mean, var)| {
             let delta = if self.use_mean {
+                assert!(x.is_finite());
+                assert!(mean.is_finite());
+                assert!(var.is_finite());
                 let delta = x - *mean;
                 *mean += self.alpha * delta;
                 delta
@@ -152,10 +159,15 @@ impl ExpWeightedVariance {
             };
             *var = (1. - self.alpha) * (*var + self.alpha * delta * delta);
         });
+        */
     }
 
     pub(crate) fn current(&self) -> &[f64] {
         &self.variance
+    }
+
+    pub(crate) fn count(&self) -> u64 {
+        self.count
     }
 }
 
@@ -166,17 +178,21 @@ fn add_sample(self_: &mut ExpWeightedVariance, value: impl Iterator<Item = f64>)
     if self_.use_mean {
         izip!(value, self_.mean.iter_mut(), self_.variance.iter_mut()).for_each(
             |(x, mean, var)| {
+                //if self_.count > 1 {
+                //    assert!(x - *mean != 0f64, "var = {}, mean = {}, x = {}, delta = {}, count = {}", var, mean, x, x - *mean, self_.count);
+                //}
                 let delta = x - *mean;
                 //*mean += self_.alpha * delta;
                 *mean = self_.alpha.mul_add(delta, *mean);
-                *var = (1. - self_.alpha) * (*var + self_.alpha * delta * delta);
+                *var = (1f64 - self_.alpha) * (*var + self_.alpha * delta * delta);
             },
         );
     } else {
         izip!(value, self_.mean.iter_mut(), self_.variance.iter_mut()).for_each(
             |(x, _mean, var)| {
                 let delta = x;
-                *var = (1. - self_.alpha) * (*var + self_.alpha * delta * delta);
+                *var = (1f64 - self_.alpha) * (*var + self_.alpha * delta * delta);
+                //assert!(*var > 0f64, "var = {}, x = {}, delta = {}", var, x, delta);
             },
         );
     }
@@ -223,7 +239,7 @@ impl DrawGradCollector {
         DrawGradCollector {
             draw: vec![0f64; dim].into(),
             grad: vec![0f64; dim].into(),
-            is_good: false,
+            is_good: true,
         }
     }
 }
@@ -232,10 +248,8 @@ impl Collector for DrawGradCollector {
     type State = State;
 
     fn register_draw(&mut self, state: &Self::State, info: &crate::nuts::SampleInfo) {
-        if info.divergence_info.is_none() {
-            self.draw.copy_from_slice(&state.q);
-            self.grad.copy_from_slice(&state.grad);
-            self.is_good = state.index_in_trajectory() != 0;
-        }
+        self.draw.copy_from_slice(&state.q);
+        self.grad.copy_from_slice(&state.grad);
+        self.is_good = state.index_in_trajectory() != 0;
     }
 }

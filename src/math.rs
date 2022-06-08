@@ -185,10 +185,9 @@ pub fn scalar_prods3(
     assert!(x.len() == n);
     assert!(y.len() == n);
 
-    izip!(positive1, negative1, positive2, x, y)
-        .fold((0., 0.), |(s1, s2), (a, b, c, x, y)| {
-            (s1 + x * (a - b + c), s2 + y * (a - b + c))
-        })
+    izip!(positive1, negative1, positive2, x, y).fold((0., 0.), |(s1, s2), (a, b, c, x, y)| {
+        (s1 + x * (a - b + c), s2 + y * (a - b + c))
+    })
 }
 
 #[cfg(feature = "simd_support")]
@@ -306,19 +305,18 @@ pub fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
     assert!(y.len() == n);
     assert!(out.len() == n);
 
-    izip!(x, y, out)
-        .for_each(|(&x, &y, out)| {
-            *out = a.mul_add(x, y);
-        });
+    izip!(x, y, out).for_each(|(&x, &y, out)| {
+        *out = a.mul_add(x, y);
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pretty_assertions::assert_eq;
-    use proptest::prelude::*;
     use approx::assert_ulps_eq;
     use ndarray::prelude::*;
+    use pretty_assertions::assert_eq;
+    use proptest::prelude::*;
 
     fn assert_approx_eq(a: f64, b: f64) {
         if a.is_nan() {
@@ -333,7 +331,6 @@ mod tests {
         }
         assert_ulps_eq!(a, b);
     }
-
 
     prop_compose! {
         fn array2(maxsize: usize) (size in 0..maxsize) (

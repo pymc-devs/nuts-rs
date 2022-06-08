@@ -139,7 +139,13 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
             .enumerate()
             .map_with(sender, |sender, (chain, (point, func))| {
                 //let (position, grad) = point;
-                let mut sampler = new_sampler(func, settings, chain as u64, seed.wrapping_add(chain as u64), point.1);
+                let mut sampler = new_sampler(
+                    func,
+                    settings,
+                    chain as u64,
+                    seed.wrapping_add(chain as u64),
+                    point.1,
+                );
                 sampler.set_position(&point.0)?;
                 for _ in 0..draws {
                     let (point2, info) = sampler.draw()?;
@@ -172,7 +178,16 @@ pub fn new_sampler<F: CpuLogpFunc>(
 
     let strategy = CombinedStrategy::new(step_size_adapt, mass_matrix_adapt);
 
-    let mass_matrix = DiagMassMatrix::new(logp.dim(), init_gradient.iter().map(|&x| (1f64 / (x * x)).clamp(1e-12, 1e12)));
+    //let norm = init_gradient.iter().copied().reduce(|sum, x| sum + x * x).unwrap_or(1f64).sqrt();
+    //let cutoff = 1e3f64;
+    let mass_matrix = DiagMassMatrix::new(
+        logp.dim(),
+        init_gradient.iter().map(|&x| {
+            //if norm > cutoff {
+            //    1f64 / (x * x)
+            1f64 / (x * x)
+        }),
+    );
     let max_energy_error = settings.max_energy_error;
     let step_size = settings.step_size_adapt.initial_step;
 
@@ -196,7 +211,8 @@ pub fn sample_sequentially<F: CpuLogpFunc>(
     seed: u64,
 ) -> Result<impl Iterator<Item = Result<(Box<[f64]>, impl SampleStats), NutsError>>, NutsError> {
     let mut grad: Box<[f64]> = vec![0f64; logp.dim()].into();
-    logp.logp(start, &mut grad).map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
+    logp.logp(start, &mut grad)
+        .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
     let mut sampler = new_sampler(logp, settings, chain, seed, grad.into());
     sampler.set_position(start)?;
     Ok((0..draws).into_iter().map(move |_| sampler.draw()))
@@ -331,7 +347,10 @@ pub mod test_logps {
 
 #[cfg(test)]
 mod tests {
-    use crate::{test_logps::NormalLogp, sample_sequentially, SamplerArgs, SampleStats, sample_parallel, JitterInitFunc};
+    use crate::{
+        sample_parallel, sample_sequentially, test_logps::NormalLogp, JitterInitFunc, SampleStats,
+        SamplerArgs,
+    };
 
     use itertools::Itertools;
     use pretty_assertions::assert_eq;
@@ -352,9 +371,13 @@ mod tests {
         assert_eq!(vals.len(), 10);
         assert_eq!(stats.chain(), 1);
         assert_eq!(stats.draw(), 100);
-        assert!(stats.to_vec().iter().any(|(key, _)| *key == "index_in_trajectory"));
+        assert!(stats
+            .to_vec()
+            .iter()
+            .any(|(key, _)| *key == "index_in_trajectory"));
 
-        let (handles, chains) = sample_parallel(logp, &mut JitterInitFunc::new(), settings, 4, 100, 42, 10).unwrap();
+        let (handles, chains) =
+            sample_parallel(logp, &mut JitterInitFunc::new(), settings, 4, 100, 42, 10).unwrap();
         let mut draws = chains.iter().collect_vec();
         assert_eq!(draws.len(), 800);
         assert!(handles.join().is_ok());
@@ -362,6 +385,9 @@ mod tests {
         let draw0 = draws.remove(100);
         let (vals, stats) = draw0;
         assert_eq!(vals.len(), 10);
-        assert!(stats.to_vec().iter().any(|(key, _)| *key == "index_in_trajectory"));
+        assert!(stats
+            .to_vec()
+            .iter()
+            .any(|(key, _)| *key == "index_in_trajectory"));
     }
 }
