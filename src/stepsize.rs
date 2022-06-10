@@ -3,22 +3,17 @@ use std::marker::PhantomData;
 use crate::nuts::{Collector, NutsOptions, State};
 
 /// Settings for step size adaptation
-#[derive(Clone, Copy)]
-pub struct DualAverageSettings {
-    /// The target acceptance rate. Must be between 0 and 1, usually >= 0.6.
-    /// The large the target acceptance rate the smaller the steps will be
-    /// that each leapfrog step takes.
-    pub target: f64,
+#[derive(Debug, Clone, Copy)]
+pub struct DualAverageOptions {
     pub k: f64,
     pub t0: f64,
     pub gamma: f64,
     pub initial_step: f64,
 }
 
-impl Default for DualAverageSettings {
-    fn default() -> DualAverageSettings {
-        DualAverageSettings {
-            target: 0.8,
+impl Default for DualAverageOptions {
+    fn default() -> DualAverageOptions {
+        DualAverageOptions {
             k: 0.75,
             t0: 10.,
             gamma: 0.05,
@@ -34,25 +29,26 @@ pub struct DualAverage {
     hbar: f64,
     mu: f64,
     count: u64,
-    settings: DualAverageSettings,
+    settings: DualAverageOptions,
 }
 
 impl DualAverage {
-    pub fn new(settings: DualAverageSettings) -> DualAverage {
+    pub fn new(settings: DualAverageOptions) -> DualAverage {
         let initial_step = settings.initial_step;
         DualAverage {
             log_step: initial_step.ln(),
             log_step_adapted: initial_step.ln(),
             hbar: 0.,
-            mu: (10. * initial_step).ln(),
+            //mu: (10. * initial_step).ln(),
+            mu: (2. * initial_step).ln(),
             count: 1,
             settings,
         }
     }
 
-    pub fn advance(&mut self, accept_stat: f64) {
+    pub fn advance(&mut self, accept_stat: f64, target: f64) {
         let w = 1. / (self.count as f64 + self.settings.t0);
-        self.hbar = (1. - w) * self.hbar + w * (self.settings.target - accept_stat);
+        self.hbar = (1. - w) * self.hbar + w * (target - accept_stat);
         self.log_step = self.mu - self.hbar * (self.count as f64).sqrt() / self.settings.gamma;
         let mk = (self.count as f64).powf(-self.settings.k);
         self.log_step_adapted = mk * self.log_step + (1. - mk) * self.log_step_adapted;
@@ -99,6 +95,10 @@ impl RunningMean {
     pub(crate) fn reset(&mut self) {
         self.sum = 0f64;
         self.count = 0;
+    }
+
+    pub(crate) fn count(&self) -> u64 {
+        self.count
     }
 }
 

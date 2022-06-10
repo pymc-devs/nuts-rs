@@ -26,13 +26,11 @@ pub(crate) struct DiagMassMatrix {
 }
 
 impl DiagMassMatrix {
-    pub(crate) fn new(ndim: usize, variance: impl Iterator<Item = f64>) -> Self {
-        let mut out = Self {
+    pub(crate) fn new(ndim: usize) -> Self {
+        Self {
             inv_stds: vec![0f64; ndim].into(),
             variance: vec![0f64; ndim].into(),
-        };
-        out.update_diag(variance);
-        out
+        }
     }
 
     pub(crate) fn update_diag(&mut self, new_variance: impl Iterator<Item = f64>) {
@@ -140,26 +138,16 @@ impl ExpWeightedVariance {
             .for_each(|(out, val)| *out = val);
     }
 
+    pub(crate) fn set_variance(&mut self, values: impl Iterator<Item = f64>) {
+        self.variance
+            .iter_mut()
+            .zip(values)
+            .for_each(|(out, val)| *out = val);
+    }
+
     pub(crate) fn add_sample(&mut self, value: impl Iterator<Item = f64>) {
-        // TODO Keep windows and discard old draws
-        // TODO Also implement early_max_treedepth
         add_sample(self, value);
         self.count += 1;
-        /*
-        izip!(value, self.mean.iter_mut(), self.variance.iter_mut()).for_each(|(x, mean, var)| {
-            let delta = if self.use_mean {
-                assert!(x.is_finite());
-                assert!(mean.is_finite());
-                assert!(var.is_finite());
-                let delta = x - *mean;
-                *mean += self.alpha * delta;
-                delta
-            } else {
-                x
-            };
-            *var = (1. - self.alpha) * (*var + self.alpha * delta * delta);
-        });
-        */
     }
 
     pub(crate) fn current(&self) -> &[f64] {
@@ -207,12 +195,13 @@ pub struct DiagAdaptExpSettings {
     pub early_variance_decay: f64,
     /// The number of initial samples during which no mass matrix adaptation occurs.
     pub discard_window: u64,
-    /// Stop adaptation ofter stop_at_draw draws. Should be smaller that `num_tune`.
-    pub stop_at_draw: u64,
+    /// Stop adaptation `final_window` draws before tuning ends.
+    pub final_window: u64,
     /// Save the current adapted mass matrix as sampler stat
     pub save_mass_matrix: bool,
     /// Switch to a new variance estimator every `window_switch_freq` draws.
     pub window_switch_freq: u64,
+    pub grad_init: bool,
 }
 
 impl Default for DiagAdaptExpSettings {
@@ -220,10 +209,11 @@ impl Default for DiagAdaptExpSettings {
         Self {
             variance_decay: 0.02,
             discard_window: 10,
-            stop_at_draw: 920,
+            final_window: 50,
             save_mass_matrix: false,
             window_switch_freq: 50,
             early_variance_decay: 0.8,
+            grad_init: true,
         }
     }
 }

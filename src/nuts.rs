@@ -612,11 +612,29 @@ pub trait AdaptStrategy {
 
     fn new(options: Self::Options, num_tune: u64, dim: usize) -> Self;
 
-    fn adapt(&mut self, potential: &mut Self::Potential, draw: u64, collector: &Self::Collector);
+    fn init(
+        &mut self,
+        options: &mut NutsOptions,
+        potential: &mut Self::Potential,
+        state: &<Self::Potential as Hamiltonian>::State,
+    );
+
+    fn adapt(
+        &mut self,
+        options: &mut NutsOptions,
+        potential: &mut Self::Potential,
+        draw: u64,
+        collector: &Self::Collector,
+    );
 
     fn new_collector(&self) -> Self::Collector;
 
-    fn current_stats(&self, collector: &Self::Collector) -> Self::Stats;
+    fn current_stats(
+        &self,
+        options: &NutsOptions,
+        potential: &Self::Potential,
+        collector: &Self::Collector,
+    ) -> Self::Stats;
 }
 
 impl<H, R, S> Chain for NutsChain<H, R, S>
@@ -632,6 +650,8 @@ where
     fn set_position(&mut self, position: &[f64]) -> Result<()> {
         let state = self.potential.init_state(&mut self.pool, position)?;
         self.init = state;
+        self.strategy
+            .init(&mut self.options, &mut self.potential, &self.init);
         Ok(())
     }
 
@@ -656,17 +676,18 @@ where
             chain: self.chain,
             draw: self.draw_count,
             potential_stats: self.potential.current_stats(),
-            strategy_stats: self.strategy.current_stats(&self.collector),
-            /*  TODO
-            step_size: self.options.step_size,
-            step_size_bar: self.options.step_size,
-            mean_acceptance_rate: self.collector.stats().mean_acceptance_rate,
-            tree_size: self.collector.acceptance_rate.mean.count,
-            first_diag_mass_matrix: self.potential.mass_matrix_mut().current.variance[0],
-            */
+            strategy_stats: self.strategy.current_stats(
+                &self.options,
+                &self.potential,
+                &self.collector,
+            ),
         };
-        self.strategy
-            .adapt(&mut self.potential, self.draw_count, &self.collector);
+        self.strategy.adapt(
+            &mut self.options,
+            &mut self.potential,
+            self.draw_count,
+            &self.collector,
+        );
         self.init = state;
         self.draw_count += 1;
         Ok((position, stats))

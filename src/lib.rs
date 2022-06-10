@@ -53,7 +53,6 @@
 //! let mut sampler_args = SamplerArgs::default();
 //!
 //! // and modify as we like
-//! sampler_args.step_size_adapt.target = 0.8;
 //! sampler_args.num_tune = 1000;
 //! sampler_args.maxdepth = 3;  // small value just for testing...
 //! sampler_args.mass_matrix_adapt.save_mass_matrix = true;
@@ -105,6 +104,7 @@ pub mod math;
 pub(crate) mod nuts;
 pub(crate) mod stepsize;
 
+pub use adapt_strategy::DualAverageSettings;
 pub use cpu_potential::CpuLogpFunc;
 pub use cpu_sampler::test_logps;
 pub use cpu_sampler::{
@@ -113,4 +113,3 @@ pub use cpu_sampler::{
 };
 pub use mass_matrix::DiagAdaptExpSettings;
 pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError, SampleStatValue, SampleStats};
-pub use stepsize::DualAverageSettings;

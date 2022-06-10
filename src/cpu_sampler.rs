@@ -5,11 +5,12 @@ use std::thread::{spawn, JoinHandle};
 use thiserror::Error;
 
 use crate::{
-    adapt_strategy::{CombinedStrategy, DualAverageStrategy, ExpWindowDiagAdapt},
+    adapt_strategy::{
+        CombinedStrategy, DualAverageSettings, DualAverageStrategy, ExpWindowDiagAdapt,
+    },
     cpu_potential::EuclideanPotential,
     mass_matrix::{DiagAdaptExpSettings, DiagMassMatrix},
     nuts::{Chain, NutsChain, NutsError, NutsOptions, SampleStats},
-    stepsize::DualAverageSettings,
     CpuLogpFunc,
 };
 
@@ -144,7 +145,6 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
                     settings,
                     chain as u64,
                     seed.wrapping_add(chain as u64),
-                    point.1,
                 );
                 sampler.set_position(&point.0)?;
                 for _ in 0..draws {
@@ -168,7 +168,6 @@ pub fn new_sampler<F: CpuLogpFunc>(
     settings: SamplerArgs,
     chain: u64,
     seed: u64,
-    init_gradient: Box<[f64]>,
 ) -> impl Chain {
     use crate::nuts::AdaptStrategy;
     let num_tune = settings.num_tune;
@@ -178,20 +177,10 @@ pub fn new_sampler<F: CpuLogpFunc>(
 
     let strategy = CombinedStrategy::new(step_size_adapt, mass_matrix_adapt);
 
-    //let norm = init_gradient.iter().copied().reduce(|sum, x| sum + x * x).unwrap_or(1f64).sqrt();
-    //let cutoff = 1e3f64;
-    let mass_matrix = DiagMassMatrix::new(
-        logp.dim(),
-        init_gradient.iter().map(|&x| {
-            //if norm > cutoff {
-            //    1f64 / (x * x)
-            1f64 / (x * x)
-        }),
-    );
+    let mass_matrix = DiagMassMatrix::new(logp.dim());
     let max_energy_error = settings.max_energy_error;
-    let step_size = settings.step_size_adapt.initial_step;
+    let potential = EuclideanPotential::new(logp, mass_matrix, max_energy_error, 1f64);
 
-    let potential = EuclideanPotential::new(logp, mass_matrix, max_energy_error, step_size);
     let options = NutsOptions {
         maxdepth: settings.maxdepth,
     };
@@ -203,17 +192,14 @@ pub fn new_sampler<F: CpuLogpFunc>(
 }
 
 pub fn sample_sequentially<F: CpuLogpFunc>(
-    mut logp: F,
+    logp: F,
     settings: SamplerArgs,
     start: &[f64],
     draws: u64,
     chain: u64,
     seed: u64,
 ) -> Result<impl Iterator<Item = Result<(Box<[f64]>, impl SampleStats), NutsError>>, NutsError> {
-    let mut grad: Box<[f64]> = vec![0f64; logp.dim()].into();
-    logp.logp(start, &mut grad)
-        .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
-    let mut sampler = new_sampler(logp, settings, chain, seed, grad.into());
+    let mut sampler = new_sampler(logp, settings, chain, seed);
     sampler.set_position(start)?;
     Ok((0..draws).into_iter().map(move |_| sampler.draw()))
 }
