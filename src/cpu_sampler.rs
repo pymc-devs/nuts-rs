@@ -1,4 +1,3 @@
-use itertools::Itertools;
 use rand::{prelude::StdRng, Rng, SeedableRng};
 use rayon::prelude::*;
 use std::thread::{spawn, JoinHandle};
@@ -22,6 +21,8 @@ pub struct SamplerArgs {
     /// The maximum tree depth during sampling. The number of leapfrog steps
     /// is smaller than 2 ^ maxdepth.
     pub maxdepth: u64,
+    /// Store the gradient in the SampleStats
+    pub store_gradient: bool,
     /// If the energy error is larger than this threshold we treat the leapfrog
     /// step as a divergence.
     pub max_energy_error: f64,
@@ -37,6 +38,7 @@ impl Default for SamplerArgs {
             num_tune: 1000,
             maxdepth: 10,
             max_energy_error: 1000f64,
+            store_gradient: false,
             step_size_adapt: DualAverageSettings::default(),
             mass_matrix_adapt: DiagAdaptExpSettings::default(),
         }
@@ -85,7 +87,7 @@ struct ParallelSampler<F: CpuLogpFunc + Clone + Send + 'static> {
 */
 
 /// Sample several chains in parallel and return all of the samples live in a channel
-pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc>(
+pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + Sync + 'static, I: InitPointFunc>(
     func: F,
     init_point_func: &mut I,
     settings: SamplerArgs,
@@ -131,17 +133,15 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + 'static, I: InitPointFunc
 
     let (sender, receiver) = crossbeam::channel::bounded(128);
 
-    let funcs = (0..n_chains).map(|_| func.clone()).collect_vec();
     let handle = spawn(move || {
+        let func = func.clone();
         let results: Vec<Result<(), ParallelSamplingError>> = points
             .into_par_iter()
-            .zip(funcs)
             .with_max_len(1)
             .enumerate()
-            .map_with(sender, |sender, (chain, (point, func))| {
-                //let (position, grad) = point;
+            .map_with(sender, |sender, (chain, point)| {
                 let mut sampler = new_sampler(
-                    func,
+                    func.clone(),
                     settings,
                     chain as u64,
                     seed.wrapping_add(chain as u64),
@@ -183,6 +183,7 @@ pub fn new_sampler<F: CpuLogpFunc>(
 
     let options = NutsOptions {
         maxdepth: settings.maxdepth,
+        store_gradient: settings.store_gradient,
     };
 
     //let rng = { rand::rngs::StdRng::seed_from_u64(seed) };

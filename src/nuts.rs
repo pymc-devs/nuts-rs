@@ -6,7 +6,7 @@ use crate::math::logaddexp;
 
 #[derive(Error, Debug)]
 pub enum NutsError {
-    #[error("Logp function returned unrecoverable error")]
+    #[error("Logp function returned error")]
     LogpFailure(Box<dyn std::error::Error + Send>),
 }
 
@@ -20,7 +20,7 @@ pub type Result<T> = std::result::Result<T, NutsError>;
 ///   a cutoff value or nan.
 /// - The logp function caused a recoverable error (eg if an ODE solver
 ///   failed)
-pub trait DivergenceInfo: std::fmt::Debug + Send {
+pub trait DivergenceInfo: AsSampleStatVec + std::fmt::Debug + Send {
     /// The position in parameter space where the diverging leapfrog started
     fn start_location(&self) -> Option<&[f64]>;
 
@@ -147,6 +147,9 @@ pub trait State: Clone + Debug {
 
     /// Write the position stored in the state to a different location
     fn write_position(&self, out: &mut [f64]);
+
+    /// Write the gradient stored in the state to a different location
+    fn write_gradient(&self, out: &mut [f64]);
 
     /// Compute the termination criterion for NUTS
     fn is_turning(&self, other: &Self) -> bool;
@@ -373,6 +376,7 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
 
 pub struct NutsOptions {
     pub maxdepth: u64,
+    pub store_gradient: bool,
 }
 
 pub(crate) fn draw<P, R, C>(
@@ -426,6 +430,7 @@ pub(crate) struct NutsSampleStats<HStats: Send + Debug, AdaptStats: Send + Debug
     pub divergence_info: Option<Box<dyn DivergenceInfo>>,
     pub chain: u64,
     pub draw: u64,
+    pub gradient: Option<Box<[f64]>>,
     pub potential_stats: HStats,
     pub strategy_stats: AdaptStats,
 }
@@ -436,13 +441,22 @@ pub enum SampleStatValue {
     OptionArray(Option<Box<[f64]>>),
     U64(u64),
     I64(i64),
+    OptionI64(Option<i64>),
     F64(f64),
+    OptionF64(Option<f64>),
     Bool(bool),
+    String(String),
 }
 
 impl From<Box<[f64]>> for SampleStatValue {
     fn from(val: Box<[f64]>) -> Self {
         SampleStatValue::Array(val)
+    }
+}
+
+impl From<Option<Box<[f64]>>> for SampleStatValue {
+    fn from(val: Option<Box<[f64]>>) -> Self {
+        SampleStatValue::OptionArray(val)
     }
 }
 
@@ -458,15 +472,33 @@ impl From<i64> for SampleStatValue {
     }
 }
 
+impl From<Option<i64>> for SampleStatValue {
+    fn from(val: Option<i64>) -> Self {
+        SampleStatValue::OptionI64(val)
+    }
+}
+
 impl From<f64> for SampleStatValue {
     fn from(val: f64) -> Self {
         SampleStatValue::F64(val)
     }
 }
 
+impl From<Option<f64>> for SampleStatValue {
+    fn from(val: Option<f64>) -> Self {
+        SampleStatValue::OptionF64(val)
+    }
+}
+
 impl From<bool> for SampleStatValue {
     fn from(val: bool) -> Self {
         SampleStatValue::Bool(val)
+    }
+}
+
+impl From<String> for SampleStatValue {
+    fn from(val: String) -> Self {
+        SampleStatValue::String(val)
     }
 }
 
@@ -495,6 +527,9 @@ pub trait SampleStats: Send + Debug {
     fn chain(&self) -> u64;
     /// The draw number
     fn draw(&self) -> u64;
+    /// The logp gradient at the location of the draw. This is only stored
+    /// if NutsOptions.store_gradient is `true`.
+    fn gradient(&self) -> Option<&[f64]>;
     /// Export the sample statisitcs to a vector. This might include some additional
     /// diagnostics coming from the step size and matrix adaptation strategies.
     fn to_vec(&self) -> Vec<SampleStatItem>;
@@ -529,6 +564,9 @@ where
     fn draw(&self) -> u64 {
         self.draw
     }
+    fn gradient(&self) -> Option<&[f64]> {
+        self.gradient.as_ref().map(|x| &x[..])
+    }
     fn to_vec(&self) -> Vec<SampleStatItem> {
         let mut vec = Vec::with_capacity(20);
         vec.push(("depth", self.depth.into()));
@@ -539,6 +577,14 @@ where
         vec.push(("diverging", self.divergence_info.is_some().into()));
         self.potential_stats.add_to_vec(&mut vec);
         self.strategy_stats.add_to_vec(&mut vec);
+        if let Some(info) = self.divergence_info() {
+            info.add_to_vec(&mut vec);
+        }
+        if let Some(grad) = self.gradient() {
+            vec.push(("gradient", grad.to_vec().into_boxed_slice().into()));
+        } else {
+            vec.push(("gradient", SampleStatValue::OptionArray(None)));
+        }
         vec
     }
 }
@@ -681,6 +727,13 @@ where
                 &self.potential,
                 &self.collector,
             ),
+            gradient: if self.options.store_gradient {
+                let mut gradient: Box<[f64]> = vec![0f64; self.potential.dim()].into();
+                state.write_gradient(&mut gradient);
+                Some(gradient)
+            } else {
+                None
+            }
         };
         self.strategy.adapt(
             &mut self.options,

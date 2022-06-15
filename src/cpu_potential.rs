@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use crate::cpu_state::{InnerState, State, StatePool};
 use crate::mass_matrix::MassMatrix;
 use crate::nuts::{
-    AsSampleStatVec, Collector, Direction, DivergenceInfo, Hamiltonian, LogpError, NutsError,
+    AsSampleStatVec, Collector, Direction, DivergenceInfo, Hamiltonian, LogpError, NutsError
 };
 
 /// Compute the unnormalized log probability density of the posterior
@@ -27,6 +27,15 @@ pub(crate) struct DivergenceInfoImpl<E: Send + std::error::Error> {
     start: Option<InnerState>,
     end: Option<InnerState>,
     energy_error: Option<f64>,
+}
+
+impl<E: Debug + Send + std::error::Error> AsSampleStatVec for DivergenceInfoImpl<E> {
+    fn add_to_vec(&self, vec: &mut Vec<crate::nuts::SampleStatItem>) {
+        vec.push(("logp_function_error", format!("{:?}", self.logp_function_error).into()));
+        vec.push(("divergence_start", self.start.as_ref().map(|v| v.q.clone()).into()));
+        vec.push(("divergence_end", self.end.as_ref().map(|v| v.q.clone()).into()));
+        vec.push(("divergence_energy_error", self.energy_error.into()));
+    }
 }
 
 impl<E: Debug + Send + std::error::Error> DivergenceInfo for DivergenceInfoImpl<E> {

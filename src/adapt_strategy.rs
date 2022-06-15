@@ -14,10 +14,14 @@ use crate::{
     stepsize::{AcceptanceRateCollector, DualAverage, DualAverageOptions},
 };
 
+const LOWER_LIMIT: f64 = 1e-10f64;
+const UPPER_LIMIT: f64 = 1e10f64;
+
 pub(crate) struct DualAverageStrategy<F, M> {
     step_size_adapt: DualAverage,
     options: DualAverageSettings,
     num_tune: u64,
+    num_early: u64,
     _phantom1: PhantomData<F>,
     _phantom2: PhantomData<M>,
 }
@@ -44,7 +48,7 @@ impl AsSampleStatVec for DualAverageStats {
 pub struct DualAverageSettings {
     pub early_target_accept: f64,
     pub target_accept: f64,
-    pub final_window: u64,
+    pub final_window_ratio: f64,
     pub params: DualAverageOptions,
 }
 
@@ -53,7 +57,7 @@ impl Default for DualAverageSettings {
         Self {
             early_target_accept: 0.2,
             target_accept: 0.8,
-            final_window: 50,
+            final_window_ratio: 0.4,
             params: DualAverageOptions::default(),
         }
     }
@@ -67,7 +71,8 @@ impl<F: CpuLogpFunc, M: MassMatrix> AdaptStrategy for DualAverageStrategy<F, M> 
 
     fn new(options: Self::Options, num_tune: u64, _dim: usize) -> Self {
         Self {
-            num_tune: num_tune.saturating_sub(options.final_window),
+            num_tune,
+            num_early: ((num_tune as f64) * options.final_window_ratio).ceil() as u64,
             options,
             step_size_adapt: DualAverage::new(options.params),
             _phantom1: PhantomData::default(),
@@ -91,12 +96,12 @@ impl<F: CpuLogpFunc, M: MassMatrix> AdaptStrategy for DualAverageStrategy<F, M> 
         draw: u64,
         collector: &Self::Collector,
     ) {
-        let target = if draw >= self.num_tune {
+        let target = if draw >= self.num_early {
             self.options.target_accept
         } else {
             let start = self.options.early_target_accept;
             let end = self.options.target_accept;
-            let time = (draw as f64) / (self.num_tune as f64);
+            let time = (draw as f64) / (self.num_early as f64);
             start + (end - start) * (1f64 + (6f64 * (time - 0.6)).tanh()) / 2f64
         };
         if draw < self.num_tune {
@@ -180,9 +185,10 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
         self.exp_variance_draw.set_mean(state.q.iter().copied());
         self.exp_variance_grad
             .set_variance(state.grad.iter().map(|&val| {
-                let diag = if !self.settings.grad_init | (val == 0f64) {
+                let diag = if !self.settings.grad_init {
                     1f64
                 } else {
+                    assert!(val != 0f64, "Gradient at initial position is zero");
                     val * val
                 };
                 assert!(diag.is_finite());
@@ -196,7 +202,7 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
                 self.exp_variance_grad.current(),
             )
             .map(|(draw, grad)| {
-                let val = (draw / grad).sqrt().clamp(1e-15, 1e15);
+                let val = (draw / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
                 assert!(val.is_finite());
                 val
             }),
@@ -248,7 +254,7 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
                     self.exp_variance_grad.current(),
                 )
                 .map(|(draw, grad)| {
-                    let val = (draw / grad).sqrt().clamp(1e-15, 1e15);
+                    let val = (draw / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
                     assert!(val.is_finite());
                     val
                 }),
@@ -477,7 +483,7 @@ mod test {
         let step_size = 0.1f64;
 
         let potential = EuclideanPotential::new(func, mass_matrix, max_energy_error, step_size);
-        let options = NutsOptions { maxdepth: 10u64 };
+        let options = NutsOptions { maxdepth: 10u64, store_gradient: true };
 
         let rng = {
             use rand::SeedableRng;

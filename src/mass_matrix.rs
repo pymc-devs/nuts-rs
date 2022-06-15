@@ -76,40 +76,6 @@ impl MassMatrix for DiagMassMatrix {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct WelfordVariance {
-    count: u64,
-    mean: Box<[f64]>,
-    m2: Box<[f64]>,
-}
-
-impl WelfordVariance {
-    pub(crate) fn new(dim: usize) -> Self {
-        Self {
-            count: 0u64,
-            mean: vec![0f64; dim].into(),
-            m2: vec![0f64; dim].into(),
-        }
-    }
-
-    pub(crate) fn add_sample(&mut self, value: impl Iterator<Item = f64>) {
-        self.count += 1;
-        izip!(value, self.mean.iter_mut(), self.m2.iter_mut()).for_each(|(x, mean, m2)| {
-            let delta = x - *mean;
-            *mean += delta / self.count as f64;
-            let delta2 = x - *mean;
-            *m2 += delta * delta2;
-        });
-    }
-
-    pub(crate) fn current<'a>(&'a self) -> impl Iterator<Item = f64> + 'a {
-        self.m2.iter().map(|&x| x / self.count as f64)
-    }
-
-    pub(crate) fn count(&self) -> u64 {
-        self.count
-    }
-}
 
 #[derive(Debug)]
 pub(crate) struct ExpWeightedVariance {
@@ -193,8 +159,6 @@ pub struct DiagAdaptExpSettings {
     pub variance_decay: f64,
     /// Exponenital decay parameter for the variance estimator in the first adaptation window
     pub early_variance_decay: f64,
-    /// The number of initial samples during which no mass matrix adaptation occurs.
-    pub discard_window: u64,
     /// Stop adaptation `final_window` draws before tuning ends.
     pub final_window: u64,
     /// Save the current adapted mass matrix as sampler stat
@@ -208,7 +172,6 @@ impl Default for DiagAdaptExpSettings {
     fn default() -> Self {
         Self {
             variance_decay: 0.02,
-            discard_window: 10,
             final_window: 50,
             save_mass_matrix: false,
             window_switch_freq: 50,
@@ -240,6 +203,11 @@ impl Collector for DrawGradCollector {
     fn register_draw(&mut self, state: &Self::State, info: &crate::nuts::SampleInfo) {
         self.draw.copy_from_slice(&state.q);
         self.grad.copy_from_slice(&state.grad);
-        self.is_good = state.index_in_trajectory() != 0;
+        let idx = state.index_in_trajectory();
+        if let Some(_) = info.divergence_info {
+            self.is_good = (idx <= -4) | (idx >= 4);
+        } else {
+            self.is_good = idx != 0;
+        }
     }
 }
