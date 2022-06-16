@@ -6,6 +6,7 @@ edition = "2021"
 license = "MIT"
 repository = "https://github.com/aseyboldt/nuts-rs"
 keywords = ["statistics", "bayes"]
+description = "Sample from unnormalized densities using Hamiltonian MCMC"
 
 [profile.release]
 debug = true
