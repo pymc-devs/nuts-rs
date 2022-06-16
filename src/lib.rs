@@ -55,7 +55,7 @@
 //! // and modify as we like
 //! sampler_args.num_tune = 1000;
 //! sampler_args.maxdepth = 3;  // small value just for testing...
-//! sampler_args.mass_matrix_adapt.save_mass_matrix = true;
+//! sampler_args.mass_matrix_adapt.store_mass_matrix = true;
 //!
 //! // We instanciate our posterior density function
 //! let logp_func = PosteriorDensity {};

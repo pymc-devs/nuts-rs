@@ -162,7 +162,7 @@ pub struct DiagAdaptExpSettings {
     /// Stop adaptation `final_window` draws before tuning ends.
     pub final_window: u64,
     /// Save the current adapted mass matrix as sampler stat
-    pub save_mass_matrix: bool,
+    pub store_mass_matrix: bool,
     /// Switch to a new variance estimator every `window_switch_freq` draws.
     pub window_switch_freq: u64,
     pub grad_init: bool,
@@ -173,7 +173,7 @@ impl Default for DiagAdaptExpSettings {
         Self {
             variance_decay: 0.02,
             final_window: 50,
-            save_mass_matrix: false,
+            store_mass_matrix: false,
             window_switch_freq: 50,
             early_variance_decay: 0.8,
             grad_init: true,

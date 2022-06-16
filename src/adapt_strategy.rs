@@ -144,14 +144,14 @@ pub(crate) struct ExpWindowDiagAdapt<F> {
 
 #[derive(Clone, Debug)]
 pub struct ExpWindowDiagAdaptStats {
-    current_mass_matrix_inv_diag: Option<Box<[f64]>>,
+    mass_matrix_inv: Option<Box<[f64]>>,
 }
 
 impl AsSampleStatVec for ExpWindowDiagAdaptStats {
     fn add_to_vec(&self, vec: &mut Vec<SampleStatItem>) {
         vec.push((
-            "current_mass_matrix_inv_diag",
-            SampleStatValue::OptionArray(self.current_mass_matrix_inv_diag.clone()),
+            "mass_matrix_inv",
+            SampleStatValue::OptionArray(self.mass_matrix_inv.clone()),
         ));
     }
 }
@@ -234,7 +234,7 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
             self.exp_variance_draw_bg
                 .set_mean(collector.draw.iter().copied());
             self.exp_variance_grad_bg
-                .set_mean(collector.grad.iter().copied().map(|_| 0f64));
+                .set_mean(collector.grad.iter().copied());
         } else if collector.is_good {
             self.exp_variance_draw
                 .add_sample(collector.draw.iter().copied());
@@ -272,13 +272,13 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
         potential: &Self::Potential,
         _collector: &Self::Collector,
     ) -> Self::Stats {
-        let diag = if self.settings.save_mass_matrix {
+        let diag = if self.settings.store_mass_matrix {
             Some(potential.mass_matrix.variance.clone())
         } else {
             None
         };
         ExpWindowDiagAdaptStats {
-            current_mass_matrix_inv_diag: diag,
+            mass_matrix_inv: diag,
         }
     }
 }
