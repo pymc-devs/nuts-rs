@@ -55,7 +55,7 @@ pub struct DualAverageSettings {
 impl Default for DualAverageSettings {
     fn default() -> Self {
         Self {
-            early_target_accept: 0.2,
+            early_target_accept: 0.5,
             target_accept: 0.8,
             final_window_ratio: 0.4,
             params: DualAverageOptions::default(),
@@ -248,17 +248,19 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
 
         if self.exp_variance_draw.count() > 2 {
             assert!(self.exp_variance_draw.count() == self.exp_variance_grad.count());
-            potential.mass_matrix.update_diag(
-                izip!(
-                    self.exp_variance_draw.current(),
-                    self.exp_variance_grad.current(),
-                )
-                .map(|(draw, grad)| {
-                    let val = (draw / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
-                    assert!(val.is_finite());
-                    val
-                }),
-            );
+            if (self.settings.grad_init) | (draw > self.settings.window_switch_freq) {
+                potential.mass_matrix.update_diag(
+                    izip!(
+                        self.exp_variance_draw.current(),
+                        self.exp_variance_grad.current(),
+                    )
+                    .map(|(draw, grad)| {
+                        let val = (draw / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
+                        assert!(val.is_finite());
+                        val
+                    }),
+                );
+            }
         }
     }
 

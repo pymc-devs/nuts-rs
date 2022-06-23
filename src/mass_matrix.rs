@@ -175,7 +175,7 @@ impl Default for DiagAdaptExpSettings {
             final_window: 50,
             store_mass_matrix: false,
             window_switch_freq: 50,
-            early_variance_decay: 0.8,
+            early_variance_decay: 0.1,
             grad_init: true,
         }
     }
