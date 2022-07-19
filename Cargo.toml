@@ -11,13 +11,13 @@ description = "Sample from unnormalized densities using Hamiltonian MCMC"
 [profile.release]
 debug = true
 lto = "fat"
-opt-level = 3
+opt-level = 2
 codegen-units = 1
 
 [profile.bench]
 debug = true
 lto = "fat"
-opt-level = 3
+opt-level = 2
 codegen-units = 1
 
 [dependencies]
