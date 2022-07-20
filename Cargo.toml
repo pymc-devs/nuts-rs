@@ -1,6 +1,6 @@
 [package]
 name = "nuts-rs"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Adrian Seyboldt <adrian.seyboldt@gmail.com>"]
 edition = "2021"
 license = "MIT"
