@@ -2,7 +2,7 @@ use itertools::izip;
 use multiversion::multiversion;
 
 #[cfg(feature = "simd_support")]
-use std::simd::{f64x4, StdFloat};
+use std::simd::{f64x4, SimdFloat, StdFloat};
 
 pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
     if a == b {

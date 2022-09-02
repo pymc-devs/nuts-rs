@@ -6,7 +6,7 @@ use crate::math::logaddexp;
 
 #[derive(Error, Debug)]
 pub enum NutsError {
-    #[error("Logp function returned error")]
+    #[error("Logp function returned error: {0}")]
     LogpFailure(Box<dyn std::error::Error + Send>),
 }
 
@@ -733,7 +733,7 @@ where
                 Some(gradient)
             } else {
                 None
-            }
+            },
         };
         self.strategy.adapt(
             &mut self.options,

@@ -1,6 +1,6 @@
 use rand::{prelude::StdRng, Rng, SeedableRng};
 use rayon::prelude::*;
-use std::thread::{spawn, JoinHandle};
+use std::thread::JoinHandle;
 use thiserror::Error;
 
 use crate::{
@@ -53,11 +53,12 @@ pub trait InitPointFunc {
     fn new_init_point<R: Rng + ?Sized>(&mut self, rng: &mut R, out: &mut [f64]);
 }
 
+#[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum ParallelSamplingError {
     #[error("Could not send sample to controller thread")]
     ChannelClosed(),
-    #[error("Nuts failed because of unrecoverable logp function error")]
+    #[error("Nuts failed because of unrecoverable logp function error: {source}")]
     NutsError {
         #[from]
         source: NutsError,
@@ -68,27 +69,25 @@ pub enum ParallelSamplingError {
     Timeout,
     #[error("Drawing sample paniced")]
     Panic,
+    #[error("Creating a logp function failed")]
+    LogpFuncCreation {
+        #[from]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 
 pub type ParallelChainResult = Result<(), ParallelSamplingError>;
 
-/*
-pub type Draw = (Box<[f64]>, Box<dyn SampleStats>);
+pub trait CpuLogpFuncMaker: Send + Sync {
+    type Func: CpuLogpFunc;
 
-pub trait Sampler {
-    fn next_draw(&mut self) -> Result<Draw, ParallelSamplingError>;
-    fn next_draw_timeout(&mut self, timeout: Duration) -> Result<Draw, ParallelSamplingError>;
+    fn make_logp_func(&self) -> Result<Self::Func, Box<dyn std::error::Error + Send + Sync>>;
+    fn dim(&self) -> usize;
 }
-
-
-struct ParallelSampler<F: CpuLogpFunc + Clone + Send + 'static> {
-
-}
-*/
 
 /// Sample several chains in parallel and return all of the samples live in a channel
-pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + Sync + 'static, I: InitPointFunc>(
-    func: F,
+pub fn sample_parallel<F: CpuLogpFuncMaker + 'static, I: InitPointFunc>(
+    logp_func_maker: F,
     init_point_func: &mut I,
     settings: SamplerArgs,
     n_chains: u64,
@@ -102,13 +101,16 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + Sync + 'static, I: InitPo
     ),
     ParallelSamplingError,
 > {
-    let mut func = func;
+    let ndim = logp_func_maker.dim();
+    let mut func = logp_func_maker.make_logp_func()?;
+    assert!(ndim == func.dim());
     let draws = settings.num_tune + n_draws;
     let mut rng = StdRng::seed_from_u64(seed.wrapping_sub(1));
-    let mut points: Vec<Result<(Box<[f64]>, Box<[f64]>), F::Err>> = (0..n_chains)
+    let mut points: Vec<Result<(Box<[f64]>, Box<[f64]>), <F::Func as CpuLogpFunc>::Err>> = (0
+        ..n_chains)
         .map(|_| {
-            let mut position = vec![0.; func.dim()];
-            let mut grad = vec![0.; func.dim()];
+            let mut position = vec![0.; ndim];
+            let mut grad = vec![0.; ndim];
             init_point_func.new_init_point(&mut rng, &mut position);
 
             let mut error = None;
@@ -133,15 +135,15 @@ pub fn sample_parallel<F: CpuLogpFunc + Clone + Send + Sync + 'static, I: InitPo
 
     let (sender, receiver) = crossbeam::channel::bounded(128);
 
-    let handle = spawn(move || {
-        let func = func.clone();
+    let handle = std::thread::spawn(move || {
         let results: Vec<Result<(), ParallelSamplingError>> = points
             .into_par_iter()
             .with_max_len(1)
             .enumerate()
             .map_with(sender, |sender, (chain, point)| {
+                let func = logp_func_maker.make_logp_func()?;
                 let mut sampler = new_sampler(
-                    func.clone(),
+                    func,
                     settings,
                     chain as u64,
                     seed.wrapping_add(chain as u64),
@@ -277,6 +279,7 @@ pub mod test_logps {
             #[clone(target = "x86+sse")]
             fn logp_inner(mu: f64, position: &[f64], gradient: &mut [f64]) -> f64 {
                 use std::simd::f64x4;
+                use std::simd::SimdFloat;
 
                 let n = position.len();
                 assert!(gradient.len() == n);
@@ -334,8 +337,11 @@ pub mod test_logps {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+
     use crate::{
-        sample_parallel, sample_sequentially, test_logps::NormalLogp, JitterInitFunc, SampleStats,
+        sample_parallel, sample_sequentially,
+        test_logps::NormalLogp, CpuLogpFunc, CpuLogpFuncMaker, JitterInitFunc, SampleStats,
         SamplerArgs,
     };
 
@@ -363,8 +369,25 @@ mod tests {
             .iter()
             .any(|(key, _)| *key == "index_in_trajectory"));
 
+        struct Maker {
+            logp: NormalLogp,
+        }
+        impl CpuLogpFuncMaker for Maker {
+            type Func = NormalLogp;
+
+            fn make_logp_func(&self) -> Result<Self::Func, Box<dyn Error + Send + Sync>> {
+                Ok(self.logp.clone())
+            }
+
+            fn dim(&self) -> usize {
+                self.logp.dim()
+            }
+        }
+
+        let maker = Maker { logp };
+
         let (handles, chains) =
-            sample_parallel(logp, &mut JitterInitFunc::new(), settings, 4, 100, 42, 10).unwrap();
+            sample_parallel(maker, &mut JitterInitFunc::new(), settings, 4, 100, 42, 10).unwrap();
         let mut draws = chains.iter().collect_vec();
         assert_eq!(draws.len(), 800);
         assert!(handles.join().is_ok());

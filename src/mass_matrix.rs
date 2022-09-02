@@ -76,7 +76,6 @@ impl MassMatrix for DiagMassMatrix {
     }
 }
 
-
 #[derive(Debug)]
 pub(crate) struct ExpWeightedVariance {
     mean: Box<[f64]>,

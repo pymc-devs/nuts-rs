@@ -108,8 +108,8 @@ pub use adapt_strategy::DualAverageSettings;
 pub use cpu_potential::CpuLogpFunc;
 pub use cpu_sampler::test_logps;
 pub use cpu_sampler::{
-    new_sampler, sample_parallel, sample_sequentially, InitPointFunc, JitterInitFunc,
-    ParallelChainResult, SamplerArgs,
+    new_sampler, sample_parallel, sample_sequentially, CpuLogpFuncMaker, InitPointFunc,
+    JitterInitFunc, ParallelChainResult, ParallelSamplingError, SamplerArgs,
 };
 pub use mass_matrix::DiagAdaptExpSettings;
 pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError, SampleStatValue, SampleStats};

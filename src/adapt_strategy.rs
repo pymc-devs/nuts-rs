@@ -485,7 +485,10 @@ mod test {
         let step_size = 0.1f64;
 
         let potential = EuclideanPotential::new(func, mass_matrix, max_energy_error, step_size);
-        let options = NutsOptions { maxdepth: 10u64, store_gradient: true };
+        let options = NutsOptions {
+            maxdepth: 10u64,
+            store_gradient: true,
+        };
 
         let rng = {
             use rand::SeedableRng;
