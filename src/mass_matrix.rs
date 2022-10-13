@@ -164,6 +164,7 @@ pub struct DiagAdaptExpSettings {
     pub store_mass_matrix: bool,
     /// Switch to a new variance estimator every `window_switch_freq` draws.
     pub window_switch_freq: u64,
+    pub early_window_switch_freq: u64,
     pub grad_init: bool,
 }
 
@@ -174,8 +175,9 @@ impl Default for DiagAdaptExpSettings {
             final_window: 50,
             store_mass_matrix: false,
             window_switch_freq: 50,
+            early_window_switch_freq: 10,
             early_variance_decay: 0.1,
-            grad_init: false,
+            grad_init: true,
         }
     }
 }

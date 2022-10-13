@@ -188,8 +188,12 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
                 let diag = if !self.settings.grad_init {
                     1f64
                 } else {
-                    assert!(val != 0f64, "Gradient at initial position is zero");
-                    val * val
+                    let out = val * val;
+                    if out == 0f64 {
+                        1f64
+                    } else {
+                        out
+                    }
                 };
                 assert!(diag.is_finite());
                 diag
@@ -220,8 +224,12 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
             return;
         }
 
-        if (draw % self.settings.window_switch_freq == 0) & (self.exp_variance_draw_bg.count() > 5)
-        {
+        let count = self.exp_variance_draw_bg.count();
+
+        let early_switch = (count == self.settings.early_window_switch_freq)
+            & (draw < self.settings.window_switch_freq);
+
+        if early_switch | ((draw % self.settings.window_switch_freq == 0) & (count > 5)) {
             self.exp_variance_draw = std::mem::replace(
                 &mut self.exp_variance_draw_bg,
                 ExpWeightedVariance::new(self.dim, self.settings.variance_decay, true),
@@ -255,8 +263,10 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
                         self.exp_variance_grad.current(),
                     )
                     .map(|(draw, grad)| {
-                        let val = (draw / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
-                        assert!(val.is_finite());
+                        let mut val = (draw / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
+                        if !val.is_finite() {
+                            val = 1f64;
+                        }
                         val
                     }),
                 );

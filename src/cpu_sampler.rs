@@ -131,7 +131,9 @@ pub fn sample_parallel<F: CpuLogpFuncMaker + 'static, I: InitPointFunc>(
         .collect();
 
     let points: Result<Vec<(Box<[f64]>, Box<[f64]>)>, _> = points.drain(..).collect();
-    let points = points.map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
+    let points = points.map_err(|e| ParallelSamplingError::InitError {
+        source: NutsError::LogpFailure(Box::new(e)),
+    })?;
 
     let (sender, receiver) = crossbeam::channel::bounded(128);
 
@@ -340,9 +342,8 @@ mod tests {
     use std::error::Error;
 
     use crate::{
-        sample_parallel, sample_sequentially,
-        test_logps::NormalLogp, CpuLogpFunc, CpuLogpFuncMaker, JitterInitFunc, SampleStats,
-        SamplerArgs,
+        sample_parallel, sample_sequentially, test_logps::NormalLogp, CpuLogpFunc,
+        CpuLogpFuncMaker, JitterInitFunc, SampleStats, SamplerArgs,
     };
 
     use itertools::Itertools;
