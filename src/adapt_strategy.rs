@@ -189,13 +189,13 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
                     1f64
                 } else {
                     let out = val * val;
-                    if out == 0f64 {
+                    let out = out.clamp(LOWER_LIMIT * LOWER_LIMIT, UPPER_LIMIT * UPPER_LIMIT);
+                    if (out == 0f64) | (!out.is_finite()) {
                         1f64
                     } else {
                         out
                     }
                 };
-                assert!(diag.is_finite());
                 diag
             }));
         self.exp_variance_grad.set_mean(iter::repeat(0f64));
@@ -207,8 +207,11 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
             )
             .map(|(draw, grad)| {
                 let val = (draw / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
-                assert!(val.is_finite());
-                val
+                if val.is_finite() {
+                    val
+                } else {
+                    1f64
+                }
             }),
         );
     }
