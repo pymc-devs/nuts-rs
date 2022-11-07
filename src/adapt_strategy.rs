@@ -181,7 +181,7 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
         potential: &mut Self::Potential,
         state: &<Self::Potential as Hamiltonian>::State,
     ) {
-        self.exp_variance_draw.set_variance(iter::repeat(1f64));
+        self.exp_variance_draw.set_variance(iter::repeat(0f64));
         self.exp_variance_draw.set_mean(state.q.iter().copied());
         self.exp_variance_grad
             .set_variance(state.grad.iter().map(|&val| {
@@ -189,8 +189,8 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
                     1f64
                 } else {
                     let out = val * val;
-                    let out = out.clamp(LOWER_LIMIT * LOWER_LIMIT, UPPER_LIMIT * UPPER_LIMIT);
-                    if (out == 0f64) | (!out.is_finite()) {
+                    let out = out.clamp(LOWER_LIMIT, UPPER_LIMIT);
+                    if !out.is_finite() {
                         1f64
                     } else {
                         out
@@ -205,12 +205,13 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
                 self.exp_variance_draw.current(),
                 self.exp_variance_grad.current(),
             )
-            .map(|(draw, grad)| {
-                let val = (draw / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
+            .map(|(_draw, grad)| {
+                //let val = (1f64 / grad).clamp(LOWER_LIMIT, UPPER_LIMIT);
+                let val = (1f64 / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
                 if val.is_finite() {
-                    val
+                    Some(val)
                 } else {
-                    1f64
+                    Some(1f64)
                 }
             }),
         );
@@ -227,25 +228,44 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
             return;
         }
 
+        let is_early = (draw as f64) < self.settings.early_ratio * (self.num_tune as f64);
+
+
         let count = self.exp_variance_draw_bg.count();
 
-        let early_switch = (count == self.settings.early_window_switch_freq)
-            & (draw < self.settings.window_switch_freq);
+        let switch_freq = if is_early {
+            self.settings.early_window_switch_freq
+        } else {
+            self.settings.window_switch_freq
+        };
 
-        if early_switch | ((draw % self.settings.window_switch_freq == 0) & (count > 5)) {
+        let variance_decay = if is_early {
+            self.settings.early_variance_decay
+        } else {
+            self.settings.variance_decay
+        };
+
+        let switch = count >= switch_freq;
+
+        if switch {
+            assert!(count == switch_freq);
             self.exp_variance_draw = std::mem::replace(
                 &mut self.exp_variance_draw_bg,
-                ExpWeightedVariance::new(self.dim, self.settings.variance_decay, true),
+                ExpWeightedVariance::new(self.dim, variance_decay, true),
             );
             self.exp_variance_grad = std::mem::replace(
                 &mut self.exp_variance_grad_bg,
-                ExpWeightedVariance::new(self.dim, self.settings.variance_decay, true),
+                ExpWeightedVariance::new(self.dim, variance_decay, true),
             );
 
             self.exp_variance_draw_bg
                 .set_mean(collector.draw.iter().copied());
+            self.exp_variance_draw_bg
+                .set_variance(iter::repeat(0f64));
             self.exp_variance_grad_bg
-                .set_mean(collector.grad.iter().copied());
+                .set_mean(iter::repeat(0f64));
+            self.exp_variance_grad_bg
+                .set_variance(collector.grad.iter().map(|&x| x * x));
         } else if collector.is_good {
             self.exp_variance_draw
                 .add_sample(collector.draw.iter().copied());
@@ -257,23 +277,23 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
                 .add_sample(collector.grad.iter().copied());
         }
 
+        //if (is_early & (self.exp_variance_draw.count() > 2)) | (!is_early & switch) {
         if self.exp_variance_draw.count() > 2 {
             assert!(self.exp_variance_draw.count() == self.exp_variance_grad.count());
-            if (self.settings.grad_init) | (draw > self.settings.window_switch_freq) {
-                potential.mass_matrix.update_diag(
-                    izip!(
-                        self.exp_variance_draw.current(),
-                        self.exp_variance_grad.current(),
-                    )
-                    .map(|(draw, grad)| {
-                        let mut val = (draw / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
-                        if !val.is_finite() {
-                            val = 1f64;
-                        }
-                        val
-                    }),
-                );
-            }
+            potential.mass_matrix.update_diag(
+                izip!(
+                    self.exp_variance_draw.current(),
+                    self.exp_variance_grad.current(),
+                )
+                .map(|(draw, grad)| {
+                    let val = (draw / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
+                    if !val.is_finite() {
+                        None
+                    } else {
+                        Some(val)
+                    }
+                }),
+            );
         }
     }
 
