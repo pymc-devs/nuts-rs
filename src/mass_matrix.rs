@@ -33,7 +33,7 @@ impl DiagMassMatrix {
         }
     }
 
-    pub(crate) fn update_diag(&mut self, new_variance: impl Iterator<Item = f64>) {
+    pub(crate) fn update_diag(&mut self, new_variance: impl Iterator<Item = Option<f64>>) {
         update_diag(&mut self.variance, &mut self.inv_stds, new_variance);
     }
 }
@@ -44,13 +44,16 @@ impl DiagMassMatrix {
 fn update_diag(
     variance_out: &mut [f64],
     inv_std_out: &mut [f64],
-    new_variance: impl Iterator<Item = f64>,
+    new_variance: impl Iterator<Item = Option<f64>>,
 ) {
-    izip!(variance_out, inv_std_out, new_variance,).for_each(|(var, inv_std, x)| {
-        assert!(x.is_finite(), "Illegal value on mass matrix: {}", x);
-        assert!(x > 0f64, "Illegal value on mass matrix: {}", x);
-        *var = x;
-        *inv_std = (1. / x).sqrt();
+    izip!(variance_out, inv_std_out, new_variance).for_each(|(var, inv_std, x)| {
+        if let Some(x) = x {
+            assert!(x.is_finite(), "Illegal value on mass matrix: {}", x);
+            assert!(x > 0f64, "Illegal value on mass matrix: {}", x);
+            //assert!(*var != x, "No change in mass matrix from {} to {}", *var, x);
+            *var = x;
+            *inv_std = (1. / x).sqrt();
+        };
     });
 }
 
@@ -135,7 +138,6 @@ fn add_sample(self_: &mut ExpWeightedVariance, value: impl Iterator<Item = f64>)
                 //    assert!(x - *mean != 0f64, "var = {}, mean = {}, x = {}, delta = {}, count = {}", var, mean, x, x - *mean, self_.count);
                 //}
                 let delta = x - *mean;
-                //*mean += self_.alpha * delta;
                 *mean = self_.alpha.mul_add(delta, *mean);
                 *var = (1f64 - self_.alpha) * (*var + self_.alpha * delta * delta);
             },
@@ -165,6 +167,8 @@ pub struct DiagAdaptExpSettings {
     /// Switch to a new variance estimator every `window_switch_freq` draws.
     pub window_switch_freq: u64,
     pub early_window_switch_freq: u64,
+    /// The ratio of the adaptation steps that is considered "early"
+    pub early_ratio: f64,
     pub grad_init: bool,
 }
 
@@ -174,9 +178,10 @@ impl Default for DiagAdaptExpSettings {
             variance_decay: 0.02,
             final_window: 50,
             store_mass_matrix: false,
-            window_switch_freq: 50,
-            early_window_switch_freq: 10,
+            window_switch_freq: 200,
+            early_window_switch_freq: 20,
             early_variance_decay: 0.1,
+            early_ratio: 0.4,
             grad_init: true,
         }
     }
@@ -201,14 +206,10 @@ impl DrawGradCollector {
 impl Collector for DrawGradCollector {
     type State = State;
 
-    fn register_draw(&mut self, state: &Self::State, info: &crate::nuts::SampleInfo) {
+    fn register_draw(&mut self, state: &Self::State, _info: &crate::nuts::SampleInfo) {
         self.draw.copy_from_slice(&state.q);
         self.grad.copy_from_slice(&state.grad);
         let idx = state.index_in_trajectory();
-        if let Some(_) = info.divergence_info {
-            self.is_good = (idx <= -4) | (idx >= 4);
-        } else {
-            self.is_good = idx != 0;
-        }
+        self.is_good = idx != 0;
     }
 }
