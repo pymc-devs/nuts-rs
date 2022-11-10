@@ -1,11 +1,11 @@
-use std::{fmt::Debug, iter, marker::PhantomData};
+use std::{fmt::Debug, marker::PhantomData};
 
 use itertools::izip;
 
 use crate::{
     cpu_potential::{CpuLogpFunc, EuclideanPotential},
     mass_matrix::{
-        DiagAdaptExpSettings, DiagMassMatrix, DrawGradCollector, ExpWeightedVariance, MassMatrix,
+        DiagMassMatrix, DrawGradCollector, MassMatrix, RunningVariance,
     },
     nuts::{
         AdaptStrategy, AsSampleStatVec, Collector, Hamiltonian, NutsOptions, SampleStatItem,
@@ -20,17 +20,28 @@ const UPPER_LIMIT: f64 = 1e10f64;
 pub(crate) struct DualAverageStrategy<F, M> {
     step_size_adapt: DualAverage,
     options: DualAverageSettings,
-    num_tune: u64,
-    num_early: u64,
+    enabled: bool,
+    finalized: bool,
     _phantom1: PhantomData<F>,
     _phantom2: PhantomData<M>,
 }
 
+impl<F, M> DualAverageStrategy<F, M> {
+    fn enable(&mut self) {
+        self.enabled = true;
+    }
+
+    fn finalize(&mut self) {
+        self.finalized = true;
+    }
+}
+
+
 #[derive(Debug, Clone, Copy)]
 pub struct DualAverageStats {
-    step_size_bar: f64,
-    mean_tree_accept: f64,
-    n_steps: u64,
+    pub step_size_bar: f64,
+    pub mean_tree_accept: f64,
+    pub n_steps: u64,
 }
 
 impl AsSampleStatVec for DualAverageStats {
@@ -46,18 +57,16 @@ impl AsSampleStatVec for DualAverageStats {
 
 #[derive(Debug, Clone, Copy)]
 pub struct DualAverageSettings {
-    pub early_target_accept: f64,
     pub target_accept: f64,
-    pub final_window_ratio: f64,
+    pub initial_step: f64,
     pub params: DualAverageOptions,
 }
 
 impl Default for DualAverageSettings {
     fn default() -> Self {
         Self {
-            early_target_accept: 0.5,
             target_accept: 0.8,
-            final_window_ratio: 0.4,
+            initial_step: 0.1,
             params: DualAverageOptions::default(),
         }
     }
@@ -69,12 +78,12 @@ impl<F: CpuLogpFunc, M: MassMatrix> AdaptStrategy for DualAverageStrategy<F, M> 
     type Stats = DualAverageStats;
     type Options = DualAverageSettings;
 
-    fn new(options: Self::Options, num_tune: u64, _dim: usize) -> Self {
+    fn new(options: Self::Options, _num_tune: u64, _dim: usize) -> Self {
         Self {
-            num_tune,
-            num_early: ((num_tune as f64) * options.final_window_ratio).ceil() as u64,
             options,
-            step_size_adapt: DualAverage::new(options.params),
+            enabled: true,
+            step_size_adapt: DualAverage::new(options.params, options.initial_step),
+            finalized: false,
             _phantom1: PhantomData::default(),
             _phantom2: PhantomData::default(),
         }
@@ -86,31 +95,28 @@ impl<F: CpuLogpFunc, M: MassMatrix> AdaptStrategy for DualAverageStrategy<F, M> 
         potential: &mut Self::Potential,
         _state: &<Self::Potential as Hamiltonian>::State,
     ) {
-        potential.step_size = self.options.params.initial_step;
+        potential.step_size = self.options.initial_step;
     }
 
     fn adapt(
         &mut self,
         _options: &mut NutsOptions,
         potential: &mut Self::Potential,
-        draw: u64,
+        _draw: u64,
         collector: &Self::Collector,
     ) {
-        let target = if draw >= self.num_early {
-            self.options.target_accept
-        } else {
-            let start = self.options.early_target_accept;
-            let end = self.options.target_accept;
-            let time = (draw as f64) / (self.num_early as f64);
-            start + (end - start) * (1f64 + (6f64 * (time - 0.6)).tanh()) / 2f64
-        };
-        if draw < self.num_tune {
+        if self.finalized {
             self.step_size_adapt
-                .advance(collector.mean.current(), target);
-            potential.step_size = self.step_size_adapt.current_step_size()
-        } else {
-            potential.step_size = self.step_size_adapt.current_step_size_adapted()
+                .advance(collector.mean.current(), self.options.target_accept);
+            potential.step_size = self.step_size_adapt.current_step_size_adapted();
+            return;
         }
+        if !self.enabled {
+            return;
+        }
+        self.step_size_adapt
+            .advance(collector.mean.current(), self.options.target_accept);
+        potential.step_size = self.step_size_adapt.current_step_size()
     }
 
     fn new_collector(&self) -> Self::Collector {
@@ -131,20 +137,93 @@ impl<F: CpuLogpFunc, M: MassMatrix> AdaptStrategy for DualAverageStrategy<F, M> 
     }
 }
 
+/// Settings for mass matrix adaptation
+#[derive(Clone, Copy, Debug)]
+pub struct DiagAdaptExpSettings {
+    pub store_mass_matrix: bool,
+}
+
+impl Default for DiagAdaptExpSettings {
+    fn default() -> Self {
+        Self {
+            store_mass_matrix: false,
+        }
+    }
+}
+
 pub(crate) struct ExpWindowDiagAdapt<F> {
     dim: usize,
-    num_tune: u64,
-    exp_variance_draw: ExpWeightedVariance,
-    exp_variance_grad: ExpWeightedVariance,
-    exp_variance_draw_bg: ExpWeightedVariance,
-    exp_variance_grad_bg: ExpWeightedVariance,
+    exp_variance_draw: RunningVariance,
+    exp_variance_grad: RunningVariance,
+    exp_variance_grad_bg: RunningVariance,
+    exp_variance_draw_bg: RunningVariance,
     settings: DiagAdaptExpSettings,
     _phantom: PhantomData<F>,
 }
 
+impl<F: CpuLogpFunc> ExpWindowDiagAdapt<F> {
+    fn update_estimators(&mut self, collector: &DrawGradCollector) {
+        if collector.is_good {
+            self.exp_variance_draw
+                .add_sample(collector.draw.iter().copied());
+            self.exp_variance_grad
+                .add_sample(collector.grad.iter().copied());
+            self.exp_variance_draw_bg
+                .add_sample(collector.draw.iter().copied());
+            self.exp_variance_grad_bg
+                .add_sample(collector.grad.iter().copied());
+        }
+    }
+
+    fn switch(&mut self, collector: &DrawGradCollector) {
+        self.exp_variance_draw = std::mem::replace(
+            &mut self.exp_variance_draw_bg,
+            RunningVariance::new(self.dim),
+        );
+        self.exp_variance_grad = std::mem::replace(
+            &mut self.exp_variance_grad_bg,
+            RunningVariance::new(self.dim),
+        );
+
+        self.update_estimators(collector);
+    }
+
+    fn current_count(&self) -> u64 {
+        assert!(self.exp_variance_draw.count() == self.exp_variance_grad.count());
+        self.exp_variance_draw.count()
+    }
+
+    fn background_count(&self) -> u64 {
+        assert!(self.exp_variance_draw_bg.count() == self.exp_variance_grad_bg.count());
+        self.exp_variance_draw_bg.count()
+    }
+
+    fn update_potential(&self, potential: &mut EuclideanPotential<F, DiagMassMatrix>) {
+        if self.current_count() < 3 {
+            return;
+        }
+        assert!(self.current_count() > 2);
+        potential.mass_matrix.update_diag(
+            izip!(
+                self.exp_variance_draw.current(),
+                self.exp_variance_grad.current(),
+            )
+            .map(|(draw, grad)| {
+                let val = (draw / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
+                if !val.is_finite() {
+                    None
+                } else {
+                    Some(val)
+                }
+            }),
+        );
+    }
+}
+
+
 #[derive(Clone, Debug)]
 pub struct ExpWindowDiagAdaptStats {
-    mass_matrix_inv: Option<Box<[f64]>>,
+    pub mass_matrix_inv: Option<Box<[f64]>>,
 }
 
 impl AsSampleStatVec for ExpWindowDiagAdaptStats {
@@ -162,14 +241,13 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
     type Stats = ExpWindowDiagAdaptStats;
     type Options = DiagAdaptExpSettings;
 
-    fn new(options: Self::Options, num_tune: u64, dim: usize) -> Self {
+    fn new(options: Self::Options, _num_tune: u64, dim: usize) -> Self {
         Self {
             dim,
-            num_tune: num_tune.saturating_sub(options.final_window),
-            exp_variance_draw: ExpWeightedVariance::new(dim, options.early_variance_decay, true),
-            exp_variance_grad: ExpWeightedVariance::new(dim, options.early_variance_decay, true),
-            exp_variance_draw_bg: ExpWeightedVariance::new(dim, options.early_variance_decay, true),
-            exp_variance_grad_bg: ExpWeightedVariance::new(dim, options.early_variance_decay, true),
+            exp_variance_draw: RunningVariance::new(dim),
+            exp_variance_grad: RunningVariance::new(dim),
+            exp_variance_draw_bg: RunningVariance::new(dim),
+            exp_variance_grad_bg: RunningVariance::new(dim),
             settings: options,
             _phantom: PhantomData::default(),
         }
@@ -181,120 +259,27 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
         potential: &mut Self::Potential,
         state: &<Self::Potential as Hamiltonian>::State,
     ) {
-        self.exp_variance_draw.set_variance(iter::repeat(0f64));
-        self.exp_variance_draw.set_mean(state.q.iter().copied());
-        self.exp_variance_grad
-            .set_variance(state.grad.iter().map(|&val| {
-                let diag = if !self.settings.grad_init {
-                    1f64
-                } else {
-                    let out = val * val;
-                    let out = out.clamp(LOWER_LIMIT, UPPER_LIMIT);
-                    if !out.is_finite() {
-                        1f64
-                    } else {
-                        out
-                    }
-                };
-                diag
-            }));
-        self.exp_variance_grad.set_mean(iter::repeat(0f64));
+        self.exp_variance_draw.add_sample(state.q.iter().copied());
+        self.exp_variance_draw_bg.add_sample(state.q.iter().copied());
+        self.exp_variance_grad.add_sample(state.grad.iter().copied());
+        self.exp_variance_grad_bg.add_sample(state.grad.iter().copied());
 
         potential.mass_matrix.update_diag(
-            izip!(
-                self.exp_variance_draw.current(),
-                self.exp_variance_grad.current(),
-            )
-            .map(|(_draw, grad)| {
-                //let val = (1f64 / grad).clamp(LOWER_LIMIT, UPPER_LIMIT);
-                let val = (1f64 / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
-                if val.is_finite() {
-                    Some(val)
-                } else {
-                    Some(1f64)
-                }
-            }),
+            state.grad.iter().map(|&grad| {
+                Some((grad).abs().recip().clamp(LOWER_LIMIT, UPPER_LIMIT))
+            })
         );
+
     }
 
     fn adapt(
         &mut self,
         _options: &mut NutsOptions,
-        potential: &mut Self::Potential,
-        draw: u64,
-        collector: &Self::Collector,
+        _potential: &mut Self::Potential,
+        _draw: u64,
+        _collector: &Self::Collector,
     ) {
-        if draw >= self.num_tune {
-            return;
-        }
-
-        let is_early = (draw as f64) < self.settings.early_ratio * (self.num_tune as f64);
-
-
-        let count = self.exp_variance_draw_bg.count();
-
-        let switch_freq = if is_early {
-            self.settings.early_window_switch_freq
-        } else {
-            self.settings.window_switch_freq
-        };
-
-        let variance_decay = if is_early {
-            self.settings.early_variance_decay
-        } else {
-            self.settings.variance_decay
-        };
-
-        let switch = count >= switch_freq;
-
-        if switch {
-            assert!(count == switch_freq);
-            self.exp_variance_draw = std::mem::replace(
-                &mut self.exp_variance_draw_bg,
-                ExpWeightedVariance::new(self.dim, variance_decay, true),
-            );
-            self.exp_variance_grad = std::mem::replace(
-                &mut self.exp_variance_grad_bg,
-                ExpWeightedVariance::new(self.dim, variance_decay, true),
-            );
-
-            self.exp_variance_draw_bg
-                .set_mean(collector.draw.iter().copied());
-            self.exp_variance_draw_bg
-                .set_variance(iter::repeat(0f64));
-            self.exp_variance_grad_bg
-                .set_mean(iter::repeat(0f64));
-            self.exp_variance_grad_bg
-                .set_variance(collector.grad.iter().map(|&x| x * x));
-        } else if collector.is_good {
-            self.exp_variance_draw
-                .add_sample(collector.draw.iter().copied());
-            self.exp_variance_grad
-                .add_sample(collector.grad.iter().copied());
-            self.exp_variance_draw_bg
-                .add_sample(collector.draw.iter().copied());
-            self.exp_variance_grad_bg
-                .add_sample(collector.grad.iter().copied());
-        }
-
-        //if (is_early & (self.exp_variance_draw.count() > 2)) | (!is_early & switch) {
-        if self.exp_variance_draw.count() > 2 {
-            assert!(self.exp_variance_draw.count() == self.exp_variance_grad.count());
-            potential.mass_matrix.update_diag(
-                izip!(
-                    self.exp_variance_draw.current(),
-                    self.exp_variance_grad.current(),
-                )
-                .map(|(draw, grad)| {
-                    let val = (draw / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
-                    if !val.is_finite() {
-                        None
-                    } else {
-                        Some(val)
-                    }
-                }),
-            );
-        }
+        // Must be controlled from a different meta strategy
     }
 
     fn new_collector(&self) -> Self::Collector {
@@ -318,53 +303,68 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
     }
 }
 
-pub(crate) struct CombinedStrategy<S1, S2> {
-    data1: S1,
-    data2: S2,
+
+pub(crate) struct GradDiagStrategy<F: CpuLogpFunc> {
+    step_size: DualAverageStrategy<F, DiagMassMatrix>,
+    mass_matrix: ExpWindowDiagAdapt<F>,
+    options: GradDiagOptions,
+    num_tune: u64,
+    // The number of draws in the the early window
+    early_end: u64,
+
+    // The first draw number for the final step size adaptation window
+    final_step_size_window: u64,
 }
 
-impl<S1, S2> CombinedStrategy<S1, S2> {
-    pub(crate) fn new(s1: S1, s2: S2) -> Self {
+#[derive(Debug, Clone, Copy)]
+pub struct GradDiagOptions {
+    pub dual_average_options: DualAverageSettings,
+    pub mass_matrix_options: DiagAdaptExpSettings,
+    pub early_window: f64,
+    pub step_size_window: f64,
+    pub mass_matrix_switch_freq: u64,
+    pub early_mass_matrix_switch_freq: u64,
+}
+
+impl Default for GradDiagOptions {
+    fn default() -> Self {
         Self {
-            data1: s1,
-            data2: s2,
+            dual_average_options: DualAverageSettings::default(),
+            mass_matrix_options: DiagAdaptExpSettings::default(),
+            early_window: 0.3,
+            //step_size_window: 0.08,
+            //step_size_window: 0.15,
+            step_size_window: 0.2,
+            mass_matrix_switch_freq: 60,
+            early_mass_matrix_switch_freq: 10,
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct CombinedStats<D1: Debug, D2: Debug> {
-    stats1: D1,
-    stats2: D2,
-}
-
-impl<D1: AsSampleStatVec, D2: AsSampleStatVec> AsSampleStatVec for CombinedStats<D1, D2> {
-    fn add_to_vec(&self, vec: &mut Vec<SampleStatItem>) {
-        self.stats1.add_to_vec(vec);
-        self.stats2.add_to_vec(vec);
-    }
-}
-
-#[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct CombinedOptions<O1: Copy + Send + Default, O2: Copy + Send + Default> {
-    options1: O1,
-    options2: O2,
-}
-
-impl<S1, S2> AdaptStrategy for CombinedStrategy<S1, S2>
-where
-    S1: AdaptStrategy,
-    S2: AdaptStrategy<Potential = S1::Potential>,
-{
-    type Potential = S1::Potential;
-    type Collector = CombinedCollector<S1::Collector, S2::Collector>;
-    type Stats = CombinedStats<S1::Stats, S2::Stats>;
-    type Options = CombinedOptions<S1::Options, S2::Options>;
+impl<F: CpuLogpFunc> AdaptStrategy for GradDiagStrategy<F> {
+    type Potential = EuclideanPotential<F, DiagMassMatrix>;
+    type Collector = CombinedCollector<
+        AcceptanceRateCollector<<EuclideanPotential<F, DiagMassMatrix> as Hamiltonian>::State>,
+        DrawGradCollector
+    >;
+    type Stats = CombinedStats<DualAverageStats, ExpWindowDiagAdaptStats>;
+    type Options = GradDiagOptions;
 
     fn new(options: Self::Options, num_tune: u64, dim: usize) -> Self {
+        let num_tune_f = num_tune as f64;
+        let step_size_window = (options.step_size_window * num_tune_f) as u64;
+        let early_end = (options.early_window * num_tune_f) as u64;
+        let final_second_step_size = num_tune.saturating_sub(step_size_window);
+
+        assert!(early_end < num_tune);
+
         Self {
-            data1: S1::new(options.options1, num_tune, dim),
-            data2: S2::new(options.options2, num_tune, dim),
+            step_size: DualAverageStrategy::new(options.dual_average_options, num_tune, dim),
+            mass_matrix: ExpWindowDiagAdapt::new(options.mass_matrix_options, num_tune, dim),
+            options,
+            num_tune,
+            early_end,
+            final_step_size_window: final_second_step_size,
         }
     }
 
@@ -374,8 +374,9 @@ where
         potential: &mut Self::Potential,
         state: &<Self::Potential as Hamiltonian>::State,
     ) {
-        self.data1.init(options, potential, state);
-        self.data2.init(options, potential, state);
+        self.step_size.init(options, potential, state);
+        self.mass_matrix.init(options, potential, state);
+        self.step_size.enable();
     }
 
     fn adapt(
@@ -385,16 +386,38 @@ where
         draw: u64,
         collector: &Self::Collector,
     ) {
-        self.data1
-            .adapt(options, potential, draw, &collector.collector1);
-        self.data2
-            .adapt(options, potential, draw, &collector.collector2);
+        if draw >= self.num_tune {
+            return;
+        }
+
+        if draw < self.final_step_size_window {
+            let is_early = draw < self.early_end;
+            let switch_freq = if is_early {
+                self.options.early_mass_matrix_switch_freq
+            } else {
+                self.options.mass_matrix_switch_freq
+            };
+
+            if self.mass_matrix.background_count() >= switch_freq {
+                self.mass_matrix.switch(&collector.collector2);
+            } else {
+                self.mass_matrix.update_estimators(&collector.collector2);
+            }
+            self.mass_matrix.update_potential(potential);
+            self.step_size.adapt(options, potential, draw, &collector.collector1);
+            return;
+        }
+
+        if draw == self.num_tune - 1 {
+            self.step_size.finalize();
+        }
+        self.step_size.adapt(options, potential, draw, &collector.collector1);
     }
 
     fn new_collector(&self) -> Self::Collector {
         CombinedCollector {
-            collector1: self.data1.new_collector(),
-            collector2: self.data2.new_collector(),
+            collector1: self.step_size.new_collector(),
+            collector2: self.mass_matrix.new_collector(),
         }
     }
 
@@ -406,12 +429,26 @@ where
     ) -> Self::Stats {
         CombinedStats {
             stats1: self
-                .data1
+                .step_size
                 .current_stats(options, potential, &collector.collector1),
             stats2: self
-                .data2
+                .mass_matrix
                 .current_stats(options, potential, &collector.collector2),
         }
+    }
+}
+
+
+#[derive(Debug, Clone)]
+pub struct CombinedStats<D1: Debug, D2: Debug> {
+    pub stats1: D1,
+    pub stats2: D2,
+}
+
+impl<D1: AsSampleStatVec, D2: AsSampleStatVec> AsSampleStatVec for CombinedStats<D1, D2> {
+    fn add_to_vec(&self, vec: &mut Vec<SampleStatItem>) {
+        self.stats1.add_to_vec(vec);
+        self.stats2.add_to_vec(vec);
     }
 }
 
@@ -507,11 +544,8 @@ mod test {
         let ndim = 10;
         let func = NormalLogp::new(ndim, 3.);
         let num_tune = 100;
-        let step_size_adapt =
-            DualAverageStrategy::new(DualAverageSettings::default(), num_tune, func.dim());
-        let mass_matrix_adapt =
-            ExpWindowDiagAdapt::new(DiagAdaptExpSettings::default(), num_tune, func.dim());
-        let strategy = CombinedStrategy::new(step_size_adapt, mass_matrix_adapt);
+        let options = GradDiagOptions::default();
+        let strategy = GradDiagStrategy::new(options, num_tune, ndim);
 
         let mass_matrix = DiagMassMatrix::new(ndim);
         let max_energy_error = 1000f64;

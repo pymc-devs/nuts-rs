@@ -55,7 +55,6 @@
 //! // and modify as we like
 //! sampler_args.num_tune = 1000;
 //! sampler_args.maxdepth = 3;  // small value just for testing...
-//! sampler_args.mass_matrix_adapt.store_mass_matrix = true;
 //!
 //! // We instanciate our posterior density function
 //! let logp_func = PosteriorDensity {};
@@ -111,5 +110,4 @@ pub use cpu_sampler::{
     new_sampler, sample_parallel, sample_sequentially, CpuLogpFuncMaker, InitPointFunc,
     JitterInitFunc, ParallelChainResult, ParallelSamplingError, SamplerArgs,
 };
-pub use mass_matrix::DiagAdaptExpSettings;
 pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError, SampleStatValue, SampleStats};
