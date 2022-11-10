@@ -143,10 +143,14 @@ impl DrawGradCollector {
 impl Collector for DrawGradCollector {
     type State = State;
 
-    fn register_draw(&mut self, state: &Self::State, _info: &crate::nuts::SampleInfo) {
+    fn register_draw(&mut self, state: &Self::State, info: &crate::nuts::SampleInfo) {
         self.draw.copy_from_slice(&state.q);
         self.grad.copy_from_slice(&state.grad);
         let idx = state.index_in_trajectory();
-        self.is_good = _info.divergence_info.is_none() & (idx != 0);
+        if info.divergence_info.is_some() {
+            self.is_good = idx.abs() > 4;
+        } else {
+            self.is_good = idx != 0;
+        }
     }
 }
