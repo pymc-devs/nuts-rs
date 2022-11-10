@@ -8,7 +8,6 @@ pub struct DualAverageOptions {
     pub k: f64,
     pub t0: f64,
     pub gamma: f64,
-    pub initial_step: f64,
 }
 
 impl Default for DualAverageOptions {
@@ -17,7 +16,6 @@ impl Default for DualAverageOptions {
             k: 0.75,
             t0: 10.,
             gamma: 0.05,
-            initial_step: 0.1,
         }
     }
 }
@@ -33,14 +31,12 @@ pub struct DualAverage {
 }
 
 impl DualAverage {
-    pub fn new(settings: DualAverageOptions) -> DualAverage {
-        let initial_step = settings.initial_step;
+    pub fn new(settings: DualAverageOptions, initial_step: f64) -> DualAverage {
         DualAverage {
             log_step: initial_step.ln(),
             log_step_adapted: initial_step.ln(),
             hbar: 0.,
-            //mu: (10. * initial_step).ln(),
-            mu: (2. * initial_step).ln(),
+            mu: (10. * initial_step).ln(),
             count: 1,
             settings,
         }
@@ -64,11 +60,11 @@ impl DualAverage {
     }
 
     #[allow(dead_code)]
-    pub fn reset(&mut self, initial_step: f64) {
+    pub fn reset(&mut self, initial_step: f64, bias_factor: f64) {
         self.log_step = initial_step.ln();
         self.log_step_adapted = initial_step.ln();
         self.hbar = 0f64;
-        self.mu = (10f64 * initial_step).ln();
+        self.mu = (bias_factor * initial_step).ln();
         self.count = 1;
     }
 }

@@ -5,10 +5,10 @@ use thiserror::Error;
 
 use crate::{
     adapt_strategy::{
-        CombinedStrategy, DualAverageSettings, DualAverageStrategy, ExpWindowDiagAdapt,
+        DualAverageSettings, GradDiagStrategy, GradDiagOptions
     },
     cpu_potential::EuclideanPotential,
-    mass_matrix::{DiagAdaptExpSettings, DiagMassMatrix},
+    mass_matrix::DiagMassMatrix,
     nuts::{Chain, NutsChain, NutsError, NutsOptions, SampleStats},
     CpuLogpFunc,
 };
@@ -29,7 +29,7 @@ pub struct SamplerArgs {
     /// Settings for step size adaptation.
     pub step_size_adapt: DualAverageSettings,
     /// Settings for mass matrix adaptation.
-    pub mass_matrix_adapt: DiagAdaptExpSettings,
+    pub mass_matrix_adapt: GradDiagOptions,
 }
 
 impl Default for SamplerArgs {
@@ -40,7 +40,7 @@ impl Default for SamplerArgs {
             max_energy_error: 1000f64,
             store_gradient: false,
             step_size_adapt: DualAverageSettings::default(),
-            mass_matrix_adapt: DiagAdaptExpSettings::default(),
+            mass_matrix_adapt: GradDiagOptions::default(),
         }
     }
 }
@@ -175,11 +175,11 @@ pub fn new_sampler<F: CpuLogpFunc>(
 ) -> impl Chain {
     use crate::nuts::AdaptStrategy;
     let num_tune = settings.num_tune;
-    let step_size_adapt = DualAverageStrategy::new(settings.step_size_adapt, num_tune, logp.dim());
-    let mass_matrix_adapt =
-        ExpWindowDiagAdapt::new(settings.mass_matrix_adapt, num_tune, logp.dim());
+    //let step_size_adapt = DualAverageStrategy::new(settings.step_size_adapt, num_tune, logp.dim());
+    //let mass_matrix_adapt =
+    //    ExpWindowDiagAdapt::new(settings.mass_matrix_adapt, num_tune, logp.dim());
 
-    let strategy = CombinedStrategy::new(step_size_adapt, mass_matrix_adapt);
+    let strategy = GradDiagStrategy::new(settings.mass_matrix_adapt, num_tune, logp.dim());
 
     let mass_matrix = DiagMassMatrix::new(logp.dim());
     let max_energy_error = settings.max_energy_error;

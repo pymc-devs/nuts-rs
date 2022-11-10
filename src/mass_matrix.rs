@@ -80,46 +80,42 @@ impl MassMatrix for DiagMassMatrix {
 }
 
 #[derive(Debug)]
-pub(crate) struct ExpWeightedVariance {
+pub(crate) struct RunningVariance {
     mean: Box<[f64]>,
     variance: Box<[f64]>,
     count: u64,
-    pub(crate) alpha: f64, // TODO
-    pub(crate) use_mean: bool,
 }
 
-impl ExpWeightedVariance {
-    pub(crate) fn new(dim: usize, alpha: f64, use_mean: bool) -> Self {
-        ExpWeightedVariance {
+
+impl RunningVariance {
+    pub(crate) fn new(dim: usize) -> Self {
+        Self {
             mean: vec![0f64; dim].into(),
             variance: vec![0f64; dim].into(),
             count: 0,
-            alpha,
-            use_mean,
         }
     }
 
-    pub(crate) fn set_mean(&mut self, values: impl Iterator<Item = f64>) {
-        self.mean
-            .iter_mut()
-            .zip(values)
-            .for_each(|(out, val)| *out = val);
-    }
-
-    pub(crate) fn set_variance(&mut self, values: impl Iterator<Item = f64>) {
-        self.variance
-            .iter_mut()
-            .zip(values)
-            .for_each(|(out, val)| *out = val);
-    }
-
     pub(crate) fn add_sample(&mut self, value: impl Iterator<Item = f64>) {
-        add_sample(self, value);
         self.count += 1;
+        if self.count == 1 {
+            izip!(self.mean.iter_mut(), value)
+                .for_each(|(mean, val)| {
+                    *mean = val;
+                });
+        } else {
+            izip!(self.mean.iter_mut(), self.variance.iter_mut(), value)
+                .for_each(|(mean, var, x)| {
+                    let diff = x - *mean;
+                    *mean += diff / (self.count as f64);
+                    *var += diff * diff;
+                });
+        }
     }
 
-    pub(crate) fn current(&self) -> &[f64] {
-        &self.variance
+    pub(crate) fn current(&self) -> impl Iterator<Item = f64> + '_ {
+        assert!(self.count > 1);
+        self.variance.iter().map(|&x| x / ((self.count - 1) as f64))
     }
 
     pub(crate) fn count(&self) -> u64 {
@@ -127,65 +123,6 @@ impl ExpWeightedVariance {
     }
 }
 
-#[multiversion]
-#[clone(target = "[x64|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse")]
-fn add_sample(self_: &mut ExpWeightedVariance, value: impl Iterator<Item = f64>) {
-    if self_.use_mean {
-        izip!(value, self_.mean.iter_mut(), self_.variance.iter_mut()).for_each(
-            |(x, mean, var)| {
-                //if self_.count > 1 {
-                //    assert!(x - *mean != 0f64, "var = {}, mean = {}, x = {}, delta = {}, count = {}", var, mean, x, x - *mean, self_.count);
-                //}
-                let delta = x - *mean;
-                *mean = self_.alpha.mul_add(delta, *mean);
-                *var = (1f64 - self_.alpha) * (*var + self_.alpha * delta * delta);
-            },
-        );
-    } else {
-        izip!(value, self_.mean.iter_mut(), self_.variance.iter_mut()).for_each(
-            |(x, _mean, var)| {
-                let delta = x;
-                *var = (1f64 - self_.alpha) * (*var + self_.alpha * delta * delta);
-                //assert!(*var > 0f64, "var = {}, x = {}, delta = {}", var, x, delta);
-            },
-        );
-    }
-}
-
-/// Settings for mass matrix adaptation
-#[derive(Clone, Copy)]
-pub struct DiagAdaptExpSettings {
-    /// An exponenital decay parameter for the variance estimator
-    pub variance_decay: f64,
-    /// Exponenital decay parameter for the variance estimator in the first adaptation window
-    pub early_variance_decay: f64,
-    /// Stop adaptation `final_window` draws before tuning ends.
-    pub final_window: u64,
-    /// Save the current adapted mass matrix as sampler stat
-    pub store_mass_matrix: bool,
-    /// Switch to a new variance estimator every `window_switch_freq` draws.
-    pub window_switch_freq: u64,
-    pub early_window_switch_freq: u64,
-    /// The ratio of the adaptation steps that is considered "early"
-    pub early_ratio: f64,
-    pub grad_init: bool,
-}
-
-impl Default for DiagAdaptExpSettings {
-    fn default() -> Self {
-        Self {
-            variance_decay: 0.02,
-            final_window: 50,
-            store_mass_matrix: false,
-            window_switch_freq: 200,
-            early_window_switch_freq: 20,
-            early_variance_decay: 0.1,
-            early_ratio: 0.4,
-            grad_init: true,
-        }
-    }
-}
 
 pub(crate) struct DrawGradCollector {
     pub(crate) draw: Box<[f64]>,
@@ -210,6 +147,6 @@ impl Collector for DrawGradCollector {
         self.draw.copy_from_slice(&state.q);
         self.grad.copy_from_slice(&state.grad);
         let idx = state.index_in_trajectory();
-        self.is_good = idx != 0;
+        self.is_good = _info.divergence_info.is_none() & (idx != 0);
     }
 }
