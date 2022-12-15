@@ -20,9 +20,7 @@ pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
 }
 
 #[cfg(feature = "simd_support")]
-#[multiversion]
-#[clone(target = "[x64|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse")]
+#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
 pub fn multiply(x: &[f64], y: &[f64], out: &mut [f64]) {
     let n = x.len();
     assert!(y.len() == n);
@@ -44,9 +42,7 @@ pub fn multiply(x: &[f64], y: &[f64], out: &mut [f64]) {
 }
 
 #[cfg(not(feature = "simd_support"))]
-#[multiversion]
-#[clone(target = "[x64|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse")]
+#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
 pub fn multiply(x: &[f64], y: &[f64], out: &mut [f64]) {
     let n = x.len();
     assert!(y.len() == n);
@@ -58,9 +54,7 @@ pub fn multiply(x: &[f64], y: &[f64], out: &mut [f64]) {
 }
 
 #[cfg(feature = "simd_support")]
-#[multiversion]
-#[clone(target = "[x84|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse")]
+#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
 pub fn scalar_prods2(positive1: &[f64], positive2: &[f64], x: &[f64], y: &[f64]) -> (f64, f64) {
     let n = positive1.len();
 
@@ -99,9 +93,7 @@ pub fn scalar_prods2(positive1: &[f64], positive2: &[f64], x: &[f64], y: &[f64])
 }
 
 #[cfg(not(feature = "simd_support"))]
-#[multiversion]
-#[clone(target = "[x84|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse")]
+#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
 pub fn scalar_prods2(positive1: &[f64], positive2: &[f64], x: &[f64], y: &[f64]) -> (f64, f64) {
     let n = positive1.len();
 
@@ -116,9 +108,7 @@ pub fn scalar_prods2(positive1: &[f64], positive2: &[f64], x: &[f64], y: &[f64])
 }
 
 #[cfg(feature = "simd_support")]
-#[multiversion]
-#[clone(target = "[x84|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse")]
+#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
 pub fn scalar_prods3(
     positive1: &[f64],
     negative1: &[f64],
@@ -167,9 +157,7 @@ pub fn scalar_prods3(
 }
 
 #[cfg(not(feature = "simd_support"))]
-#[multiversion]
-#[clone(target = "[x84|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse")]
+#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
 pub fn scalar_prods3(
     positive1: &[f64],
     negative1: &[f64],
@@ -191,9 +179,7 @@ pub fn scalar_prods3(
 }
 
 #[cfg(feature = "simd_support")]
-#[multiversion]
-#[clone(target = "[x86|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse")]
+#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
 pub fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
     assert!(a.len() == b.len());
 
@@ -216,9 +202,7 @@ pub fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
 }
 
 #[cfg(not(feature = "simd_support"))]
-#[multiversion]
-#[clone(target = "[x86|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse")]
+#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
 pub fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
     assert!(a.len() == b.len());
 
@@ -230,9 +214,7 @@ pub fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
 }
 
 #[cfg(feature = "simd_support")]
-#[multiversion]
-#[clone(target = "[x86|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse")]
+#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
 pub fn axpy(x: &[f64], y: &mut [f64], a: f64) {
     let n = x.len();
     assert!(y.len() == n);
@@ -255,9 +237,7 @@ pub fn axpy(x: &[f64], y: &mut [f64], a: f64) {
 }
 
 #[cfg(not(feature = "simd_support"))]
-#[multiversion]
-#[clone(target = "[x86|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse")]
+#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
 pub fn axpy(x: &[f64], y: &mut [f64], a: f64) {
     let n = x.len();
     assert!(y.len() == n);
@@ -268,9 +248,7 @@ pub fn axpy(x: &[f64], y: &mut [f64], a: f64) {
 }
 
 #[cfg(feature = "simd_support")]
-#[multiversion]
-#[clone(target = "[x86|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse+fma")]
+#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
 pub fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
     let n = x.len();
     assert!(y.len() == n);
@@ -297,9 +275,7 @@ pub fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
 }
 
 #[cfg(not(feature = "simd_support"))]
-#[multiversion]
-#[clone(target = "[x86|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse+fma")]
+#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
 pub fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
     let n = x.len();
     assert!(y.len() == n);

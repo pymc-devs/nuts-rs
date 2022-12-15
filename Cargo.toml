@@ -23,7 +23,7 @@ codegen-units = 1
 [dependencies]
 rand = { version = "0.8.5", features = ["small_rng"] }
 rand_distr = "0.4.3"
-multiversion = "0.6.1"
+multiversion = "0.7.0"
 itertools = "0.10.3"
 crossbeam = "0.8.1"
 thiserror = "1.0.31"
@@ -34,7 +34,7 @@ ndarray = "0.15.4"
 proptest = "1.0.0"
 pretty_assertions = "1.2.1"
 criterion = "0.4.0"
-nix = "0.25.0"
+nix = "0.26.1"
 approx = "0.5.1"
 
 [[bench]]

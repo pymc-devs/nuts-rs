@@ -241,7 +241,7 @@ impl InitPointFunc for JitterInitFunc {
 }
 
 pub mod test_logps {
-    use crate::{cpu_potential::CpuLogpFunc, nuts::LogpError};
+    use crate::{cpu_potential::CpuLogpFunc, nuts::LogpError, CpuLogpFuncMaker};
     use multiversion::multiversion;
     use thiserror::Error;
 
@@ -249,6 +249,18 @@ pub mod test_logps {
     pub struct NormalLogp {
         dim: usize,
         mu: f64,
+    }
+
+    impl CpuLogpFuncMaker for NormalLogp {
+        type Func = Self;
+
+        fn make_logp_func(&self) -> Result<Self::Func, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(self.clone())
+        }
+
+        fn dim(&self) -> usize {
+            self.dim
+        }
     }
 
     impl NormalLogp {
@@ -276,9 +288,7 @@ pub mod test_logps {
             assert!(gradient.len() == n);
 
             #[cfg(feature = "simd_support")]
-            #[multiversion]
-            #[clone(target = "[x64|x86_64]+avx+avx2+fma")]
-            #[clone(target = "x86+sse")]
+            #[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
             fn logp_inner(mu: f64, position: &[f64], gradient: &mut [f64]) -> f64 {
                 use std::simd::f64x4;
                 use std::simd::SimdFloat;
@@ -313,9 +323,7 @@ pub mod test_logps {
             }
 
             #[cfg(not(feature = "simd_support"))]
-            #[multiversion]
-            #[clone(target = "[x64|x86_64]+avx+avx2+fma")]
-            #[clone(target = "x86+sse")]
+            #[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
             fn logp_inner(mu: f64, position: &[f64], gradient: &mut [f64]) -> f64 {
                 let n = position.len();
                 assert!(gradient.len() == n);
@@ -370,22 +378,7 @@ mod tests {
             .iter()
             .any(|(key, _)| *key == "index_in_trajectory"));
 
-        struct Maker {
-            logp: NormalLogp,
-        }
-        impl CpuLogpFuncMaker for Maker {
-            type Func = NormalLogp;
-
-            fn make_logp_func(&self) -> Result<Self::Func, Box<dyn Error + Send + Sync>> {
-                Ok(self.logp.clone())
-            }
-
-            fn dim(&self) -> usize {
-                self.logp.dim()
-            }
-        }
-
-        let maker = Maker { logp };
+        let maker = logp;
 
         let (handles, chains) =
             sample_parallel(maker, &mut JitterInitFunc::new(), settings, 4, 100, 42, 10).unwrap();
