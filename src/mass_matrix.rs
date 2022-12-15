@@ -38,9 +38,7 @@ impl DiagMassMatrix {
     }
 }
 
-#[multiversion]
-#[clone(target = "[x64|x86_64]+avx+avx2+fma")]
-#[clone(target = "x86+sse")]
+#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
 fn update_diag(
     variance_out: &mut [f64],
     inv_std_out: &mut [f64],
