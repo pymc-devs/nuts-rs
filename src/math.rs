@@ -290,7 +290,6 @@ pub fn axpy_out(x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
 mod tests {
     use super::*;
     use approx::assert_ulps_eq;
-    use ndarray::prelude::*;
     use pretty_assertions::assert_eq;
     use proptest::prelude::*;
 

@@ -1,6 +1,9 @@
 use std::marker::PhantomData;
 
-use crate::nuts::{Collector, NutsOptions, State};
+use crate::{
+    nuts::{Collector, NutsOptions, State},
+    DivergenceInfo,
+};
 
 /// Settings for step size adaptation
 #[derive(Debug, Clone, Copy)]
@@ -121,7 +124,7 @@ impl<S: State> Collector for AcceptanceRateCollector<S> {
         &mut self,
         _start: &Self::State,
         end: &Self::State,
-        divergence_info: Option<&dyn crate::nuts::DivergenceInfo>,
+        divergence_info: Option<&DivergenceInfo>,
     ) {
         match divergence_info {
             Some(_) => self.mean.add(0.),

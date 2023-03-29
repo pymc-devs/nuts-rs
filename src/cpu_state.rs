@@ -188,10 +188,6 @@ impl State {
             None => Err(StateInUse {}),
         }
     }
-
-    pub(crate) fn clone_inner(&self) -> InnerState {
-        self.inner.inner.clone()
-    }
 }
 
 impl Drop for State {

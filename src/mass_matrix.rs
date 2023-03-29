@@ -84,7 +84,6 @@ pub(crate) struct RunningVariance {
     count: u64,
 }
 
-
 impl RunningVariance {
     pub(crate) fn new(dim: usize) -> Self {
         Self {
@@ -97,17 +96,17 @@ impl RunningVariance {
     pub(crate) fn add_sample(&mut self, value: impl Iterator<Item = f64>) {
         self.count += 1;
         if self.count == 1 {
-            izip!(self.mean.iter_mut(), value)
-                .for_each(|(mean, val)| {
-                    *mean = val;
-                });
+            izip!(self.mean.iter_mut(), value).for_each(|(mean, val)| {
+                *mean = val;
+            });
         } else {
-            izip!(self.mean.iter_mut(), self.variance.iter_mut(), value)
-                .for_each(|(mean, var, x)| {
+            izip!(self.mean.iter_mut(), self.variance.iter_mut(), value).for_each(
+                |(mean, var, x)| {
                     let diff = x - *mean;
                     *mean += diff / (self.count as f64);
                     *var += diff * diff;
-                });
+                },
+            );
         }
     }
 
@@ -120,7 +119,6 @@ impl RunningVariance {
         self.count
     }
 }
-
 
 pub(crate) struct DrawGradCollector {
     pub(crate) draw: Box<[f64]>,

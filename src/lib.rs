@@ -66,17 +66,14 @@
 //! // Set to some initial position and start drawing samples.
 //! sampler.set_position(&vec![0f64; 10]).expect("Unrecoverable error during init");
 //! let mut trace = vec![];  // Collection of all draws
-//! let mut stats = vec![];  // Collection of statistics like the acceptance rate for each draw
 //! for _ in 0..2000 {
 //!     let (draw, info) = sampler.draw().expect("Unrecoverable error during sampling");
 //!     trace.push(draw);
-//!     let _info_vec = info.to_vec();  // We can collect the stats in a Vec
 //!     // Or get more detailed information about divergences
 //!     if let Some(div_info) = info.divergence_info() {
-//!         println!("Divergence at position {:?}", div_info.start_location());
+//!         println!("Divergence at position {:?}", div_info.start_location);
 //!     }
 //!     dbg!(&info);
-//!     stats.push(info);
 //! }
 //! ```
 //!
@@ -110,4 +107,4 @@ pub use cpu_sampler::{
     new_sampler, sample_parallel, sample_sequentially, CpuLogpFuncMaker, InitPointFunc,
     JitterInitFunc, ParallelChainResult, ParallelSamplingError, SamplerArgs,
 };
-pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError, SampleStatValue, SampleStats};
+pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError, SampleStats};
