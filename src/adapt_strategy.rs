@@ -1,18 +1,24 @@
 use std::{fmt::Debug, marker::PhantomData};
 
+#[cfg(feature = "arrow")]
+use arrow2::{
+    array::{MutableArray, MutableFixedSizeListArray, MutablePrimitiveArray, StructArray, TryPush},
+    datatypes::{DataType, Field},
+};
 use itertools::izip;
 
 use crate::{
     cpu_potential::{CpuLogpFunc, EuclideanPotential},
-    mass_matrix::{
-        DiagMassMatrix, DrawGradCollector, MassMatrix, RunningVariance,
-    },
-    nuts::{
-        AdaptStrategy, AsSampleStatVec, Collector, Hamiltonian, NutsOptions, SampleStatItem,
-        SampleStatValue,
-    },
+    mass_matrix::{DiagMassMatrix, DrawGradCollector, MassMatrix, RunningVariance},
+    nuts::{AdaptStrategy, Collector, Hamiltonian, NutsOptions},
     stepsize::{AcceptanceRateCollector, DualAverage, DualAverageOptions},
+    DivergenceInfo,
 };
+
+#[cfg(feature = "arrow")]
+use crate::nuts::{ArrowBuilder, ArrowRow};
+#[cfg(feature = "arrow")]
+use crate::SamplerArgs;
 
 const LOWER_LIMIT: f64 = 1e-10f64;
 const UPPER_LIMIT: f64 = 1e10f64;
@@ -36,7 +42,6 @@ impl<F, M> DualAverageStrategy<F, M> {
     }
 }
 
-
 #[derive(Debug, Clone, Copy)]
 pub struct DualAverageStats {
     pub step_size_bar: f64,
@@ -44,14 +49,48 @@ pub struct DualAverageStats {
     pub n_steps: u64,
 }
 
-impl AsSampleStatVec for DualAverageStats {
-    fn add_to_vec(&self, vec: &mut Vec<SampleStatItem>) {
-        vec.push(("step_size_bar", SampleStatValue::F64(self.step_size_bar)));
-        vec.push((
-            "mean_tree_accept",
-            SampleStatValue::F64(self.mean_tree_accept),
-        ));
-        vec.push(("n_steps", SampleStatValue::U64(self.n_steps)));
+#[cfg(feature = "arrow")]
+pub struct DualAverageStatsBuilder {
+    step_size_bar: MutablePrimitiveArray<f64>,
+    mean_tree_accept: MutablePrimitiveArray<f64>,
+    n_steps: MutablePrimitiveArray<u64>,
+}
+
+#[cfg(feature = "arrow")]
+impl ArrowBuilder<DualAverageStats> for DualAverageStatsBuilder {
+    fn append_value(&mut self, value: &DualAverageStats) {
+        self.step_size_bar.push(Some(value.step_size_bar));
+        self.mean_tree_accept.push(Some(value.mean_tree_accept));
+        self.n_steps.push(Some(value.n_steps));
+    }
+
+    fn finalize(mut self) -> StructArray {
+        let fields = vec![
+            Field::new("step_size_bar", DataType::Float64, false),
+            Field::new("mean_tree_accept", DataType::Float64, false),
+            Field::new("n_steps", DataType::UInt64, false),
+        ];
+
+        let arrays = vec![
+            self.step_size_bar.as_box(),
+            self.mean_tree_accept.as_box(),
+            self.n_steps.as_box(),
+        ];
+
+        StructArray::new(DataType::Struct(fields), arrays, None)
+    }
+}
+
+#[cfg(feature = "arrow")]
+impl ArrowRow for DualAverageStats {
+    type Builder = DualAverageStatsBuilder;
+
+    fn new_builder(_dim: usize, _settings: &SamplerArgs) -> Self::Builder {
+        Self::Builder {
+            step_size_bar: MutablePrimitiveArray::new(),
+            mean_tree_accept: MutablePrimitiveArray::new(),
+            n_steps: MutablePrimitiveArray::new(),
+        }
     }
 }
 
@@ -220,18 +259,53 @@ impl<F: CpuLogpFunc> ExpWindowDiagAdapt<F> {
     }
 }
 
-
 #[derive(Clone, Debug)]
 pub struct ExpWindowDiagAdaptStats {
     pub mass_matrix_inv: Option<Box<[f64]>>,
 }
 
-impl AsSampleStatVec for ExpWindowDiagAdaptStats {
-    fn add_to_vec(&self, vec: &mut Vec<SampleStatItem>) {
-        vec.push((
+#[cfg(feature = "arrow")]
+pub struct ExpWindowDiagAdaptStatsBuilder {
+    mass_matrix_inv: MutableFixedSizeListArray<MutablePrimitiveArray<f64>>,
+}
+
+#[cfg(feature = "arrow")]
+impl ArrowBuilder<ExpWindowDiagAdaptStats> for ExpWindowDiagAdaptStatsBuilder {
+    fn append_value(&mut self, value: &ExpWindowDiagAdaptStats) {
+        self.mass_matrix_inv
+            .try_push(
+                value
+                    .mass_matrix_inv
+                    .as_ref()
+                    .map(|vals| vals.iter().map(|&x| Some(x))),
+            )
+            .unwrap();
+    }
+
+    fn finalize(mut self) -> StructArray {
+        let fields = vec![Field::new(
             "mass_matrix_inv",
-            SampleStatValue::OptionArray(self.mass_matrix_inv.clone()),
-        ));
+            self.mass_matrix_inv.data_type().clone(),
+            true,
+        )];
+
+        let arrays = vec![self.mass_matrix_inv.as_box()];
+
+        StructArray::new(DataType::Struct(fields), arrays, None)
+    }
+}
+
+#[cfg(feature = "arrow")]
+impl ArrowRow for ExpWindowDiagAdaptStats {
+    type Builder = ExpWindowDiagAdaptStatsBuilder;
+
+    fn new_builder(dim: usize, _settings: &SamplerArgs) -> Self::Builder {
+        let items = MutablePrimitiveArray::new();
+        // TODO Add only based on settings
+        let values = MutableFixedSizeListArray::new_with_field(items, "item", false, dim);
+        Self::Builder {
+            mass_matrix_inv: values,
+        }
     }
 }
 
@@ -260,16 +334,19 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
         state: &<Self::Potential as Hamiltonian>::State,
     ) {
         self.exp_variance_draw.add_sample(state.q.iter().copied());
-        self.exp_variance_draw_bg.add_sample(state.q.iter().copied());
-        self.exp_variance_grad.add_sample(state.grad.iter().copied());
-        self.exp_variance_grad_bg.add_sample(state.grad.iter().copied());
+        self.exp_variance_draw_bg
+            .add_sample(state.q.iter().copied());
+        self.exp_variance_grad
+            .add_sample(state.grad.iter().copied());
+        self.exp_variance_grad_bg
+            .add_sample(state.grad.iter().copied());
 
         potential.mass_matrix.update_diag(
-            state.grad.iter().map(|&grad| {
-                Some((grad).abs().recip().clamp(LOWER_LIMIT, UPPER_LIMIT))
-            })
+            state
+                .grad
+                .iter()
+                .map(|&grad| Some((grad).abs().recip().clamp(LOWER_LIMIT, UPPER_LIMIT))),
         );
-
     }
 
     fn adapt(
@@ -303,7 +380,6 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
     }
 }
 
-
 pub(crate) struct GradDiagStrategy<F: CpuLogpFunc> {
     step_size: DualAverageStrategy<F, DiagMassMatrix>,
     mass_matrix: ExpWindowDiagAdapt<F>,
@@ -332,8 +408,6 @@ impl Default for GradDiagOptions {
             dual_average_options: DualAverageSettings::default(),
             mass_matrix_options: DiagAdaptExpSettings::default(),
             early_window: 0.3,
-            //step_size_window: 0.08,
-            //step_size_window: 0.15,
             step_size_window: 0.2,
             mass_matrix_switch_freq: 60,
             early_mass_matrix_switch_freq: 10,
@@ -345,7 +419,7 @@ impl<F: CpuLogpFunc> AdaptStrategy for GradDiagStrategy<F> {
     type Potential = EuclideanPotential<F, DiagMassMatrix>;
     type Collector = CombinedCollector<
         AcceptanceRateCollector<<EuclideanPotential<F, DiagMassMatrix> as Hamiltonian>::State>,
-        DrawGradCollector
+        DrawGradCollector,
     >;
     type Stats = CombinedStats<DualAverageStats, ExpWindowDiagAdaptStats>;
     type Options = GradDiagOptions;
@@ -404,14 +478,16 @@ impl<F: CpuLogpFunc> AdaptStrategy for GradDiagStrategy<F> {
                 self.mass_matrix.update_estimators(&collector.collector2);
             }
             self.mass_matrix.update_potential(potential);
-            self.step_size.adapt(options, potential, draw, &collector.collector1);
+            self.step_size
+                .adapt(options, potential, draw, &collector.collector1);
             return;
         }
 
         if draw == self.num_tune - 1 {
             self.step_size.finalize();
         }
-        self.step_size.adapt(options, potential, draw, &collector.collector1);
+        self.step_size
+            .adapt(options, potential, draw, &collector.collector1);
     }
 
     fn new_collector(&self) -> Self::Collector {
@@ -438,17 +514,58 @@ impl<F: CpuLogpFunc> AdaptStrategy for GradDiagStrategy<F> {
     }
 }
 
+#[cfg(feature = "arrow")]
+#[derive(Debug, Clone)]
+pub struct CombinedStats<D1: Debug + ArrowRow, D2: Debug + ArrowRow> {
+    pub stats1: D1,
+    pub stats2: D2,
+}
 
+#[cfg(not(feature = "arrow"))]
 #[derive(Debug, Clone)]
 pub struct CombinedStats<D1: Debug, D2: Debug> {
     pub stats1: D1,
     pub stats2: D2,
 }
 
-impl<D1: AsSampleStatVec, D2: AsSampleStatVec> AsSampleStatVec for CombinedStats<D1, D2> {
-    fn add_to_vec(&self, vec: &mut Vec<SampleStatItem>) {
-        self.stats1.add_to_vec(vec);
-        self.stats2.add_to_vec(vec);
+#[cfg(feature = "arrow")]
+pub struct CombinedStatsBuilder<D1: ArrowRow, D2: ArrowRow> {
+    stats1: D1::Builder,
+    stats2: D2::Builder,
+}
+
+#[cfg(feature = "arrow")]
+impl<D1: Debug + ArrowRow, D2: Debug + ArrowRow> ArrowRow for CombinedStats<D1, D2> {
+    type Builder = CombinedStatsBuilder<D1, D2>;
+
+    fn new_builder(dim: usize, settings: &SamplerArgs) -> Self::Builder {
+        Self::Builder {
+            stats1: D1::new_builder(dim, settings),
+            stats2: D2::new_builder(dim, settings),
+        }
+    }
+}
+
+#[cfg(feature = "arrow")]
+impl<D1: Debug + ArrowRow, D2: Debug + ArrowRow> ArrowBuilder<CombinedStats<D1, D2>>
+    for CombinedStatsBuilder<D1, D2>
+{
+    fn append_value(&mut self, value: &CombinedStats<D1, D2>) {
+        self.stats1.append_value(&value.stats1);
+        self.stats2.append_value(&value.stats2);
+    }
+
+    fn finalize(self) -> StructArray {
+        let mut data1 = self.stats1.finalize().into_data();
+        let data2 = self.stats2.finalize().into_data();
+
+        assert!(data1.2.is_none());
+        assert!(data2.2.is_none());
+
+        data1.0.extend(data2.0);
+        data1.1.extend(data2.1);
+
+        StructArray::new(DataType::Struct(data1.0), data1.1, None)
     }
 }
 
@@ -468,7 +585,7 @@ where
         &mut self,
         start: &Self::State,
         end: &Self::State,
-        divergence_info: Option<&dyn crate::nuts::DivergenceInfo>,
+        divergence_info: Option<&DivergenceInfo>,
     ) {
         self.collector1
             .register_leapfrog(start, end, divergence_info);

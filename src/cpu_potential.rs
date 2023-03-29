@@ -1,10 +1,18 @@
 use std::fmt::Debug;
 
-use crate::cpu_state::{InnerState, State, StatePool};
+#[cfg(feature = "arrow")]
+use arrow2::array::{MutableArray, MutablePrimitiveArray, StructArray};
+#[cfg(feature = "arrow")]
+use arrow2::datatypes::{DataType, Field};
+
+use crate::cpu_state::{State, StatePool};
 use crate::mass_matrix::MassMatrix;
-use crate::nuts::{
-    AsSampleStatVec, Collector, Direction, DivergenceInfo, Hamiltonian, LogpError, NutsError,
-};
+use crate::nuts::{Collector, Direction, DivergenceInfo, Hamiltonian, LogpError, NutsError};
+#[cfg(feature = "arrow")]
+use crate::SamplerArgs;
+
+#[cfg(feature = "arrow")]
+use crate::nuts::{ArrowBuilder, ArrowRow};
 
 /// Compute the unnormalized log probability density of the posterior
 ///
@@ -19,60 +27,6 @@ pub trait CpuLogpFunc {
 
     fn logp(&mut self, position: &[f64], grad: &mut [f64]) -> Result<f64, Self::Err>;
     fn dim(&self) -> usize;
-}
-
-#[derive(Debug)]
-pub(crate) struct DivergenceInfoImpl<E: Send + std::error::Error> {
-    logp_function_error: Option<E>,
-    start: Option<InnerState>,
-    end: Option<InnerState>,
-    energy_error: Option<f64>,
-}
-
-impl<E: Debug + Send + std::error::Error> AsSampleStatVec for DivergenceInfoImpl<E> {
-    fn add_to_vec(&self, vec: &mut Vec<crate::nuts::SampleStatItem>) {
-        vec.push((
-            "logp_function_error",
-            format!("{:?}", self.logp_function_error).into(),
-        ));
-        vec.push((
-            "divergence_start",
-            self.start.as_ref().map(|v| v.q.clone()).into(),
-        ));
-        vec.push((
-            "divergence_end",
-            self.end.as_ref().map(|v| v.q.clone()).into(),
-        ));
-        vec.push(("divergence_energy_error", self.energy_error.into()));
-    }
-}
-
-impl<E: Debug + Send + std::error::Error> DivergenceInfo for DivergenceInfoImpl<E> {
-    fn start_location(&self) -> Option<&[f64]> {
-        Some(&self.start.as_ref()?.q)
-    }
-
-    fn end_location(&self) -> Option<&[f64]> {
-        Some(&self.end.as_ref()?.q)
-    }
-
-    fn energy_error(&self) -> Option<f64> {
-        self.energy_error
-    }
-
-    fn end_idx_in_trajectory(&self) -> Option<i64> {
-        Some(self.end.as_ref()?.idx_in_trajectory)
-    }
-
-    fn start_idx_in_trajectory(&self) -> Option<i64> {
-        Some(self.end.as_ref()?.idx_in_trajectory)
-    }
-
-    fn logp_function_error(&self) -> Option<&dyn std::error::Error> {
-        self.logp_function_error
-            .as_ref()
-            .map(|x| x as &dyn std::error::Error)
-    }
 }
 
 pub(crate) struct EuclideanPotential<F: CpuLogpFunc, M: MassMatrix> {
@@ -98,15 +52,39 @@ pub(crate) struct PotentialStats {
     step_size: f64,
 }
 
-impl AsSampleStatVec for PotentialStats {
-    fn add_to_vec(&self, vec: &mut Vec<crate::nuts::SampleStatItem>) {
-        vec.push(("step_size", self.step_size.into()));
+#[cfg(feature = "arrow")]
+pub(crate) struct PotentialStatsBuilder {
+    step_size: MutablePrimitiveArray<f64>,
+}
+
+#[cfg(feature = "arrow")]
+impl ArrowBuilder<PotentialStats> for PotentialStatsBuilder {
+    fn append_value(&mut self, value: &PotentialStats) {
+        self.step_size.push(Some(value.step_size));
+    }
+
+    fn finalize(mut self) -> StructArray {
+        let fields = vec![Field::new("step_size", DataType::Float64, false)];
+
+        let arrays = vec![self.step_size.as_box()];
+
+        StructArray::new(DataType::Struct(fields), arrays, None)
+    }
+}
+
+#[cfg(feature = "arrow")]
+impl ArrowRow for PotentialStats {
+    type Builder = PotentialStatsBuilder;
+
+    fn new_builder(_dim: usize, _settings: &SamplerArgs) -> Self::Builder {
+        Self::Builder {
+            step_size: MutablePrimitiveArray::new(),
+        }
     }
 }
 
 impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
     type State = State;
-    type DivergenceInfo = DivergenceInfoImpl<F::Err>;
     type LogpError = F::Err;
     type Stats = PotentialStats;
 
@@ -117,7 +95,7 @@ impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
         dir: Direction,
         initial_energy: f64,
         collector: &mut C,
-    ) -> Result<Result<Self::State, Self::DivergenceInfo>, NutsError> {
+    ) -> Result<Result<Self::State, DivergenceInfo>, NutsError> {
         let mut out = pool.new_state();
 
         let sign = match dir {
@@ -135,10 +113,12 @@ impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
             if !logp_error.is_recoverable() {
                 return Err(NutsError::LogpFailure(Box::new(logp_error)));
             }
-            let div_info = DivergenceInfoImpl {
-                logp_function_error: Some(logp_error),
-                start: Some(start.clone_inner()),
-                end: None,
+            let div_info = DivergenceInfo {
+                logp_function_error: Some(Box::new(logp_error)),
+                start_location: Some(start.q.clone()),
+                end_location: None,
+                start_idx_in_trajectory: Some(start.idx_in_trajectory),
+                end_idx_in_trajectory: None,
                 energy_error: None,
             };
             collector.register_leapfrog(start, &out, Some(&div_info));
@@ -159,10 +139,12 @@ impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
             out.energy() - initial_energy
         };
         if (energy_error > self.max_energy_error) | !energy_error.is_finite() {
-            let divergence_info = DivergenceInfoImpl {
+            let divergence_info = DivergenceInfo {
                 logp_function_error: None,
-                start: Some(start.clone_inner()),
-                end: Some(out.clone_inner()),
+                start_location: Some(start.q.clone()),
+                end_location: Some(out.q.clone()),
+                start_idx_in_trajectory: Some(start.index_in_trajectory()),
+                end_idx_in_trajectory: Some(out.index_in_trajectory()),
                 energy_error: Some(energy_error),
             };
             collector.register_leapfrog(start, &out, Some(&divergence_info));
