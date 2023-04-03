@@ -15,7 +15,7 @@ use crate::SamplerArgs;
 #[derive(Error, Debug)]
 pub enum NutsError {
     #[error("Logp function returned error: {0}")]
-    LogpFailure(Box<dyn std::error::Error + Send>),
+    LogpFailure(Box<dyn std::error::Error + Send + Sync>),
 
     #[error("Could not serialize sample stats")]
     SerializeFailure(),

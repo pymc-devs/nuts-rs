@@ -107,4 +107,6 @@ pub use cpu_sampler::{
     new_sampler, sample_parallel, sample_sequentially, CpuLogpFuncMaker, InitPointFunc,
     JitterInitFunc, ParallelChainResult, ParallelSamplingError, SamplerArgs,
 };
+#[cfg(feature = "arrow")]
+pub use nuts::ArrowBuilder;
 pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError, SampleStats};

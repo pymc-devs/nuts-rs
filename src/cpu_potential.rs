@@ -23,7 +23,7 @@ use crate::nuts::{ArrowBuilder, ArrowRow};
 /// If a non-recoverable error occurs during sampling, the sampler will
 /// stop and return an error.
 pub trait CpuLogpFunc {
-    type Err: Debug + Send + LogpError + 'static;
+    type Err: Debug + Send + Sync + LogpError + 'static;
 
     fn logp(&mut self, position: &[f64], grad: &mut [f64]) -> Result<f64, Self::Err>;
     fn dim(&self) -> usize;
