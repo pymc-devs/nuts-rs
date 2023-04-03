@@ -73,7 +73,7 @@ pub enum ParallelSamplingError {
     #[error("Creating a logp function failed")]
     LogpFuncCreation {
         #[from]
-        source: Box<dyn std::error::Error + Send + Sync>,
+        source: anyhow::Error,
     },
 }
 
@@ -85,20 +85,22 @@ where
 {
     //type Func: CpuLogpFunc;
 
-    fn make_logp_func(
-        &self,
-        chain: usize,
-    ) -> Result<Func, Box<dyn std::error::Error + Send + Sync>>;
+    fn make_logp_func(&self, chain: usize) -> Result<Func, anyhow::Error>;
     fn dim(&self) -> usize;
 }
 
 /// Sample several chains in parallel and return all of the samples live in a channel
-pub fn sample_parallel<M: CpuLogpFuncMaker<F> + 'static, F: CpuLogpFunc, I: InitPointFunc>(
+pub fn sample_parallel<
+    M: CpuLogpFuncMaker<F> + 'static,
+    F: CpuLogpFunc,
+    I: InitPointFunc,
+    R: Rng + ?Sized,
+>(
     logp_func_maker: M,
     init_point_func: &mut I,
     settings: SamplerArgs,
     n_chains: u64,
-    seed: u64,
+    rng: &mut R,
     n_try_init: u64,
 ) -> Result<
     (
@@ -111,7 +113,9 @@ pub fn sample_parallel<M: CpuLogpFuncMaker<F> + 'static, F: CpuLogpFunc, I: Init
     let mut func = logp_func_maker.make_logp_func(0)?;
     assert!(ndim == func.dim());
     let draws = settings.num_tune + settings.num_draws;
-    let mut rng = StdRng::seed_from_u64(seed.wrapping_sub(1));
+    //let mut rng = StdRng::from_rng(rng).expect("Could not seed rng");
+    let mut rng = rand_chacha::ChaCha8Rng::from_rng(rng).unwrap();
+
     let mut points: Vec<Result<(Box<[f64]>, Box<[f64]>), <F as CpuLogpFunc>::Err>> = (0..n_chains)
         .map(|_| {
             let mut position = vec![0.; ndim];
@@ -143,17 +147,21 @@ pub fn sample_parallel<M: CpuLogpFuncMaker<F> + 'static, F: CpuLogpFunc, I: Init
     let (sender, receiver) = crossbeam::channel::bounded(128);
 
     let handle = std::thread::spawn(move || {
+        let rng = rng.clone();
         let results: Vec<Result<(), ParallelSamplingError>> = points
             .into_par_iter()
             .with_max_len(1)
             .enumerate()
             .map_with(sender, |sender, (chain, point)| {
                 let func = logp_func_maker.make_logp_func(chain)?;
+                let mut rng = rng.clone();
+                rng.set_stream(chain as u64);
                 let mut sampler = new_sampler(
                     func,
                     settings,
                     chain as u64,
-                    seed.wrapping_add(chain as u64),
+                    //seed.wrapping_add(chain as u64),
+                    &mut rng,
                 );
                 sampler.set_position(&point.0)?;
                 for _ in 0..draws {
@@ -172,11 +180,11 @@ pub fn sample_parallel<M: CpuLogpFuncMaker<F> + 'static, F: CpuLogpFunc, I: Init
 }
 
 /// Create a new sampler
-pub fn new_sampler<F: CpuLogpFunc>(
+pub fn new_sampler<F: CpuLogpFunc, R: Rng + ?Sized>(
     logp: F,
     settings: SamplerArgs,
     chain: u64,
-    seed: u64,
+    rng: &mut R,
 ) -> impl Chain {
     use crate::nuts::AdaptStrategy;
     let num_tune = settings.num_tune;
@@ -195,21 +203,20 @@ pub fn new_sampler<F: CpuLogpFunc>(
         store_gradient: settings.store_gradient,
     };
 
-    //let rng = { rand::rngs::StdRng::seed_from_u64(seed) };
-    let rng = rand::rngs::SmallRng::seed_from_u64(seed);
+    let rng = rand::rngs::SmallRng::from_rng(rng).expect("Could not seed rng");
 
     NutsChain::new(potential, strategy, options, rng, chain)
 }
 
-pub fn sample_sequentially<F: CpuLogpFunc>(
+pub fn sample_sequentially<F: CpuLogpFunc, R: Rng + ?Sized>(
     logp: F,
     settings: SamplerArgs,
     start: &[f64],
     draws: u64,
     chain: u64,
-    seed: u64,
+    rng: &mut R,
 ) -> Result<impl Iterator<Item = Result<(Box<[f64]>, impl SampleStats), NutsError>>, NutsError> {
-    let mut sampler = new_sampler(logp, settings, chain, seed);
+    let mut sampler = new_sampler(logp, settings, chain, rng);
     sampler.set_position(start)?;
     Ok((0..draws).into_iter().map(move |_| sampler.draw()))
 }
@@ -259,10 +266,7 @@ pub mod test_logps {
     impl CpuLogpFuncMaker<NormalLogp> for NormalLogp {
         //type Func = Self;
 
-        fn make_logp_func(
-            &self,
-            chain: usize,
-        ) -> Result<NormalLogp, Box<dyn std::error::Error + Send + Sync>> {
+        fn make_logp_func(&self, chain: usize) -> Result<NormalLogp, anyhow::Error> {
             Ok(self.clone())
         }
 
@@ -362,6 +366,7 @@ mod tests {
 
     use itertools::Itertools;
     use pretty_assertions::assert_eq;
+    use rand::{rngs::StdRng, SeedableRng};
 
     #[test]
     fn sample_seq() {
@@ -371,7 +376,9 @@ mod tests {
         settings.num_draws = 100;
         let start = vec![0.2; 10];
 
-        let chain = sample_sequentially(logp.clone(), settings, &start, 200, 1, 42).unwrap();
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let chain = sample_sequentially(logp.clone(), settings, &start, 200, 1, &mut rng).unwrap();
         let mut draws = chain.collect_vec();
         assert_eq!(draws.len(), 200);
 
@@ -384,7 +391,7 @@ mod tests {
         let maker = logp;
 
         let (handles, chains) =
-            sample_parallel(maker, &mut JitterInitFunc::new(), settings, 4, 42, 10).unwrap();
+            sample_parallel(maker, &mut JitterInitFunc::new(), settings, 4, &mut rng, 10).unwrap();
         let mut draws = chains.iter().collect_vec();
         assert_eq!(draws.len(), 800);
         assert!(handles.join().is_ok());
