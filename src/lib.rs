@@ -14,6 +14,7 @@
 //! ```
 //! use nuts_rs::{CpuLogpFunc, LogpError, new_sampler, SamplerArgs, Chain, SampleStats};
 //! use thiserror::Error;
+//! use rand::thread_rng;
 //!
 //! // Define a function that computes the unnormalized posterior density
 //! // and its gradient.
@@ -60,8 +61,8 @@
 //! let logp_func = PosteriorDensity {};
 //!
 //! let chain = 0;
-//! let seed = 42;
-//! let mut sampler = new_sampler(logp_func, sampler_args, chain, seed);
+//! let mut rng = thread_rng();
+//! let mut sampler = new_sampler(logp_func, sampler_args, chain, &mut rng);
 //!
 //! // Set to some initial position and start drawing samples.
 //! sampler.set_position(&vec![0f64; 10]).expect("Unrecoverable error during init");
@@ -108,5 +109,5 @@ pub use cpu_sampler::{
     JitterInitFunc, ParallelChainResult, ParallelSamplingError, SamplerArgs,
 };
 #[cfg(feature = "arrow")]
-pub use nuts::ArrowBuilder;
+pub use nuts::{ArrowBuilder, ArrowRow};
 pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError, SampleStats};
