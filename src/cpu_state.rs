@@ -119,7 +119,7 @@ impl Drop for AlignedArray {
 impl Clone for AlignedArray {
     fn clone(&self) -> Self {
         let mut new = AlignedArray::new(self.size);
-        new.copy_from_slice(&self);
+        new.copy_from_slice(self);
         new
     }
 }
@@ -214,9 +214,9 @@ impl crate::nuts::State for State {
 
     fn is_turning(&self, other: &Self) -> bool {
         let (start, end) = if self.idx_in_trajectory < other.idx_in_trajectory {
-            (&*self, other)
+            (self, other)
         } else {
-            (other, &*self)
+            (other, self)
         };
 
         let a = start.idx_in_trajectory;

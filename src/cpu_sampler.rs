@@ -1,4 +1,4 @@
-use rand::{prelude::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use std::thread::JoinHandle;
 use thiserror::Error;
@@ -124,7 +124,7 @@ pub fn sample_parallel<
 
             let mut error = None;
             for _ in 0..n_try_init {
-                match func.logp(&mut position, &mut grad) {
+                match func.logp(&position, &mut grad) {
                     Err(e) => error = Some(e),
                     Ok(_) => {
                         error = None;
@@ -218,7 +218,7 @@ pub fn sample_sequentially<F: CpuLogpFunc, R: Rng + ?Sized>(
 ) -> Result<impl Iterator<Item = Result<(Box<[f64]>, impl SampleStats), NutsError>>, NutsError> {
     let mut sampler = new_sampler(logp, settings, chain, rng);
     sampler.set_position(start)?;
-    Ok((0..draws).into_iter().map(move |_| sampler.draw()))
+    Ok((0..draws).map(move |_| sampler.draw()))
 }
 
 /// Initialize chains using uniform jitter around zero or some other provided value
@@ -264,9 +264,7 @@ pub mod test_logps {
     }
 
     impl CpuLogpFuncMaker<NormalLogp> for NormalLogp {
-        //type Func = Self;
-
-        fn make_logp_func(&self, chain: usize) -> Result<NormalLogp, anyhow::Error> {
+        fn make_logp_func(&self, _chain: usize) -> Result<NormalLogp, anyhow::Error> {
             Ok(self.clone())
         }
 
@@ -397,7 +395,7 @@ mod tests {
         assert!(handles.join().is_ok());
 
         let draw0 = draws.remove(100);
-        let (vals, stats) = draw0;
+        let (vals, _) = draw0;
         assert_eq!(vals.len(), 10);
     }
 }

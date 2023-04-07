@@ -238,7 +238,6 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
         rng: &mut R,
         potential: &mut P,
         direction: Direction,
-        options: &NutsOptions,
         collector: &mut C,
     ) -> ExtendResult<P, C>
     where
@@ -253,7 +252,7 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
 
         while other.depth < self.depth {
             use ExtendResult::*;
-            other = match other.extend(pool, rng, potential, direction, options, collector) {
+            other = match other.extend(pool, rng, potential, direction, collector) {
                 Ok(tree) => tree,
                 Turning(_) => {
                     return Turning(self);
@@ -358,13 +357,9 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
     }
 
     fn info(&self, maxdepth: bool, divergence_info: Option<DivergenceInfo>) -> SampleInfo {
-        let info: Option<DivergenceInfo> = match divergence_info {
-            Some(info) => Some(info),
-            None => None,
-        };
         SampleInfo {
             depth: self.depth,
-            divergence_info: info,
+            divergence_info,
             reached_maxdepth: maxdepth,
         }
     }
@@ -395,7 +390,7 @@ where
     let mut tree = NutsTree::new(init.clone());
     while tree.depth < options.maxdepth {
         let direction: Direction = rng.gen();
-        tree = match tree.extend(pool, rng, potential, direction, options, collector) {
+        tree = match tree.extend(pool, rng, potential, direction, collector) {
             ExtendResult::Ok(tree) => tree,
             ExtendResult::Turning(tree) => {
                 let info = tree.info(false, None);
@@ -769,6 +764,8 @@ where
 #[cfg(test)]
 #[cfg(feature = "arrow")]
 mod tests {
+    use rand::thread_rng;
+
     use crate::{adapt_strategy::test_logps::NormalLogp, new_sampler, Chain, SamplerArgs};
 
     use super::ArrowBuilder;
@@ -779,8 +776,9 @@ mod tests {
         let func = NormalLogp::new(ndim, 3.);
 
         let settings = SamplerArgs::default();
+        let mut rng = thread_rng();
 
-        let mut chain = new_sampler(func, settings, 0, 0);
+        let mut chain = new_sampler(func, settings, 0, &mut rng);
 
         let mut builder = chain.stats_builder(ndim, &settings);
 
