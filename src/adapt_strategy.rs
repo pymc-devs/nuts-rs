@@ -266,32 +266,38 @@ pub struct ExpWindowDiagAdaptStats {
 
 #[cfg(feature = "arrow")]
 pub struct ExpWindowDiagAdaptStatsBuilder {
-    mass_matrix_inv: MutableFixedSizeListArray<MutablePrimitiveArray<f64>>,
+    mass_matrix_inv: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
 }
 
 #[cfg(feature = "arrow")]
 impl ArrowBuilder<ExpWindowDiagAdaptStats> for ExpWindowDiagAdaptStatsBuilder {
     fn append_value(&mut self, value: &ExpWindowDiagAdaptStats) {
-        self.mass_matrix_inv
-            .try_push(
-                value
-                    .mass_matrix_inv
-                    .as_ref()
-                    .map(|vals| vals.iter().map(|&x| Some(x))),
-            )
-            .unwrap();
+        if let Some(store) = self.mass_matrix_inv.as_mut() {
+            store
+                .try_push(
+                    value
+                        .mass_matrix_inv
+                        .as_ref()
+                        .map(|vals| vals.iter().map(|&x| Some(x))),
+                )
+                .unwrap();
+        }
     }
 
-    fn finalize(mut self) -> StructArray {
-        let fields = vec![Field::new(
-            "mass_matrix_inv",
-            self.mass_matrix_inv.data_type().clone(),
-            true,
-        )];
+    fn finalize(self) -> StructArray {
+        if let Some(mut store) = self.mass_matrix_inv {
+            let fields = vec![Field::new(
+                "mass_matrix_inv",
+                store.data_type().clone(),
+                true,
+            )];
 
-        let arrays = vec![self.mass_matrix_inv.as_box()];
+            let arrays = vec![store.as_box()];
 
-        StructArray::new(DataType::Struct(fields), arrays, None)
+            StructArray::new(DataType::Struct(fields), arrays, None)
+        } else {
+            StructArray::new(DataType::Struct(vec![]), vec![], None)
+        }
     }
 }
 
@@ -299,12 +305,21 @@ impl ArrowBuilder<ExpWindowDiagAdaptStats> for ExpWindowDiagAdaptStatsBuilder {
 impl ArrowRow for ExpWindowDiagAdaptStats {
     type Builder = ExpWindowDiagAdaptStatsBuilder;
 
-    fn new_builder(dim: usize, _settings: &SamplerArgs) -> Self::Builder {
-        let items = MutablePrimitiveArray::new();
-        // TODO Add only based on settings
-        let values = MutableFixedSizeListArray::new_with_field(items, "item", false, dim);
-        Self::Builder {
-            mass_matrix_inv: values,
+    fn new_builder(dim: usize, settings: &SamplerArgs) -> Self::Builder {
+        if settings
+            .mass_matrix_adapt
+            .mass_matrix_options
+            .store_mass_matrix
+        {
+            let items = MutablePrimitiveArray::new();
+            let values = MutableFixedSizeListArray::new_with_field(items, "item", false, dim);
+            Self::Builder {
+                mass_matrix_inv: Some(values),
+            }
+        } else {
+            Self::Builder {
+                mass_matrix_inv: None,
+            }
         }
     }
 }

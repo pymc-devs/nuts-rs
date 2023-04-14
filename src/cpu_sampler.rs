@@ -23,9 +23,13 @@ pub struct SamplerArgs {
     pub maxdepth: u64,
     /// Store the gradient in the SampleStats
     pub store_gradient: bool,
+    /// Store each unconstrained parameter vector in the sampler stats
+    pub store_unconstrained: bool,
     /// If the energy error is larger than this threshold we treat the leapfrog
     /// step as a divergence.
     pub max_energy_error: f64,
+    /// Store detailed information about each divergence in the sampler stats
+    pub store_divergences: bool,
     /// Settings for step size adaptation.
     pub step_size_adapt: DualAverageSettings,
     /// Settings for mass matrix adaptation.
@@ -40,6 +44,8 @@ impl Default for SamplerArgs {
             maxdepth: 10,
             max_energy_error: 1000f64,
             store_gradient: false,
+            store_unconstrained: false,
+            store_divergences: true,
             step_size_adapt: DualAverageSettings::default(),
             mass_matrix_adapt: GradDiagOptions::default(),
         }
