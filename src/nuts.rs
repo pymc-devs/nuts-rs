@@ -421,7 +421,7 @@ pub trait ArrowRow {
 #[cfg(feature = "arrow")]
 pub trait ArrowBuilder<T: ?Sized> {
     fn append_value(&mut self, value: &T);
-    fn finalize(self) -> StructArray;
+    fn finalize(self) -> Option<StructArray>;
 }
 
 #[derive(Debug)]
@@ -545,13 +545,7 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
         self.adapt.append_value(&value.strategy_stats);
     }
 
-    fn finalize(mut self) -> StructArray {
-        let hamiltonian = self.hamiltonian.finalize().into_data();
-        let adapt = self.adapt.finalize().into_data();
-
-        assert!(hamiltonian.2.is_none());
-        assert!(adapt.2.is_none());
-
+    fn finalize(mut self) -> Option<StructArray> {
         let mut fields = vec![
             Field::new("depth", DataType::UInt64, false),
             Field::new("maxdepth_reached", DataType::Boolean, false),
@@ -561,9 +555,6 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
             Field::new("chain", DataType::UInt64, false),
             Field::new("draw", DataType::UInt64, false),
         ];
-
-        fields.extend(hamiltonian.0);
-        fields.extend(adapt.0);
 
         let mut arrays = vec![
             self.depth.as_box(),
@@ -575,10 +566,20 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
             self.draw.as_box(),
         ];
 
-        arrays.extend(hamiltonian.1);
-        arrays.extend(adapt.1);
+        if let Some(hamiltonian) = self.hamiltonian.finalize() {
+            let hamiltonian = hamiltonian.into_data();
+            assert!(hamiltonian.2.is_none());
+            fields.extend(hamiltonian.0);
+            arrays.extend(hamiltonian.1);
+        }
+        if let Some(adapt) = self.adapt.finalize() {
+            let adapt = adapt.into_data();
+            assert!(adapt.2.is_none());
+            fields.extend(adapt.0);
+            arrays.extend(adapt.1);
+        }
 
-        StructArray::new(DataType::Struct(fields), arrays, None)
+        Some(StructArray::new(DataType::Struct(fields), arrays, None))
     }
 }
 

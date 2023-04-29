@@ -64,7 +64,7 @@ impl ArrowBuilder<DualAverageStats> for DualAverageStatsBuilder {
         self.n_steps.push(Some(value.n_steps));
     }
 
-    fn finalize(mut self) -> StructArray {
+    fn finalize(mut self) -> Option<StructArray> {
         let fields = vec![
             Field::new("step_size_bar", DataType::Float64, false),
             Field::new("mean_tree_accept", DataType::Float64, false),
@@ -77,7 +77,7 @@ impl ArrowBuilder<DualAverageStats> for DualAverageStatsBuilder {
             self.n_steps.as_box(),
         ];
 
-        StructArray::new(DataType::Struct(fields), arrays, None)
+        Some(StructArray::new(DataType::Struct(fields), arrays, None))
     }
 }
 
@@ -177,17 +177,9 @@ impl<F: CpuLogpFunc, M: MassMatrix> AdaptStrategy for DualAverageStrategy<F, M> 
 }
 
 /// Settings for mass matrix adaptation
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct DiagAdaptExpSettings {
     pub store_mass_matrix: bool,
-}
-
-impl Default for DiagAdaptExpSettings {
-    fn default() -> Self {
-        Self {
-            store_mass_matrix: false,
-        }
-    }
 }
 
 pub(crate) struct ExpWindowDiagAdapt<F> {
@@ -284,7 +276,7 @@ impl ArrowBuilder<ExpWindowDiagAdaptStats> for ExpWindowDiagAdaptStatsBuilder {
         }
     }
 
-    fn finalize(self) -> StructArray {
+    fn finalize(self) -> Option<StructArray> {
         if let Some(mut store) = self.mass_matrix_inv {
             let fields = vec![Field::new(
                 "mass_matrix_inv",
@@ -294,9 +286,9 @@ impl ArrowBuilder<ExpWindowDiagAdaptStats> for ExpWindowDiagAdaptStatsBuilder {
 
             let arrays = vec![store.as_box()];
 
-            StructArray::new(DataType::Struct(fields), arrays, None)
+            Some(StructArray::new(DataType::Struct(fields), arrays, None))
         } else {
-            StructArray::new(DataType::Struct(vec![]), vec![], None)
+            None
         }
     }
 }
@@ -570,17 +562,24 @@ impl<D1: Debug + ArrowRow, D2: Debug + ArrowRow> ArrowBuilder<CombinedStats<D1, 
         self.stats2.append_value(&value.stats2);
     }
 
-    fn finalize(self) -> StructArray {
-        let mut data1 = self.stats1.finalize().into_data();
-        let data2 = self.stats2.finalize().into_data();
+    fn finalize(self) -> Option<StructArray> {
+        match (self.stats1.finalize(), self.stats2.finalize()) {
+            (None, None) => None,
+            (Some(stats1), None) => Some(stats1),
+            (None, Some(stats2)) => Some(stats2),
+            (Some(stats1), Some(stats2)) => {
+                let mut data1 = stats1.into_data();
+                let data2 = stats2.into_data();
 
-        assert!(data1.2.is_none());
-        assert!(data2.2.is_none());
+                assert!(data1.2.is_none());
+                assert!(data2.2.is_none());
 
-        data1.0.extend(data2.0);
-        data1.1.extend(data2.1);
+                data1.0.extend(data2.0);
+                data1.1.extend(data2.1);
 
-        StructArray::new(DataType::Struct(data1.0), data1.1, None)
+                Some(StructArray::new(DataType::Struct(data1.0), data1.1, None))
+            }
+        }
     }
 }
 
