@@ -63,12 +63,12 @@ impl ArrowBuilder<PotentialStats> for PotentialStatsBuilder {
         self.step_size.push(Some(value.step_size));
     }
 
-    fn finalize(mut self) -> StructArray {
+    fn finalize(mut self) -> Option<StructArray> {
         let fields = vec![Field::new("step_size", DataType::Float64, false)];
 
         let arrays = vec![self.step_size.as_box()];
 
-        StructArray::new(DataType::Struct(fields), arrays, None)
+        Some(StructArray::new(DataType::Struct(fields), arrays, None))
     }
 }
 
