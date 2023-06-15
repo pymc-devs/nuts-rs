@@ -686,6 +686,7 @@ mod test {
         let options = NutsOptions {
             maxdepth: 10u64,
             store_gradient: true,
+            store_unconstrained: true,
         };
 
         let rng = {
