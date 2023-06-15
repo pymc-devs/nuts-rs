@@ -1,3 +1,4 @@
+use arrow2::array::{MutableFixedSizeListArray, TryPush};
 #[cfg(feature = "arrow")]
 use arrow2::{
     array::{MutableArray, MutableBooleanArray, MutablePrimitiveArray, StructArray},
@@ -368,6 +369,7 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
 pub struct NutsOptions {
     pub maxdepth: u64,
     pub store_gradient: bool,
+    pub store_unconstrained: bool,
 }
 
 pub(crate) fn draw<P, R, C>(
@@ -435,6 +437,7 @@ pub(crate) struct NutsSampleStats<HStats: Send + Debug, AdaptStats: Send + Debug
     pub chain: u64,
     pub draw: u64,
     pub gradient: Option<Box<[f64]>>,
+    pub unconstrained: Option<Box<[f64]>>,
     pub potential_stats: HStats,
     pub strategy_stats: AdaptStats,
 }
@@ -461,6 +464,8 @@ pub trait SampleStats: Send + Debug {
     /// The logp gradient at the location of the draw. This is only stored
     /// if NutsOptions.store_gradient is `true`.
     fn gradient(&self) -> Option<&[f64]>;
+    /// The draw in the unconstrained space.
+    fn unconstrained(&self) -> Option<&[f64]>;
 }
 
 impl<H, A> SampleStats for NutsSampleStats<H, A>
@@ -495,6 +500,9 @@ where
     fn gradient(&self) -> Option<&[f64]> {
         self.gradient.as_ref().map(|x| &x[..])
     }
+    fn unconstrained(&self) -> Option<&[f64]> {
+        self.unconstrained.as_ref().map(|x| &x[..])
+    }
 }
 
 #[cfg(feature = "arrow")]
@@ -506,6 +514,8 @@ pub struct StatsBuilder<H: Hamiltonian, A: AdaptStrategy> {
     energy: MutablePrimitiveArray<f64>,
     chain: MutablePrimitiveArray<u64>,
     draw: MutablePrimitiveArray<u64>,
+    unconstrained: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
+    gradient: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
     hamiltonian: <H::Stats as ArrowRow>::Builder,
     adapt: <A::Stats as ArrowRow>::Builder,
 }
@@ -514,6 +524,21 @@ pub struct StatsBuilder<H: Hamiltonian, A: AdaptStrategy> {
 impl<H: Hamiltonian, A: AdaptStrategy> StatsBuilder<H, A> {
     fn new_with_capacity(dim: usize, settings: &SamplerArgs) -> Self {
         let capacity = (settings.num_tune + settings.num_draws) as usize;
+
+        let gradient = if settings.store_gradient {
+            let items = MutablePrimitiveArray::new();
+            Some(MutableFixedSizeListArray::new_with_field(items, "item", false, dim))
+        } else {
+            None
+        };
+
+        let unconstrained = if settings.store_gradient {
+            let items = MutablePrimitiveArray::new();
+            Some(MutableFixedSizeListArray::new_with_field(items, "item", false, dim))
+        } else {
+            None
+        };
+
         Self {
             depth: MutablePrimitiveArray::with_capacity(capacity),
             maxdepth_reached: MutableBooleanArray::with_capacity(capacity),
@@ -522,6 +547,8 @@ impl<H: Hamiltonian, A: AdaptStrategy> StatsBuilder<H, A> {
             energy: MutablePrimitiveArray::with_capacity(capacity),
             chain: MutablePrimitiveArray::with_capacity(capacity),
             draw: MutablePrimitiveArray::with_capacity(capacity),
+            gradient,
+            unconstrained,
             hamiltonian: <H::Stats as ArrowRow>::new_builder(dim, settings),
             adapt: <A::Stats as ArrowRow>::new_builder(dim, settings),
         }
@@ -540,6 +567,28 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
         self.energy.push(Some(value.energy));
         self.chain.push(Some(value.chain));
         self.draw.push(Some(value.draw));
+
+        if let Some(store) = self.gradient.as_mut() {
+            store
+                .try_push(
+                    value
+                    .gradient()
+                    .as_ref()
+                    .map(|vals| vals.iter().map(|&x| Some(x)))
+                )
+                .unwrap();
+        }
+
+        if let Some(store) = self.unconstrained.as_mut() {
+            store
+                .try_push(
+                    value
+                    .unconstrained()
+                    .as_ref()
+                    .map(|vals| vals.iter().map(|&x| Some(x)))
+                )
+                .unwrap();
+        }
 
         self.hamiltonian.append_value(&value.potential_stats);
         self.adapt.append_value(&value.strategy_stats);
@@ -577,6 +626,16 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
             assert!(adapt.2.is_none());
             fields.extend(adapt.0);
             arrays.extend(adapt.1);
+        }
+
+        if let Some(mut gradient) = self.gradient.take() {
+            fields.push(Field::new("gradient", gradient.data_type().clone(), true));
+            arrays.push(gradient.as_box());
+        }
+
+        if let Some(mut unconstrained) = self.unconstrained.take() {
+            fields.push(Field::new("unconstrained", unconstrained.data_type().clone(), true));
+            arrays.push(unconstrained.as_box());
         }
 
         Some(StructArray::new(DataType::Struct(fields), arrays, None))
@@ -734,6 +793,13 @@ where
                 let mut gradient: Box<[f64]> = vec![0f64; self.potential.dim()].into();
                 state.write_gradient(&mut gradient);
                 Some(gradient)
+            } else {
+                None
+            },
+            unconstrained: if self.options.store_unconstrained {
+                let mut unconstrained: Box<[f64]> = vec![0f64; self.potential.dim()].into();
+                state.write_position(&mut unconstrained);
+                Some(unconstrained)
             } else {
                 None
             },

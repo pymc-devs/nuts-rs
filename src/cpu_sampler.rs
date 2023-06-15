@@ -4,7 +4,7 @@ use std::thread::JoinHandle;
 use thiserror::Error;
 
 use crate::{
-    adapt_strategy::{DualAverageSettings, GradDiagOptions, GradDiagStrategy},
+    adapt_strategy::{GradDiagOptions, GradDiagStrategy},
     cpu_potential::EuclideanPotential,
     mass_matrix::DiagMassMatrix,
     nuts::{Chain, NutsChain, NutsError, NutsOptions, SampleStats},
@@ -30,8 +30,6 @@ pub struct SamplerArgs {
     pub max_energy_error: f64,
     /// Store detailed information about each divergence in the sampler stats
     pub store_divergences: bool,
-    /// Settings for step size adaptation.
-    pub step_size_adapt: DualAverageSettings,
     /// Settings for mass matrix adaptation.
     pub mass_matrix_adapt: GradDiagOptions,
 }
@@ -46,7 +44,6 @@ impl Default for SamplerArgs {
             store_gradient: false,
             store_unconstrained: false,
             store_divergences: true,
-            step_size_adapt: DualAverageSettings::default(),
             mass_matrix_adapt: GradDiagOptions::default(),
         }
     }
@@ -89,8 +86,6 @@ pub trait CpuLogpFuncMaker<Func>: Send + Sync
 where
     Func: CpuLogpFunc,
 {
-    //type Func: CpuLogpFunc;
-
     fn make_logp_func(&self, chain: usize) -> Result<Func, anyhow::Error>;
     fn dim(&self) -> usize;
 }
@@ -194,12 +189,7 @@ pub fn new_sampler<F: CpuLogpFunc, R: Rng + ?Sized>(
 ) -> impl Chain {
     use crate::nuts::AdaptStrategy;
     let num_tune = settings.num_tune;
-    //let step_size_adapt = DualAverageStrategy::new(settings.step_size_adapt, num_tune, logp.dim());
-    //let mass_matrix_adapt =
-    //    ExpWindowDiagAdapt::new(settings.mass_matrix_adapt, num_tune, logp.dim());
-
     let strategy = GradDiagStrategy::new(settings.mass_matrix_adapt, num_tune, logp.dim());
-
     let mass_matrix = DiagMassMatrix::new(logp.dim());
     let max_energy_error = settings.max_energy_error;
     let potential = EuclideanPotential::new(logp, mass_matrix, max_energy_error, 1f64);
@@ -207,6 +197,7 @@ pub fn new_sampler<F: CpuLogpFunc, R: Rng + ?Sized>(
     let options = NutsOptions {
         maxdepth: settings.maxdepth,
         store_gradient: settings.store_gradient,
+        store_unconstrained: settings.store_unconstrained,
     };
 
     let rng = rand::rngs::SmallRng::from_rng(rng).expect("Could not seed rng");
