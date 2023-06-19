@@ -634,7 +634,7 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
         }
 
         if let Some(mut unconstrained) = self.unconstrained.take() {
-            fields.push(Field::new("unconstrained", unconstrained.data_type().clone(), true));
+            fields.push(Field::new("unconstrained_draw", unconstrained.data_type().clone(), true));
             arrays.push(unconstrained.as_box());
         }
 
