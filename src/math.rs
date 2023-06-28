@@ -207,8 +207,8 @@ pub fn vector_dot(a: &[f64], b: &[f64]) -> f64 {
     assert!(a.len() == b.len());
 
     let mut result = 0f64;
-    for (val1, val2) in a.iter().zip(b) {
-        result += *val1 * *val2;
+    for (&val1, &val2) in a.iter().zip(b) {
+        result += val1 * val2;
     }
     result
 }

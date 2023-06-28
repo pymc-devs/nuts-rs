@@ -527,14 +527,18 @@ impl<H: Hamiltonian, A: AdaptStrategy> StatsBuilder<H, A> {
 
         let gradient = if settings.store_gradient {
             let items = MutablePrimitiveArray::new();
-            Some(MutableFixedSizeListArray::new_with_field(items, "item", false, dim))
+            Some(MutableFixedSizeListArray::new_with_field(
+                items, "item", false, dim,
+            ))
         } else {
             None
         };
 
         let unconstrained = if settings.store_gradient {
             let items = MutablePrimitiveArray::new();
-            Some(MutableFixedSizeListArray::new_with_field(items, "item", false, dim))
+            Some(MutableFixedSizeListArray::new_with_field(
+                items, "item", false, dim,
+            ))
         } else {
             None
         };
@@ -572,9 +576,9 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
             store
                 .try_push(
                     value
-                    .gradient()
-                    .as_ref()
-                    .map(|vals| vals.iter().map(|&x| Some(x)))
+                        .gradient()
+                        .as_ref()
+                        .map(|vals| vals.iter().map(|&x| Some(x))),
                 )
                 .unwrap();
         }
@@ -583,9 +587,9 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
             store
                 .try_push(
                     value
-                    .unconstrained()
-                    .as_ref()
-                    .map(|vals| vals.iter().map(|&x| Some(x)))
+                        .unconstrained()
+                        .as_ref()
+                        .map(|vals| vals.iter().map(|&x| Some(x))),
                 )
                 .unwrap();
         }
@@ -634,7 +638,11 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
         }
 
         if let Some(mut unconstrained) = self.unconstrained.take() {
-            fields.push(Field::new("unconstrained_draw", unconstrained.data_type().clone(), true));
+            fields.push(Field::new(
+                "unconstrained_draw",
+                unconstrained.data_type().clone(),
+                true,
+            ));
             arrays.push(unconstrained.as_box());
         }
 
