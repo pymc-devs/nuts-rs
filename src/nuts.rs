@@ -518,6 +518,7 @@ pub struct StatsBuilder<H: Hamiltonian, A: AdaptStrategy> {
     gradient: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
     hamiltonian: <H::Stats as ArrowRow>::Builder,
     adapt: <A::Stats as ArrowRow>::Builder,
+    diverging: MutableBooleanArray,
 }
 
 #[cfg(feature = "arrow")]
@@ -555,6 +556,7 @@ impl<H: Hamiltonian, A: AdaptStrategy> StatsBuilder<H, A> {
             unconstrained,
             hamiltonian: <H::Stats as ArrowRow>::new_builder(dim, settings),
             adapt: <A::Stats as ArrowRow>::new_builder(dim, settings),
+            diverging: MutableBooleanArray::with_capacity(capacity),
         }
     }
 }
@@ -571,6 +573,7 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
         self.energy.push(Some(value.energy));
         self.chain.push(Some(value.chain));
         self.draw.push(Some(value.draw));
+        self.diverging.push(Some(value.divergence_info().is_some()));
 
         if let Some(store) = self.gradient.as_mut() {
             store
@@ -607,6 +610,7 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
             Field::new("energy", DataType::Float64, false),
             Field::new("chain", DataType::UInt64, false),
             Field::new("draw", DataType::UInt64, false),
+            Field::new("diverging", DataType::Boolean, false),
         ];
 
         let mut arrays = vec![
@@ -617,6 +621,7 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
             self.energy.as_box(),
             self.chain.as_box(),
             self.draw.as_box(),
+            self.diverging.as_box(),
         ];
 
         if let Some(hamiltonian) = self.hamiltonian.finalize() {
