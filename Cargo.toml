@@ -1,18 +1,12 @@
 [package]
 name = "nuts-rs"
 version = "0.5.0"
-authors = ["Adrian Seyboldt <adrian.seyboldt@gmail.com>"]
+authors = ["Adrian Seyboldt <adrian.seyboldt@gmail.com>", "PyMC Developers <pymc.devs@gmail.com>"]
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/pymc-devs/nuts-rs"
 keywords = ["statistics", "bayes"]
 description = "Sample from unnormalized densities using Hamiltonian MCMC"
-
-[profile.release]
-debug = true
-lto = "fat"
-opt-level = 2
-codegen-units = 1
 
 [profile.bench]
 debug = true
