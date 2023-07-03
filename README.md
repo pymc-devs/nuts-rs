@@ -1,5 +1,5 @@
-![Workflow Status](https://github.com/aseyboldt/nuts-rs/actions/workflows/test.yml/badge.svg)
-[![dependency status](https://deps.rs/repo/github/aseyboldt/nuts-rs/status.svg)](https://deps.rs/repo/github/aseyboldt/nuts-rs)
+![Workflow Status](https://github.com/pymc-devs/nuts-rs/actions/workflows/test.yml/badge.svg)
+[![dependency status](https://deps.rs/repo/github/pymc-devs/nuts-rs/status.svg)](https://deps.rs/repo/github/pymc-devs/nuts-rs)
 
 <!-- cargo-rdme start -->
 
@@ -8,8 +8,8 @@ For details see the original [NUTS paper](https://arxiv.org/abs/1111.4246)
 and the more recent [introduction](https://arxiv.org/abs/1701.02434).
 
 This crate was developed as a faster replacement of the sampler in PyMC,
-to be used with the new numba backend of aesara. The work-in-progress
-python wrapper for this sampler is [nuts-py](https://github.com/aseyboldt/nuts-py).
+to be used with the new numba backend of aesara. The python wrapper
+for this sampler is [nutpie](https://github.com/pymc-devs/nutpie).
 
 ## Usage
 
