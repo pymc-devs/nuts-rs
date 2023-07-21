@@ -1,4 +1,4 @@
-use arrow2::array::{MutableFixedSizeListArray, TryPush};
+use arrow2::array::{MutableFixedSizeListArray, MutableUtf8Array, TryPush};
 #[cfg(feature = "arrow")]
 use arrow2::{
     array::{MutableArray, MutableBooleanArray, MutablePrimitiveArray, StructArray},
@@ -37,7 +37,9 @@ pub type Result<T> = std::result::Result<T, NutsError>;
 ///   failed)
 #[derive(Debug)]
 pub struct DivergenceInfo {
+    pub start_momentum: Option<Box<[f64]>>,
     pub start_location: Option<Box<[f64]>>,
+    pub start_gradient: Option<Box<[f64]>>,
     pub end_location: Option<Box<[f64]>>,
     pub energy_error: Option<f64>,
     pub end_idx_in_trajectory: Option<i64>,
@@ -151,6 +153,9 @@ pub trait State: Clone + Debug {
 
     /// Write the gradient stored in the state to a different location
     fn write_gradient(&self, out: &mut [f64]);
+
+    /// Write the momentum in the state to a different location
+    fn write_momentum(&self, out: &mut [f64]);
 
     /// Compute the termination criterion for NUTS
     fn is_turning(&self, other: &Self) -> bool;
@@ -523,6 +528,11 @@ pub struct StatsBuilder<H: Hamiltonian, A: AdaptStrategy> {
     hamiltonian: <H::Stats as ArrowRow>::Builder,
     adapt: <A::Stats as ArrowRow>::Builder,
     diverging: MutableBooleanArray,
+    divergence_start: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
+    divergence_start_grad: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
+    divergence_end: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
+    divergence_momentum: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
+    divergence_msg: Option<MutableUtf8Array<i64>>,
 }
 
 #[cfg(feature = "arrow")]
@@ -548,6 +558,40 @@ impl<H: Hamiltonian, A: AdaptStrategy> StatsBuilder<H, A> {
             None
         };
 
+        let (div_start, div_start_grad, div_end, div_mom, div_msg) = if settings.store_divergences {
+            let start_location_prim = MutablePrimitiveArray::new();
+            let start_location_list =
+                MutableFixedSizeListArray::new_with_field(start_location_prim, "item", false, dim);
+
+            let start_grad_prim = MutablePrimitiveArray::new();
+            let start_grad_list =
+                MutableFixedSizeListArray::new_with_field(start_grad_prim, "item", false, dim);
+
+            let end_location_prim = MutablePrimitiveArray::new();
+            let end_location_list =
+                MutableFixedSizeListArray::new_with_field(end_location_prim, "item", false, dim);
+
+            let momentum_location_prim = MutablePrimitiveArray::new();
+            let momentum_location_list = MutableFixedSizeListArray::new_with_field(
+                momentum_location_prim,
+                "item",
+                false,
+                dim,
+            );
+
+            let msg_list = MutableUtf8Array::new();
+
+            (
+                Some(start_location_list),
+                Some(start_grad_list),
+                Some(end_location_list),
+                Some(momentum_location_list),
+                Some(msg_list),
+            )
+        } else {
+            (None, None, None, None, None)
+        };
+
         Self {
             depth: MutablePrimitiveArray::with_capacity(capacity),
             maxdepth_reached: MutableBooleanArray::with_capacity(capacity),
@@ -561,6 +605,11 @@ impl<H: Hamiltonian, A: AdaptStrategy> StatsBuilder<H, A> {
             hamiltonian: <H::Stats as ArrowRow>::new_builder(dim, settings),
             adapt: <A::Stats as ArrowRow>::new_builder(dim, settings),
             diverging: MutableBooleanArray::with_capacity(capacity),
+            divergence_start: div_start,
+            divergence_start_grad: div_start_grad,
+            divergence_end: div_end,
+            divergence_momentum: div_mom,
+            divergence_msg: div_msg,
         }
     }
 }
@@ -598,6 +647,58 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
                         .as_ref()
                         .map(|vals| vals.iter().map(|&x| Some(x))),
                 )
+                .unwrap();
+        }
+
+        let info_option = value.divergence_info();
+        if let Some(div_start) = self.divergence_start.as_mut() {
+            div_start
+                .try_push(info_option.and_then(|info| {
+                    info.start_location
+                        .as_ref()
+                        .map(|vals| vals.iter().map(|&x| Some(x)))
+                }))
+                .unwrap();
+        }
+
+        let info_option = value.divergence_info();
+        if let Some(div_grad) = self.divergence_start_grad.as_mut() {
+            div_grad
+                .try_push(info_option.and_then(|info| {
+                    info.start_gradient
+                        .as_ref()
+                        .map(|vals| vals.iter().map(|&x| Some(x)))
+                }))
+                .unwrap();
+        }
+
+        if let Some(div_end) = self.divergence_end.as_mut() {
+            div_end
+                .try_push(info_option.and_then(|info| {
+                    info.end_location
+                        .as_ref()
+                        .map(|vals| vals.iter().map(|&x| Some(x)))
+                }))
+                .unwrap();
+        }
+
+        if let Some(div_mom) = self.divergence_momentum.as_mut() {
+            div_mom
+                .try_push(info_option.and_then(|info| {
+                    info.start_momentum
+                        .as_ref()
+                        .map(|vals| vals.iter().map(|&x| Some(x)))
+                }))
+                .unwrap();
+        }
+
+        if let Some(div_msg) = self.divergence_msg.as_mut() {
+            div_msg
+                .try_push(info_option.and_then(|info| {
+                    info.logp_function_error
+                        .as_ref()
+                        .map(|err| format!("{}", err))
+                }))
                 .unwrap();
         }
 
@@ -653,6 +754,51 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
                 true,
             ));
             arrays.push(unconstrained.as_box());
+        }
+
+        if let Some(mut div_start) = self.divergence_start.take() {
+            fields.push(Field::new(
+                "divergence_start",
+                div_start.data_type().clone(),
+                true,
+            ));
+            arrays.push(div_start.as_box());
+        }
+
+        if let Some(mut div_start_grad) = self.divergence_start_grad.take() {
+            fields.push(Field::new(
+                "divergence_start_gradient",
+                div_start_grad.data_type().clone(),
+                true,
+            ));
+            arrays.push(div_start_grad.as_box());
+        }
+
+        if let Some(mut div_end) = self.divergence_end.take() {
+            fields.push(Field::new(
+                "divergence_end",
+                div_end.data_type().clone(),
+                true,
+            ));
+            arrays.push(div_end.as_box());
+        }
+
+        if let Some(mut div_mom) = self.divergence_momentum.take() {
+            fields.push(Field::new(
+                "divergence_momentum",
+                div_mom.data_type().clone(),
+                true,
+            ));
+            arrays.push(div_mom.as_box());
+        }
+
+        if let Some(mut div_msg) = self.divergence_msg.take() {
+            fields.push(Field::new(
+                "divergence_message",
+                div_msg.data_type().clone(),
+                true,
+            ));
+            arrays.push(div_msg.as_box());
         }
 
         Some(StructArray::new(DataType::Struct(fields), arrays, None))

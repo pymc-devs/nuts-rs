@@ -116,6 +116,8 @@ impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
             let div_info = DivergenceInfo {
                 logp_function_error: Some(Box::new(logp_error)),
                 start_location: Some(start.q.clone()),
+                start_gradient: Some(start.grad.clone()),
+                start_momentum: Some(start.p.clone()),
                 end_location: None,
                 start_idx_in_trajectory: Some(start.idx_in_trajectory),
                 end_idx_in_trajectory: None,
@@ -142,7 +144,9 @@ impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
             let divergence_info = DivergenceInfo {
                 logp_function_error: None,
                 start_location: Some(start.q.clone()),
+                start_gradient: Some(start.grad.clone()),
                 end_location: Some(out.q.clone()),
+                start_momentum: Some(out.p.clone()),
                 start_idx_in_trajectory: Some(start.index_in_trajectory()),
                 end_idx_in_trajectory: Some(out.index_in_trajectory()),
                 energy_error: Some(energy_error),

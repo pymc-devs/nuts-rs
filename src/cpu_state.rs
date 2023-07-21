@@ -243,6 +243,10 @@ impl crate::nuts::State for State {
         out.copy_from_slice(&self.grad);
     }
 
+    fn write_momentum(&self, out: &mut [f64]) {
+        out.copy_from_slice(&self.p);
+    }
+
     fn energy(&self) -> f64 {
         self.kinetic_energy + self.potential_energy
     }
