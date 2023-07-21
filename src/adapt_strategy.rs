@@ -352,7 +352,7 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
             state
                 .grad
                 .iter()
-                .map(|&grad| grad.abs().recip().clamp(LOWER_LIMIT, UPPER_LIMIT))
+                .map(|&grad| grad.abs().clamp(LOWER_LIMIT, UPPER_LIMIT).recip())
                 .map(|var| if var.is_finite() { Some(var) } else { Some(1.) }),
         );
     }

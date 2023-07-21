@@ -13,6 +13,7 @@ use crate::math::logaddexp;
 #[cfg(feature = "arrow")]
 use crate::SamplerArgs;
 
+#[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum NutsError {
     #[error("Logp function returned error: {0}")]
@@ -20,6 +21,9 @@ pub enum NutsError {
 
     #[error("Could not serialize sample stats")]
     SerializeFailure(),
+
+    #[error("Could not initialize state because of bad initial gradient.")]
+    BadInitGrad(),
 }
 
 pub type Result<T> = std::result::Result<T, NutsError>;
