@@ -165,7 +165,16 @@ impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
         }
         self.update_potential_gradient(&mut state)
             .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
-        Ok(state)
+        if state
+            .grad
+            .iter()
+            .cloned()
+            .any(|val| (val == 0f64) | !val.is_finite())
+        {
+            Err(NutsError::BadInitGrad())
+        } else {
+            Ok(state)
+        }
     }
 
     fn randomize_momentum<R: rand::Rng + ?Sized>(&self, state: &mut Self::State, rng: &mut R) {
