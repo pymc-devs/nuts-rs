@@ -189,6 +189,8 @@ pub struct SampleInfo {
     /// Whether the trajectory was terminated because it reached
     /// the maximum tree depth.
     pub reached_maxdepth: bool,
+
+    pub energy_error: f64,
 }
 
 /// A part of the trajectory tree during NUTS sampling.
@@ -371,6 +373,7 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
             depth: self.depth,
             divergence_info,
             reached_maxdepth: maxdepth,
+            energy_error: self.log_size,
         }
     }
 }
@@ -442,6 +445,7 @@ pub(crate) struct NutsSampleStats<HStats: Send + Debug, AdaptStats: Send + Debug
     pub idx_in_trajectory: i64,
     pub logp: f64,
     pub energy: f64,
+    pub energy_error: f64,
     pub divergence_info: Option<DivergenceInfo>,
     pub chain: u64,
     pub draw: u64,
@@ -523,6 +527,7 @@ pub struct StatsBuilder<H: Hamiltonian, A: AdaptStrategy> {
     energy: MutablePrimitiveArray<f64>,
     chain: MutablePrimitiveArray<u64>,
     draw: MutablePrimitiveArray<u64>,
+    energy_error: MutablePrimitiveArray<f64>,
     unconstrained: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
     gradient: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
     hamiltonian: <H::Stats as ArrowRow>::Builder,
@@ -600,6 +605,7 @@ impl<H: Hamiltonian, A: AdaptStrategy> StatsBuilder<H, A> {
             energy: MutablePrimitiveArray::with_capacity(capacity),
             chain: MutablePrimitiveArray::with_capacity(capacity),
             draw: MutablePrimitiveArray::with_capacity(capacity),
+            energy_error: MutablePrimitiveArray::with_capacity(capacity),
             gradient,
             unconstrained,
             hamiltonian: <H::Stats as ArrowRow>::new_builder(dim, settings),
@@ -627,6 +633,7 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
         self.chain.push(Some(value.chain));
         self.draw.push(Some(value.draw));
         self.diverging.push(Some(value.divergence_info().is_some()));
+        self.energy_error.push(Some(value.energy_error));
 
         if let Some(store) = self.gradient.as_mut() {
             store
@@ -716,6 +723,7 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
             Field::new("chain", DataType::UInt64, false),
             Field::new("draw", DataType::UInt64, false),
             Field::new("diverging", DataType::Boolean, false),
+            Field::new("energy_error", DataType::Float64, false),
         ];
 
         let mut arrays = vec![
@@ -727,6 +735,7 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
             self.chain.as_box(),
             self.draw.as_box(),
             self.diverging.as_box(),
+            self.energy_error.as_box(),
         ];
 
         if let Some(hamiltonian) = self.hamiltonian.finalize() {
@@ -943,6 +952,7 @@ where
             idx_in_trajectory: state.index_in_trajectory(),
             logp: -state.potential_energy(),
             energy: state.energy(),
+            energy_error: info.energy_error,
             divergence_info: info.divergence_info,
             chain: self.chain,
             draw: self.draw_count,
