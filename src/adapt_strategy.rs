@@ -30,6 +30,7 @@ pub(crate) struct DualAverageStrategy<F, M> {
     step_size_adapt: DualAverage,
     options: DualAverageSettings,
     enabled: bool,
+    use_mean_sym: bool,
     finalized: bool,
     _phantom1: PhantomData<F>,
     _phantom2: PhantomData<M>,
@@ -43,12 +44,17 @@ impl<F, M> DualAverageStrategy<F, M> {
     fn finalize(&mut self) {
         self.finalized = true;
     }
+
+    fn use_mean_sym(&mut self) {
+        self.use_mean_sym = true;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct DualAverageStats {
     pub step_size_bar: f64,
     pub mean_tree_accept: f64,
+    pub mean_tree_accept_sym: f64,
     pub n_steps: u64,
 }
 
@@ -56,6 +62,7 @@ pub struct DualAverageStats {
 pub struct DualAverageStatsBuilder {
     step_size_bar: MutablePrimitiveArray<f64>,
     mean_tree_accept: MutablePrimitiveArray<f64>,
+    mean_tree_accept_sym: MutablePrimitiveArray<f64>,
     n_steps: MutablePrimitiveArray<u64>,
 }
 
@@ -64,6 +71,8 @@ impl ArrowBuilder<DualAverageStats> for DualAverageStatsBuilder {
     fn append_value(&mut self, value: &DualAverageStats) {
         self.step_size_bar.push(Some(value.step_size_bar));
         self.mean_tree_accept.push(Some(value.mean_tree_accept));
+        self.mean_tree_accept_sym
+            .push(Some(value.mean_tree_accept_sym));
         self.n_steps.push(Some(value.n_steps));
     }
 
@@ -71,12 +80,14 @@ impl ArrowBuilder<DualAverageStats> for DualAverageStatsBuilder {
         let fields = vec![
             Field::new("step_size_bar", DataType::Float64, false),
             Field::new("mean_tree_accept", DataType::Float64, false),
+            Field::new("mean_tree_accept_sym", DataType::Float64, false),
             Field::new("n_steps", DataType::UInt64, false),
         ];
 
         let arrays = vec![
             self.step_size_bar.as_box(),
             self.mean_tree_accept.as_box(),
+            self.mean_tree_accept_sym.as_box(),
             self.n_steps.as_box(),
         ];
 
@@ -92,6 +103,7 @@ impl ArrowRow for DualAverageStats {
         Self::Builder {
             step_size_bar: MutablePrimitiveArray::new(),
             mean_tree_accept: MutablePrimitiveArray::new(),
+            mean_tree_accept_sym: MutablePrimitiveArray::new(),
             n_steps: MutablePrimitiveArray::new(),
         }
     }
@@ -126,6 +138,7 @@ impl<F: CpuLogpFunc, M: MassMatrix> AdaptStrategy for DualAverageStrategy<F, M> 
             enabled: true,
             step_size_adapt: DualAverage::new(options.params, options.initial_step),
             finalized: false,
+            use_mean_sym: false,
             _phantom1: PhantomData::default(),
             _phantom2: PhantomData::default(),
         }
@@ -147,9 +160,14 @@ impl<F: CpuLogpFunc, M: MassMatrix> AdaptStrategy for DualAverageStrategy<F, M> 
         _draw: u64,
         collector: &Self::Collector,
     ) {
+        let current = if self.use_mean_sym {
+            collector.mean_sym.current()
+        } else {
+            collector.mean.current()
+        };
         if self.finalized {
             self.step_size_adapt
-                .advance(collector.mean.current(), self.options.target_accept);
+                .advance(current, self.options.target_accept);
             potential.step_size = self.step_size_adapt.current_step_size_adapted();
             return;
         }
@@ -157,7 +175,7 @@ impl<F: CpuLogpFunc, M: MassMatrix> AdaptStrategy for DualAverageStrategy<F, M> 
             return;
         }
         self.step_size_adapt
-            .advance(collector.mean.current(), self.options.target_accept);
+            .advance(current, self.options.target_accept);
         potential.step_size = self.step_size_adapt.current_step_size()
     }
 
@@ -174,6 +192,7 @@ impl<F: CpuLogpFunc, M: MassMatrix> AdaptStrategy for DualAverageStrategy<F, M> 
         DualAverageStats {
             step_size_bar: self.step_size_adapt.current_step_size_adapted(),
             mean_tree_accept: collector.mean.current(),
+            mean_tree_accept_sym: collector.mean_sym.current(),
             n_steps: collector.mean.count(),
         }
     }
@@ -209,7 +228,7 @@ impl<F: CpuLogpFunc> ExpWindowDiagAdapt<F> {
         }
     }
 
-    fn switch(&mut self, collector: &DrawGradCollector) {
+    fn switch(&mut self) {
         self.exp_variance_draw = std::mem::replace(
             &mut self.exp_variance_draw_bg,
             RunningVariance::new(self.dim),
@@ -218,8 +237,6 @@ impl<F: CpuLogpFunc> ExpWindowDiagAdapt<F> {
             &mut self.exp_variance_grad_bg,
             RunningVariance::new(self.dim),
         );
-
-        self.update_estimators(collector);
     }
 
     fn current_count(&self) -> u64 {
@@ -418,8 +435,8 @@ impl Default for GradDiagOptions {
             dual_average_options: DualAverageSettings::default(),
             mass_matrix_options: DiagAdaptExpSettings::default(),
             early_window: 0.3,
-            step_size_window: 0.2,
-            mass_matrix_switch_freq: 60,
+            step_size_window: 0.15,
+            mass_matrix_switch_freq: 80,
             early_mass_matrix_switch_freq: 10,
         }
     }
@@ -482,12 +499,19 @@ impl<F: CpuLogpFunc> AdaptStrategy for GradDiagStrategy<F> {
                 self.options.mass_matrix_switch_freq
             };
 
-            if self.mass_matrix.background_count() >= switch_freq {
-                self.mass_matrix.switch(&collector.collector2);
-            } else {
-                self.mass_matrix.update_estimators(&collector.collector2);
+            self.mass_matrix.update_estimators(&collector.collector2);
+            // We only switch if we have switch_freq draws in the background estimate,
+            // and if the number of remaining mass matrix steps is larger than
+            // the switch frequency.
+            let could_switch = self.mass_matrix.background_count() >= switch_freq;
+            let is_late = switch_freq + draw > self.final_step_size_window;
+            if could_switch && (!is_late) {
+                self.mass_matrix.switch();
             }
             self.mass_matrix.update_potential(potential);
+            if is_late {
+                self.step_size.use_mean_sym();
+            }
             self.step_size
                 .adapt(options, potential, draw, &collector.collector1);
             return;
