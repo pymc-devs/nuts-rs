@@ -20,8 +20,11 @@ use crate::nuts::{ArrowBuilder, ArrowRow};
 #[cfg(feature = "arrow")]
 use crate::SamplerArgs;
 
-const LOWER_LIMIT: f64 = 1e-10f64;
-const UPPER_LIMIT: f64 = 1e10f64;
+const LOWER_LIMIT: f64 = 1e-20f64;
+const UPPER_LIMIT: f64 = 1e20f64;
+
+const INIT_LOWER_LIMIT: f64 = 1e-20f64;
+const INIT_UPPER_LIMIT: f64 = 1e20f64;
 
 pub(crate) struct DualAverageStrategy<F, M> {
     step_size_adapt: DualAverage,
@@ -233,18 +236,17 @@ impl<F: CpuLogpFunc> ExpWindowDiagAdapt<F> {
         if self.current_count() < 3 {
             return;
         }
-        assert!(self.current_count() > 2);
         potential.mass_matrix.update_diag(
             izip!(
                 self.exp_variance_draw.current(),
                 self.exp_variance_grad.current(),
             )
             .map(|(draw, grad)| {
-                let val = (draw / grad).sqrt().clamp(LOWER_LIMIT, UPPER_LIMIT);
-                if !val.is_finite() {
+                let val = (draw / grad).sqrt();
+                if (!val.is_finite()) || (val == 0f64) {
                     None
                 } else {
-                    Some(val)
+                    Some(val.clamp(LOWER_LIMIT, UPPER_LIMIT))
                 }
             }),
         );
@@ -352,7 +354,7 @@ impl<F: CpuLogpFunc> AdaptStrategy for ExpWindowDiagAdapt<F> {
             state
                 .grad
                 .iter()
-                .map(|&grad| grad.abs().clamp(LOWER_LIMIT, UPPER_LIMIT).recip())
+                .map(|&grad| grad.abs().clamp(INIT_LOWER_LIMIT, INIT_UPPER_LIMIT).recip())
                 .map(|var| if var.is_finite() { Some(var) } else { Some(1.) }),
         );
     }

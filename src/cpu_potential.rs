@@ -173,7 +173,7 @@ impl<F: CpuLogpFunc, M: MassMatrix> Hamiltonian for EuclideanPotential<F, M> {
             .grad
             .iter()
             .cloned()
-            .any(|val| (val == 0f64) | !val.is_finite())
+            .any(|val| (val == 0f64) || (!val.is_finite()))
         {
             Err(NutsError::BadInitGrad())
         } else {
