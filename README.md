@@ -90,12 +90,7 @@ is implemented in [`sample_parallel`].
 ## Implementation details
 
 This crate mostly follows the implementation of NUTS in [Stan](https://mc-stan.org) and
-[PyMC](https://docs.pymc.io/en/v3/), only tuning of mass matrix and step size differs:
-In a first window we sample using the identity as mass matrix and adapt the
-step size using the normal dual averaging algorithm.
-After `discard_window` draws we start computing a diagonal mass matrix using
-an exponentially decaying estimate for `sqrt(sample_var / grad_var)`.
-After `2 * discard_window` draws we switch to the entimated mass mass_matrix
-and keep adapting it live until `stop_tune_at`.
+[PyMC](https://docs.pymc.io/en/v3/), only tuning of mass matrix and step size differs
+somewhat.
 
 <!-- cargo-rdme end -->
