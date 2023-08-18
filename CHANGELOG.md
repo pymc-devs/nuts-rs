@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2023-08-18
+
+### Bug Fixes
+
+- Fix energy error statistic (Adrian Seyboldt)
+
+- Register draws when max treedepth is reached (Adrian Seyboldt)
+
+
+### Features
+
+- Add energy_error to sampler stats (Adrian Seyboldt)
+
+- Use symmetric acceptance rate in final window (Adrian Seyboldt)
+
+
+### Performance
+
+- Increase max and min mass matrix values (Adrian Seyboldt)
+
+
 ## [0.6.0] - 2023-07-21
 
 ### Bug Fixes
@@ -17,6 +38,8 @@ All notable changes to this project will be documented in this file.
 ### Miscellaneous Tasks
 
 - Update dependencies (Adrian Seyboldt)
+
+- Bump version (Adrian Seyboldt)
 
 
 ## [0.5.1] - 2023-07-03

@@ -104,6 +104,7 @@ impl RunningMean {
 pub(crate) struct AcceptanceRateCollector<S: State> {
     initial_energy: f64,
     pub(crate) mean: RunningMean,
+    pub(crate) mean_sym: RunningMean,
     phantom: PhantomData<S>,
 }
 
@@ -112,6 +113,7 @@ impl<S: State> AcceptanceRateCollector<S> {
         AcceptanceRateCollector {
             initial_energy: 0.,
             mean: RunningMean::new(),
+            mean_sym: RunningMean::new(),
             phantom: PhantomData::default(),
         }
     }
@@ -127,15 +129,25 @@ impl<S: State> Collector for AcceptanceRateCollector<S> {
         divergence_info: Option<&DivergenceInfo>,
     ) {
         match divergence_info {
-            Some(_) => self.mean.add(0.),
-            None => self
-                .mean
-                .add(end.log_acceptance_probability(self.initial_energy).exp()),
-        }
+            Some(_) => {
+                self.mean.add(0.);
+                self.mean_sym.add(0.);
+            }
+            None => {
+                let base_energy = self.initial_energy;
+                let other_energy = end.energy();
+
+                let diff = base_energy - other_energy;
+                self.mean.add(diff.min(0.).exp());
+                self.mean_sym
+                    .add(2. * diff.min(0.).exp() / (1. + diff.exp()));
+            }
+        };
     }
 
     fn register_init(&mut self, state: &Self::State, _options: &NutsOptions) {
         self.initial_energy = state.energy();
         self.mean.reset();
+        self.mean_sym.reset();
     }
 }
