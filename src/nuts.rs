@@ -190,7 +190,8 @@ pub struct SampleInfo {
     /// the maximum tree depth.
     pub reached_maxdepth: bool,
 
-    pub energy_error: f64,
+    pub initial_energy: f64,
+    pub draw_energy: f64,
 }
 
 /// A part of the trajectory tree during NUTS sampling.
@@ -373,7 +374,8 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
             depth: self.depth,
             divergence_info,
             reached_maxdepth: maxdepth,
-            energy_error: self.log_size,
+            initial_energy: self.initial_energy,
+            draw_energy: self.draw.energy(),
         }
     }
 }
@@ -952,7 +954,7 @@ where
             idx_in_trajectory: state.index_in_trajectory(),
             logp: -state.potential_energy(),
             energy: state.energy(),
-            energy_error: info.energy_error,
+            energy_error: info.draw_energy - info.initial_energy,
             divergence_info: info.divergence_info,
             chain: self.chain,
             draw: self.draw_count,
