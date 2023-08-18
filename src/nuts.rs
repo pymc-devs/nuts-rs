@@ -424,6 +424,7 @@ where
         };
     }
     let info = tree.info(true, None);
+    collector.register_draw(&tree.draw, &info);
     Ok((tree.draw, info))
 }
 
