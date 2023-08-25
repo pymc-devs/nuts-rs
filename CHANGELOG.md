@@ -2,13 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.7.0] - 2023-08-18
+## [0.7.0] - 2023-08-25
 
 ### Bug Fixes
 
 - Fix energy error statistic (Adrian Seyboldt)
 
 - Register draws when max treedepth is reached (Adrian Seyboldt)
+
+- Remove incorrect information from README (Adrian Seyboldt)
+
+- Fix compilation without arrow feature (Adrian Seyboldt)
 
 
 ### Features
@@ -21,6 +25,8 @@ All notable changes to this project will be documented in this file.
 ### Performance
 
 - Increase max and min mass matrix values (Adrian Seyboldt)
+
+- Change default for store_divergences to false (Adrian Seyboldt)
 
 
 ## [0.6.0] - 2023-07-21
