@@ -1,3 +1,4 @@
+#[cfg(feature = "arrow")]
 use arrow2::array::{MutableFixedSizeListArray, MutableUtf8Array, TryPush};
 #[cfg(feature = "arrow")]
 use arrow2::{
