@@ -43,7 +43,7 @@ impl Default for SamplerArgs {
             max_energy_error: 1000f64,
             store_gradient: false,
             store_unconstrained: false,
-            store_divergences: true,
+            store_divergences: false,
             mass_matrix_adapt: GradDiagOptions::default(),
         }
     }
