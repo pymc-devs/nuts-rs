@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.7.0] - 2023-08-25
+## [0.8.0] - 2023-09-20
 
 ### Bug Fixes
 
@@ -14,12 +14,21 @@ All notable changes to this project will be documented in this file.
 
 - Fix compilation without arrow feature (Adrian Seyboldt)
 
+- Correct usage of store_unconstrained (Maxim Kochurov)
+
+- Link in docs to nutpie (Adrian Seyboldt)
+
 
 ### Features
 
 - Add energy_error to sampler stats (Adrian Seyboldt)
 
 - Use symmetric acceptance rate in final window (Adrian Seyboldt)
+
+
+### Miscellaneous Tasks
+
+- Update Changelog (Adrian Seyboldt)
 
 
 ### Performance
