@@ -558,7 +558,7 @@ impl<H: Hamiltonian, A: AdaptStrategy> StatsBuilder<H, A> {
             None
         };
 
-        let unconstrained = if settings.store_gradient {
+        let unconstrained = if settings.store_unconstrained {
             let items = MutablePrimitiveArray::new();
             Some(MutableFixedSizeListArray::new_with_field(
                 items, "item", false, dim,
