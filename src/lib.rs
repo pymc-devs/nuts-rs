@@ -7,7 +7,7 @@
 //!
 //! This crate was developed as a faster replacement of the sampler in PyMC,
 //! to be used with the new numba backend of aesara. The python wrapper
-//! for this sampler is [nutpie](https://github.com/pymc-devs/nuts-py).
+//! for this sampler is [nutpie](https://github.com/pymc-devs/nutpie).
 //!
 //! ## Usage
 //!
