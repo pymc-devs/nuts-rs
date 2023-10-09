@@ -16,6 +16,7 @@ for this sampler is [nutpie](https://github.com/pymc-devs/nutpie).
 ```rust
 use nuts_rs::{CpuLogpFunc, LogpError, new_sampler, SamplerArgs, Chain, SampleStats};
 use thiserror::Error;
+use rand::thread_rng;
 
 // Define a function that computes the unnormalized posterior density
 // and its gradient.
@@ -55,32 +56,27 @@ impl CpuLogpFunc for PosteriorDensity {
 let mut sampler_args = SamplerArgs::default();
 
 // and modify as we like
-sampler_args.step_size_adapt.target = 0.8;
 sampler_args.num_tune = 1000;
 sampler_args.maxdepth = 3;  // small value just for testing...
-sampler_args.mass_matrix_adapt.store_mass_matrix = true;
 
 // We instanciate our posterior density function
 let logp_func = PosteriorDensity {};
 
 let chain = 0;
-let seed = 42;
-let mut sampler = new_sampler(logp_func, sampler_args, chain, seed);
+let mut rng = thread_rng();
+let mut sampler = new_sampler(logp_func, sampler_args, chain, &mut rng);
 
 // Set to some initial position and start drawing samples.
 sampler.set_position(&vec![0f64; 10]).expect("Unrecoverable error during init");
 let mut trace = vec![];  // Collection of all draws
-let mut stats = vec![];  // Collection of statistics like the acceptance rate for each draw
 for _ in 0..2000 {
     let (draw, info) = sampler.draw().expect("Unrecoverable error during sampling");
     trace.push(draw);
-    let _info_vec = info.to_vec();  // We can collect the stats in a Vec
     // Or get more detailed information about divergences
     if let Some(div_info) = info.divergence_info() {
-        println!("Divergence at position {:?}", div_info.start_location());
+        println!("Divergence at position {:?}", div_info.start_location);
     }
     dbg!(&info);
-    stats.push(info);
 }
 ```
 
