@@ -10,7 +10,9 @@ use thiserror::Error;
 use std::{fmt::Debug, marker::PhantomData};
 
 use crate::math::logaddexp;
+use crate::state::{State, StatePool};
 
+use crate::math_base::Math;
 #[cfg(feature = "arrow")]
 use crate::SamplerArgs;
 
@@ -68,18 +70,17 @@ impl rand::distributions::Distribution<Direction> for rand::distributions::Stand
 ///
 /// Collectors can compute statistics like the mean acceptance rate
 /// or collect data for mass matrix adaptation.
-pub trait Collector {
-    type State: State;
-
+pub(crate) trait Collector<M: Math> {
     fn register_leapfrog(
         &mut self,
-        _start: &Self::State,
-        _end: &Self::State,
+        _math: &mut M,
+        _start: &State<M>,
+        _end: &State<M>,
         _divergence_info: Option<&DivergenceInfo>,
     ) {
     }
-    fn register_draw(&mut self, _state: &Self::State, _info: &SampleInfo) {}
-    fn register_init(&mut self, _state: &Self::State, _options: &NutsOptions) {}
+    fn register_draw(&mut self, _math: &mut M, _state: &State<M>, _info: &SampleInfo) {}
+    fn register_init(&mut self, _math: &mut M, _state: &State<M>, _options: &NutsOptions) {}
 }
 
 /// Errors that happen when we evaluate the logp and gradient function
@@ -90,9 +91,12 @@ pub trait LogpError: std::error::Error {
 }
 
 /// The hamiltonian defined by the potential energy and the kinetic energy
-pub trait Hamiltonian {
+pub(crate) trait Hamiltonian<M>
+where
+    M: Math,
+{
     /// The type that stores a point in phase space
-    type State: State;
+    //type State: State;
     /// Errors that happen during logp evaluation
     type LogpError: LogpError + Send;
     /// Statistics that should be exported to the trace as part of the sampler stats
@@ -105,14 +109,15 @@ pub trait Hamiltonian {
     /// Perform one leapfrog step.
     ///
     /// Return either an unrecoverable error, a new state or a divergence.
-    fn leapfrog<C: Collector<State = Self::State>>(
+    fn leapfrog<C: Collector<M>>(
         &mut self,
-        pool: &mut <Self::State as State>::Pool,
-        start: &Self::State,
+        math: &mut M,
+        pool: &mut StatePool<M>,
+        start: &State<M>,
         dir: Direction,
         initial_energy: f64,
         collector: &mut C,
-    ) -> Result<std::result::Result<Self::State, DivergenceInfo>>;
+    ) -> Result<std::result::Result<State<M>, DivergenceInfo>>;
 
     /// Initialize a state at a new location.
     ///
@@ -120,25 +125,29 @@ pub trait Hamiltonian {
     /// it will later be set using Self::randomize_momentum.
     fn init_state(
         &mut self,
-        pool: &mut <Self::State as State>::Pool,
+        math: &mut M,
+        pool: &mut StatePool<M>,
         init: &[f64],
-    ) -> Result<Self::State>;
+    ) -> Result<State<M>>;
 
     /// Randomize the momentum part of a state
-    fn randomize_momentum<R: rand::Rng + ?Sized>(&self, state: &mut Self::State, rng: &mut R);
+    fn randomize_momentum<R: rand::Rng + ?Sized>(
+        &self,
+        math: &mut M,
+        state: &mut State<M>,
+        rng: &mut R,
+    );
 
     /// Return sampler statistics defined in Self::Stats
     fn current_stats(&self) -> Self::Stats;
 
-    fn new_empty_state(&mut self, pool: &mut <Self::State as State>::Pool) -> Self::State;
+    fn new_empty_state(&mut self, math: &mut M, pool: &mut StatePool<M>) -> State<M>;
 
     /// Crate a new state pool that can be used to crate new states.
-    fn new_pool(&mut self, capacity: usize) -> <Self::State as State>::Pool;
-
-    /// The dimension of the hamiltonian (position only).
-    fn dim(&self) -> usize;
+    fn new_pool(&mut self, math: &mut M, capacity: usize) -> StatePool<M>;
 }
 
+/*
 /// A point in phase space
 ///
 /// This also needs to store the sum of momentum terms
@@ -176,6 +185,7 @@ pub trait State: Clone + Debug {
         (initial_energy - self.energy()).min(0.)
     }
 }
+*/
 
 /// Information about a draw, exported as part of the sampler stats
 #[derive(Debug)]
@@ -196,17 +206,17 @@ pub struct SampleInfo {
 }
 
 /// A part of the trajectory tree during NUTS sampling.
-struct NutsTree<P: Hamiltonian, C: Collector<State = P::State>> {
+struct NutsTree<M: Math, H: Hamiltonian<M>, C: Collector<M>> {
     /// The left position of the tree.
     ///
     /// The left side always has the smaller index_in_trajectory.
     /// Leapfrogs in backward direction will replace the left.
-    left: P::State,
-    right: P::State,
+    left: State<M>,
+    right: State<M>,
 
     /// A draw from the trajectory between left and right using
     /// multinomial sampling.
-    draw: P::State,
+    draw: State<M>,
     log_size: f64,
     depth: u64,
     initial_energy: f64,
@@ -214,24 +224,25 @@ struct NutsTree<P: Hamiltonian, C: Collector<State = P::State>> {
     /// A tree is the main tree if it contains the initial point
     /// of the trajectory.
     is_main: bool,
-    collector: PhantomData<C>,
+    _phantom: PhantomData<H>,
+    _phantom2: PhantomData<C>,
 }
 
-enum ExtendResult<P: Hamiltonian, C: Collector<State = P::State>> {
+enum ExtendResult<M: Math, H: Hamiltonian<M>, C: Collector<M>> {
     /// The tree extension succeeded properly, and the termination
     /// criterion was not reached.
-    Ok(NutsTree<P, C>),
+    Ok(NutsTree<M, H, C>),
     /// An unrecoverable error happend during a leapfrog step
     Err(NutsError),
     /// Tree extension succeeded and the termination criterion
     /// was reached.
-    Turning(NutsTree<P, C>),
+    Turning(NutsTree<M, H, C>),
     /// A divergence happend during tree extension.
-    Diverging(NutsTree<P, C>, DivergenceInfo),
+    Diverging(NutsTree<M, H, C>, DivergenceInfo),
 }
 
-impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
-    fn new(state: P::State) -> NutsTree<P, C> {
+impl<M: Math, H: Hamiltonian<M>, C: Collector<M>> NutsTree<M, H, C> {
+    fn new(state: State<M>) -> NutsTree<M, H, C> {
         let initial_energy = state.energy();
         NutsTree {
             right: state.clone(),
@@ -241,24 +252,26 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
             log_size: 0.,
             initial_energy,
             is_main: true,
-            collector: PhantomData,
+            _phantom: PhantomData::default(),
+            _phantom2: PhantomData::default(),
         }
     }
 
     #[inline]
     fn extend<R>(
         mut self,
-        pool: &mut <P::State as State>::Pool,
+        math: &mut M,
+        pool: &mut StatePool<M>,
         rng: &mut R,
-        potential: &mut P,
+        potential: &mut H,
         direction: Direction,
         collector: &mut C,
-    ) -> ExtendResult<P, C>
+    ) -> ExtendResult<M, H, C>
     where
-        P: Hamiltonian,
+        H: Hamiltonian<M>,
         R: rand::Rng + ?Sized,
     {
-        let mut other = match self.single_step(pool, potential, direction, collector) {
+        let mut other = match self.single_step(math, pool, potential, direction, collector) {
             Ok(Ok(tree)) => tree,
             Ok(Err(info)) => return ExtendResult::Diverging(self, info),
             Err(err) => return ExtendResult::Err(err),
@@ -266,7 +279,7 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
 
         while other.depth < self.depth {
             use ExtendResult::*;
-            other = match other.extend(pool, rng, potential, direction, collector) {
+            other = match other.extend(math, pool, rng, potential, direction, collector) {
                 Ok(tree) => tree,
                 Turning(_) => {
                     return Turning(self);
@@ -285,17 +298,17 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
             Direction::Backward => (&other.left, &self.right),
         };
 
-        let mut turning = first.is_turning(last);
+        let mut turning = first.is_turning(math, last);
         if self.depth > 0 {
             if !turning {
-                turning = self.right.is_turning(&other.right);
+                turning = self.right.is_turning(math, &other.right);
             }
             if !turning {
-                turning = self.left.is_turning(&other.left);
+                turning = self.left.is_turning(math, &other.left);
             }
         }
 
-        self.merge_into(other, rng, direction);
+        self.merge_into(math, other, rng, direction);
 
         if turning {
             ExtendResult::Turning(self)
@@ -306,7 +319,8 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
 
     fn merge_into<R: rand::Rng + ?Sized>(
         &mut self,
-        other: NutsTree<P, C>,
+        _math: &mut M,
+        other: NutsTree<M, H, C>,
         rng: &mut R,
         direction: Direction,
     ) {
@@ -342,16 +356,24 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
 
     fn single_step(
         &self,
-        pool: &mut <P::State as State>::Pool,
-        potential: &mut P,
+        math: &mut M,
+        pool: &mut StatePool<M>,
+        potential: &mut H,
         direction: Direction,
         collector: &mut C,
-    ) -> Result<std::result::Result<NutsTree<P, C>, DivergenceInfo>> {
+    ) -> Result<std::result::Result<NutsTree<M, H, C>, DivergenceInfo>> {
         let start = match direction {
             Direction::Forward => &self.right,
             Direction::Backward => &self.left,
         };
-        let end = match potential.leapfrog(pool, start, direction, self.initial_energy, collector) {
+        let end = match potential.leapfrog(
+            math,
+            pool,
+            start,
+            direction,
+            self.initial_energy,
+            collector,
+        ) {
             Ok(Ok(end)) => end,
             Ok(Err(info)) => return Ok(Err(info)),
             Err(error) => return Err(error),
@@ -366,7 +388,8 @@ impl<P: Hamiltonian, C: Collector<State = P::State>> NutsTree<P, C> {
             log_size,
             initial_energy: self.initial_energy,
             is_main: false,
-            collector: PhantomData,
+            _phantom: PhantomData::default(),
+            _phantom2: PhantomData::default(),
         }))
     }
 
@@ -387,36 +410,38 @@ pub struct NutsOptions {
     pub store_unconstrained: bool,
 }
 
-pub(crate) fn draw<P, R, C>(
-    pool: &mut <P::State as State>::Pool,
-    init: &mut P::State,
+pub(crate) fn draw<M, P, R, C>(
+    math: &mut M,
+    pool: &mut StatePool<M>,
+    init: &mut State<M>,
     rng: &mut R,
     potential: &mut P,
     options: &NutsOptions,
     collector: &mut C,
-) -> Result<(P::State, SampleInfo)>
+) -> Result<(State<M>, SampleInfo)>
 where
-    P: Hamiltonian,
+    M: Math,
+    P: Hamiltonian<M>,
     R: rand::Rng + ?Sized,
-    C: Collector<State = P::State>,
+    C: Collector<M>,
 {
-    potential.randomize_momentum(init, rng);
-    init.make_init_point();
-    collector.register_init(init, options);
+    potential.randomize_momentum(math, init, rng);
+    init.make_init_point(math);
+    collector.register_init(math, init, options);
 
     let mut tree = NutsTree::new(init.clone());
     while tree.depth < options.maxdepth {
         let direction: Direction = rng.gen();
-        tree = match tree.extend(pool, rng, potential, direction, collector) {
+        tree = match tree.extend(math, pool, rng, potential, direction, collector) {
             ExtendResult::Ok(tree) => tree,
             ExtendResult::Turning(tree) => {
                 let info = tree.info(false, None);
-                collector.register_draw(&tree.draw, &info);
+                collector.register_draw(math, &tree.draw, &info);
                 return Ok((tree.draw, info));
             }
             ExtendResult::Diverging(tree, info) => {
                 let info = tree.info(false, Some(info));
-                collector.register_draw(&tree.draw, &info);
+                collector.register_draw(math, &tree.draw, &info);
                 return Ok((tree.draw, info));
             }
             ExtendResult::Err(error) => {
@@ -425,7 +450,7 @@ where
         };
     }
     let info = tree.info(true, None);
-    collector.register_draw(&tree.draw, &info);
+    collector.register_draw(math, &tree.draw, &info);
     Ok((tree.draw, info))
 }
 
@@ -523,7 +548,7 @@ where
 }
 
 #[cfg(feature = "arrow")]
-pub struct StatsBuilder<H: Hamiltonian, A: AdaptStrategy> {
+pub(crate) struct StatsBuilder<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> {
     depth: MutablePrimitiveArray<u64>,
     maxdepth_reached: MutableBooleanArray,
     index_in_trajectory: MutablePrimitiveArray<i64>,
@@ -545,7 +570,7 @@ pub struct StatsBuilder<H: Hamiltonian, A: AdaptStrategy> {
 }
 
 #[cfg(feature = "arrow")]
-impl<H: Hamiltonian, A: AdaptStrategy> StatsBuilder<H, A> {
+impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> StatsBuilder<M, H, A> {
     fn new_with_capacity(dim: usize, settings: &SamplerArgs) -> Self {
         let capacity = (settings.num_tune + settings.num_draws) as usize;
 
@@ -625,8 +650,8 @@ impl<H: Hamiltonian, A: AdaptStrategy> StatsBuilder<H, A> {
 }
 
 #[cfg(feature = "arrow")]
-impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A::Stats>>
-    for StatsBuilder<H, A>
+impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>>
+    ArrowBuilder<NutsSampleStats<H::Stats, A::Stats>> for StatsBuilder<M, H, A>
 {
     fn append_value(&mut self, value: &NutsSampleStats<H::Stats, A::Stats>) {
         self.depth.push(Some(value.depth));
@@ -819,9 +844,9 @@ impl<H: Hamiltonian, A: AdaptStrategy> ArrowBuilder<NutsSampleStats<H::Stats, A:
 }
 
 /// Draw samples from the posterior distribution using Hamiltonian MCMC.
-pub trait Chain {
-    type Hamiltonian: Hamiltonian;
-    type AdaptStrategy: AdaptStrategy;
+pub trait Chain<M: Math> {
+    type Hamiltonian; //: Hamiltonian<M>;
+    type AdaptStrategy; //: AdaptStrategy<M>;
     type Stats: SampleStats + 'static;
 
     #[cfg(feature = "arrow")]
@@ -843,34 +868,44 @@ pub trait Chain {
     fn stats_builder(&self, dim: usize, settings: &SamplerArgs) -> Self::Builder;
 }
 
-pub(crate) struct NutsChain<P, R, S>
+pub(crate) struct NutsChain<M, P, R, A>
 where
-    P: Hamiltonian,
+    M: Math,
+    P: Hamiltonian<M>,
     R: rand::Rng,
-    S: AdaptStrategy<Potential = P>,
+    A: AdaptStrategy<M, Potential = P>,
 {
-    pool: <P::State as State>::Pool,
+    pool: StatePool<M>,
     potential: P,
-    collector: S::Collector,
+    collector: A::Collector,
     options: NutsOptions,
     rng: R,
-    init: P::State,
+    init: State<M>,
     chain: u64,
     draw_count: u64,
-    strategy: S,
+    strategy: A,
+    math: M,
 }
 
-impl<P, R, S> NutsChain<P, R, S>
+impl<M, P, R, A> NutsChain<M, P, R, A>
 where
-    P: Hamiltonian,
+    M: Math,
+    P: Hamiltonian<M>,
     R: rand::Rng,
-    S: AdaptStrategy<Potential = P>,
+    A: AdaptStrategy<M, Potential = P>,
 {
-    pub fn new(mut potential: P, strategy: S, options: NutsOptions, rng: R, chain: u64) -> Self {
+    pub fn new(
+        mut math: M,
+        mut potential: P,
+        strategy: A,
+        options: NutsOptions,
+        rng: R,
+        chain: u64,
+    ) -> Self {
         let pool_size: usize = options.maxdepth.checked_mul(2).unwrap().try_into().unwrap();
-        let mut pool = potential.new_pool(pool_size);
-        let init = potential.new_empty_state(&mut pool);
-        let collector = strategy.new_collector();
+        let mut pool = potential.new_pool(&mut math, pool_size);
+        let init = potential.new_empty_state(&mut math, &mut pool);
+        let collector = strategy.new_collector(&mut math);
         NutsChain {
             pool,
             potential,
@@ -881,66 +916,78 @@ where
             chain,
             draw_count: 0,
             strategy,
+            math,
         }
     }
 }
 
-pub trait AdaptStrategy {
-    type Potential: Hamiltonian;
-    type Collector: Collector<State = <Self::Potential as Hamiltonian>::State>;
+pub(crate) trait AdaptStrategy<M: Math> {
+    type Potential: Hamiltonian<M>;
+    type Collector: Collector<M>;
     #[cfg(feature = "arrow")]
     type Stats: Send + Debug + ArrowRow + 'static;
     #[cfg(not(feature = "arrow"))]
     type Stats: Send + Debug + 'static;
     type Options: Copy + Send + Default;
 
-    fn new(options: Self::Options, num_tune: u64, dim: usize) -> Self;
+    fn new(math: &mut M, options: Self::Options, num_tune: u64) -> Self;
 
     fn init(
         &mut self,
+        math: &mut M,
         options: &mut NutsOptions,
         potential: &mut Self::Potential,
-        state: &<Self::Potential as Hamiltonian>::State,
+        state: &State<M>,
     );
 
     fn adapt(
         &mut self,
+        math: &mut M,
         options: &mut NutsOptions,
         potential: &mut Self::Potential,
         draw: u64,
         collector: &Self::Collector,
     );
 
-    fn new_collector(&self) -> Self::Collector;
+    fn new_collector(&self, math: &mut M) -> Self::Collector;
 
     fn current_stats(
         &self,
+        math: &mut M,
         options: &NutsOptions,
         potential: &Self::Potential,
         collector: &Self::Collector,
     ) -> Self::Stats;
 }
 
-impl<H, R, S> Chain for NutsChain<H, R, S>
+impl<M, H, R, A> Chain<M> for NutsChain<M, H, R, A>
 where
-    H: Hamiltonian,
+    M: Math,
+    H: Hamiltonian<M>,
     R: rand::Rng,
-    S: AdaptStrategy<Potential = H>,
+    A: AdaptStrategy<M, Potential = H>,
 {
     type Hamiltonian = H;
-    type AdaptStrategy = S;
-    type Stats = NutsSampleStats<H::Stats, S::Stats>;
+    type AdaptStrategy = A;
+    type Stats = NutsSampleStats<H::Stats, A::Stats>;
 
     fn set_position(&mut self, position: &[f64]) -> Result<()> {
-        let state = self.potential.init_state(&mut self.pool, position)?;
+        let state = self
+            .potential
+            .init_state(&mut self.math, &mut self.pool, position)?;
         self.init = state;
-        self.strategy
-            .init(&mut self.options, &mut self.potential, &self.init);
+        self.strategy.init(
+            &mut self.math,
+            &mut self.options,
+            &mut self.potential,
+            &self.init,
+        );
         Ok(())
     }
 
     fn draw(&mut self) -> Result<(Box<[f64]>, Self::Stats)> {
         let (state, info) = draw(
+            &mut self.math,
             &mut self.pool,
             &mut self.init,
             &mut self.rng,
@@ -948,8 +995,8 @@ where
             &self.options,
             &mut self.collector,
         )?;
-        let mut position: Box<[f64]> = vec![0f64; self.potential.dim()].into();
-        state.write_position(&mut position);
+        let mut position: Box<[f64]> = vec![0f64; self.math.dim()].into();
+        state.write_position(&mut self.math, &mut position);
         let stats = NutsSampleStats {
             depth: info.depth,
             maxdepth_reached: info.reached_maxdepth,
@@ -962,26 +1009,28 @@ where
             draw: self.draw_count,
             potential_stats: self.potential.current_stats(),
             strategy_stats: self.strategy.current_stats(
+                &mut self.math,
                 &self.options,
                 &self.potential,
                 &self.collector,
             ),
             gradient: if self.options.store_gradient {
-                let mut gradient: Box<[f64]> = vec![0f64; self.potential.dim()].into();
-                state.write_gradient(&mut gradient);
+                let mut gradient: Box<[f64]> = vec![0f64; self.math.dim()].into();
+                state.write_gradient(&mut self.math, &mut gradient);
                 Some(gradient)
             } else {
                 None
             },
             unconstrained: if self.options.store_unconstrained {
-                let mut unconstrained: Box<[f64]> = vec![0f64; self.potential.dim()].into();
-                state.write_position(&mut unconstrained);
+                let mut unconstrained: Box<[f64]> = vec![0f64; self.math.dim()].into();
+                state.write_position(&mut self.math, &mut unconstrained);
                 Some(unconstrained)
             } else {
                 None
             },
         };
         self.strategy.adapt(
+            &mut self.math,
             &mut self.options,
             &mut self.potential,
             self.draw_count,
@@ -993,11 +1042,11 @@ where
     }
 
     fn dim(&self) -> usize {
-        self.potential.dim()
+        self.math.dim()
     }
 
     #[cfg(feature = "arrow")]
-    type Builder = StatsBuilder<Self::Hamiltonian, Self::AdaptStrategy>;
+    type Builder = StatsBuilder<M, Self::Hamiltonian, Self::AdaptStrategy>;
 
     #[cfg(feature = "arrow")]
     fn stats_builder(&self, dim: usize, settings: &SamplerArgs) -> Self::Builder {
@@ -1010,7 +1059,9 @@ where
 mod tests {
     use rand::thread_rng;
 
-    use crate::{adapt_strategy::test_logps::NormalLogp, new_sampler, Chain, SamplerArgs};
+    use crate::{
+        adapt_strategy::test_logps::NormalLogp, cpu_math::CpuMath, new_sampler, Chain, SamplerArgs,
+    };
 
     use super::ArrowBuilder;
 
@@ -1018,11 +1069,12 @@ mod tests {
     fn to_arrow() {
         let ndim = 10;
         let func = NormalLogp::new(ndim, 3.);
+        let mut math = CpuMath::new(func);
 
         let settings = SamplerArgs::default();
         let mut rng = thread_rng();
 
-        let mut chain = new_sampler(func, settings, 0, &mut rng);
+        let mut chain = new_sampler(math, settings, 0, &mut rng);
 
         let mut builder = chain.stats_builder(ndim, &settings);
 

@@ -1,6 +1,6 @@
 [package]
 name = "nuts-rs"
-version = "0.8.0"
+version = "0.9.0"
 authors = ["Adrian Seyboldt <adrian.seyboldt@gmail.com>", "PyMC Developers <pymc.devs@gmail.com>"]
 edition = "2021"
 license = "MIT"
@@ -19,12 +19,13 @@ rand = { version = "0.8.5", features = ["small_rng"] }
 rand_distr = "0.4.3"
 multiversion = "0.7.2"
 itertools = "0.11.0"
-crossbeam = "0.8.2"
 thiserror = "1.0.43"
-rayon = "1.7.0"
 arrow2 = { version = "0.17.3", optional = true }
 rand_chacha = "0.3.1"
 anyhow = "1.0.72"
+faer = "0.13.5"
+faer-core = "0.13.5"
+pulp = "0.17.0"
 
 [dev-dependencies]
 proptest = "1.2.0"
