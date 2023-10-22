@@ -1,7 +1,9 @@
 use std::marker::PhantomData;
 
 use crate::{
-    nuts::{Collector, NutsOptions, State},
+    math_base::Math,
+    nuts::{Collector, NutsOptions},
+    state::State,
     DivergenceInfo,
 };
 
@@ -101,15 +103,15 @@ impl RunningMean {
     }
 }
 
-pub(crate) struct AcceptanceRateCollector<S: State> {
+pub(crate) struct AcceptanceRateCollector<M: Math> {
     initial_energy: f64,
     pub(crate) mean: RunningMean,
     pub(crate) mean_sym: RunningMean,
-    phantom: PhantomData<S>,
+    phantom: PhantomData<M>,
 }
 
-impl<S: State> AcceptanceRateCollector<S> {
-    pub(crate) fn new() -> AcceptanceRateCollector<S> {
+impl<M: Math> AcceptanceRateCollector<M> {
+    pub(crate) fn new() -> AcceptanceRateCollector<M> {
         AcceptanceRateCollector {
             initial_energy: 0.,
             mean: RunningMean::new(),
@@ -119,13 +121,12 @@ impl<S: State> AcceptanceRateCollector<S> {
     }
 }
 
-impl<S: State> Collector for AcceptanceRateCollector<S> {
-    type State = S;
-
+impl<M: Math> Collector<M> for AcceptanceRateCollector<M> {
     fn register_leapfrog(
         &mut self,
-        _start: &Self::State,
-        end: &Self::State,
+        _math: &mut M,
+        _start: &State<M>,
+        end: &State<M>,
         divergence_info: Option<&DivergenceInfo>,
     ) {
         match divergence_info {
@@ -145,7 +146,7 @@ impl<S: State> Collector for AcceptanceRateCollector<S> {
         };
     }
 
-    fn register_init(&mut self, state: &Self::State, _options: &NutsOptions) {
+    fn register_init(&mut self, _math: &mut M, state: &State<M>, _options: &NutsOptions) {
         self.initial_energy = state.energy();
         self.mean.reset();
         self.mean_sym.reset();
