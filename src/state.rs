@@ -1,8 +1,7 @@
 use std::{
     cell::RefCell,
     fmt::Debug,
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
+    ops::Deref,
     rc::{Rc, Weak},
 };
 
@@ -54,7 +53,6 @@ pub(crate) struct InnerState<M: Math> {
     pub(crate) idx_in_trajectory: i64,
     pub(crate) kinetic_energy: f64,
     pub(crate) potential_energy: f64,
-    _phantom_todo: PhantomData<M>,
 }
 
 pub(crate) struct InnerStateReusable<M: Math> {
@@ -74,7 +72,6 @@ impl<'pool, M: Math> InnerStateReusable<M> {
                 idx_in_trajectory: 0,
                 kinetic_energy: 0.,
                 potential_energy: 0.,
-                _phantom_todo: PhantomData::default(),
             },
             reuser: Rc::downgrade(&Rc::clone(&owner.storage)),
         }
@@ -225,7 +222,7 @@ mod tests {
     fn crate_pool() {
         let logp = NormalLogp::new(10, 0.2);
         let mut math = CpuMath::new(logp);
-        let mut pool = StatePool::new(&mut math, 10);
+        let pool = StatePool::new(&mut math, 10);
         let mut state = pool.new_state(&mut math);
         assert!(state.p.nrows() == 10);
         assert!(state.p.ncols() == 1);
@@ -241,7 +238,7 @@ mod tests {
         let dim = 10;
         let logp = NormalLogp::new(dim, 0.2);
         let mut math = CpuMath::new(logp);
-        let mut pool = StatePool::new(&mut math, 10);
+        let pool = StatePool::new(&mut math, 10);
         let a = pool.new_state(&mut math);
 
         assert_eq!(a.idx_in_trajectory, 0);

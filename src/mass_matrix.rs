@@ -1,6 +1,3 @@
-use itertools::izip;
-use multiversion::multiversion;
-
 use crate::{
     math_base::Math,
     nuts::Collector,
@@ -69,23 +66,6 @@ impl<M: Math> DiagMassMatrix<M> {
             clamp,
         );
     }
-}
-
-#[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
-fn update_diag(
-    variance_out: &mut [f64],
-    inv_std_out: &mut [f64],
-    new_variance: impl Iterator<Item = Option<f64>>,
-) {
-    izip!(variance_out, inv_std_out, new_variance).for_each(|(var, inv_std, x)| {
-        if let Some(x) = x {
-            assert!(x.is_finite(), "Illegal value on mass matrix: {}", x);
-            assert!(x > 0f64, "Illegal value on mass matrix: {}", x);
-            //assert!(*var != x, "No change in mass matrix from {} to {}", *var, x);
-            *var = x;
-            *inv_std = (1. / x).sqrt();
-        };
-    });
 }
 
 impl<M: Math> MassMatrix<M> for DiagMassMatrix<M> {
