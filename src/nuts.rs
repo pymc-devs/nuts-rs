@@ -1069,7 +1069,7 @@ mod tests {
     fn to_arrow() {
         let ndim = 10;
         let func = NormalLogp::new(ndim, 3.);
-        let mut math = CpuMath::new(func);
+        let math = CpuMath::new(func);
 
         let settings = SamplerArgs::default();
         let mut rng = thread_rng();

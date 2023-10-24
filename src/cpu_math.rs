@@ -115,10 +115,12 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     }
 
     fn array_all_finite_and_nonzero(&mut self, array: &Self::Array) -> bool {
-        array
-            .col_ref(0)
-            .iter()
-            .all(|&x| x.is_finite() & (x != 0f64))
+        self.arch.dispatch(|| {
+            array
+                .col_ref(0)
+                .iter()
+                .all(|&x| x.is_finite() & (x != 0f64))
+        })
     }
 
     fn array_mult(&mut self, array1: &Self::Array, array2: &Self::Array, dest: &mut Self::Array) {
@@ -152,16 +154,18 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         value: &Self::Array,
         diff_scale: f64, // 1 / self.count
     ) {
-        izip!(
-            mean.col_mut(0).iter_mut(),
-            variance.col_mut(0).iter_mut(),
-            value.col_ref(0)
-        )
-        .for_each(|(mean, mut var, x)| {
-            let diff = x - *mean;
-            *mean += diff * diff_scale;
-            *var += diff * diff;
-        });
+        self.arch.dispatch(|| {
+            izip!(
+                mean.col_mut(0).iter_mut(),
+                variance.col_mut(0).iter_mut(),
+                value.col_ref(0)
+            )
+            .for_each(|(mean, var, x)| {
+                let diff = x - *mean;
+                *mean += diff * diff_scale;
+                *var += diff * diff;
+            });
+        })
     }
 
     fn array_update_var_inv_std_draw_grad(
@@ -173,24 +177,26 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         fill_invalid: Option<f64>,
         clamp: (f64, f64),
     ) {
-        izip!(
-            variance_out.col_mut(0).iter_mut(),
-            inv_std.col_mut(0).iter_mut(),
-            draw_var.col_ref(0).iter(),
-            grad_var.col_ref(0).iter(),
-        )
-        .for_each(|(var_out, inv_std_out, &draw_var, &grad_var)| {
-            let val = (draw_var / grad_var).sqrt();
-            if (!val.is_finite()) | (val == 0f64) {
-                if let Some(fill_val) = fill_invalid {
-                    *var_out = fill_val;
-                    *inv_std_out = fill_val.recip().sqrt();
+        self.arch.dispatch(|| {
+            izip!(
+                variance_out.col_mut(0).iter_mut(),
+                inv_std.col_mut(0).iter_mut(),
+                draw_var.col_ref(0).iter(),
+                grad_var.col_ref(0).iter(),
+            )
+            .for_each(|(var_out, inv_std_out, &draw_var, &grad_var)| {
+                let val = (draw_var / grad_var).sqrt();
+                if (!val.is_finite()) | (val == 0f64) {
+                    if let Some(fill_val) = fill_invalid {
+                        *var_out = fill_val;
+                        *inv_std_out = fill_val.recip().sqrt();
+                    }
+                } else {
+                    let val = val.clamp(clamp.0, clamp.1);
+                    *var_out = val;
+                    *inv_std_out = val.recip().sqrt();
                 }
-            } else {
-                let val = val.clamp(clamp.0, clamp.1);
-                *var_out = val;
-                *inv_std_out = val.recip().sqrt();
-            }
+            });
         });
     }
 
@@ -202,16 +208,18 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         fill_invalid: f64,
         clamp: (f64, f64),
     ) {
-        izip!(
-            variance_out.col_mut(0).iter_mut(),
-            inv_std.col_mut(0).iter_mut(),
-            gradient.col_ref(0).iter(),
-        )
-        .for_each(|(var_out, inv_std_out, &grad_var)| {
-            let val = grad_var.abs().clamp(clamp.0, clamp.1).recip();
-            let val = if val.is_finite() { val } else { fill_invalid };
-            *var_out = val;
-            *inv_std_out = val.recip().sqrt();
+        self.arch.dispatch(|| {
+            izip!(
+                variance_out.col_mut(0).iter_mut(),
+                inv_std.col_mut(0).iter_mut(),
+                gradient.col_ref(0).iter(),
+            )
+            .for_each(|(var_out, inv_std_out, &grad_var)| {
+                let val = grad_var.abs().clamp(clamp.0, clamp.1).recip();
+                let val = if val.is_finite() { val } else { fill_invalid };
+                *var_out = val;
+                *inv_std_out = val.recip().sqrt();
+            });
         });
     }
 }

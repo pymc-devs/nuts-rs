@@ -373,7 +373,7 @@ mod tests {
             let mut y = y.clone();
             axpy(&x[..], &mut y[..], a);
             for ((&x, y), out) in x.iter().zip(orig).zip(y) {
-                assert_approx_eq(out, a * x + y);
+                assert_approx_eq(out, a.mul_add(x, y));
             }
         }
 
