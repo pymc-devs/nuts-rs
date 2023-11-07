@@ -29,6 +29,7 @@ pub struct SamplerArgs {
     pub store_divergences: bool,
     /// Settings for mass matrix adaptation.
     pub mass_matrix_adapt: GradDiagOptions,
+    pub check_turning: bool,
 }
 
 impl Default for SamplerArgs {
@@ -42,6 +43,7 @@ impl Default for SamplerArgs {
             store_unconstrained: false,
             store_divergences: false,
             mass_matrix_adapt: GradDiagOptions::default(),
+            check_turning: true,
         }
     }
 }
@@ -79,6 +81,7 @@ pub fn new_sampler<'math, M: Math + 'math, R: Rng + ?Sized>(
         maxdepth: settings.maxdepth,
         store_gradient: settings.store_gradient,
         store_unconstrained: settings.store_unconstrained,
+        check_turning: settings.check_turning,
     };
 
     let rng = rand::rngs::SmallRng::from_rng(rng).expect("Could not seed rng");
