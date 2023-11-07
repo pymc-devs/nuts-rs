@@ -266,6 +266,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M>> NutsTree<M, H, C> {
         potential: &mut H,
         direction: Direction,
         collector: &mut C,
+        options: &NutsOptions,
     ) -> ExtendResult<M, H, C>
     where
         H: Hamiltonian<M>,
@@ -279,7 +280,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M>> NutsTree<M, H, C> {
 
         while other.depth < self.depth {
             use ExtendResult::*;
-            other = match other.extend(math, pool, rng, potential, direction, collector) {
+            other = match other.extend(math, pool, rng, potential, direction, collector, options) {
                 Ok(tree) => tree,
                 Turning(_) => {
                     return Turning(self);
@@ -298,15 +299,20 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M>> NutsTree<M, H, C> {
             Direction::Backward => (&other.left, &self.right),
         };
 
-        let mut turning = first.is_turning(math, last);
-        if self.depth > 0 {
-            if !turning {
-                turning = self.right.is_turning(math, &other.right);
+        let turning = if options.check_turning {
+            let mut turning = first.is_turning(math, last);
+            if self.depth > 0 {
+                if !turning {
+                    turning = self.right.is_turning(math, &other.right);
+                }
+                if !turning {
+                    turning = self.left.is_turning(math, &other.left);
+                }
             }
-            if !turning {
-                turning = self.left.is_turning(math, &other.left);
-            }
-        }
+            turning
+        } else {
+            false
+        };
 
         self.merge_into(math, other, rng, direction);
 
@@ -408,6 +414,7 @@ pub struct NutsOptions {
     pub maxdepth: u64,
     pub store_gradient: bool,
     pub store_unconstrained: bool,
+    pub check_turning: bool,
 }
 
 pub(crate) fn draw<M, P, R, C>(
@@ -432,7 +439,7 @@ where
     let mut tree = NutsTree::new(init.clone());
     while tree.depth < options.maxdepth {
         let direction: Direction = rng.gen();
-        tree = match tree.extend(math, pool, rng, potential, direction, collector) {
+        tree = match tree.extend(math, pool, rng, potential, direction, collector, options) {
             ExtendResult::Ok(tree) => tree,
             ExtendResult::Turning(tree) => {
                 let info = tree.info(false, None);
