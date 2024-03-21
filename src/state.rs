@@ -45,11 +45,11 @@ impl<M: Math> StatePool<M> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct InnerState<M: Math> {
-    pub(crate) p: M::Array,
-    pub(crate) q: M::Array,
-    pub(crate) v: M::Array,
-    pub(crate) p_sum: M::Array,
-    pub(crate) grad: M::Array,
+    pub(crate) p: M::Vector,
+    pub(crate) q: M::Vector,
+    pub(crate) v: M::Vector,
+    pub(crate) p_sum: M::Vector,
+    pub(crate) grad: M::Vector,
     pub(crate) idx_in_trajectory: i64,
     pub(crate) kinetic_energy: f64,
     pub(crate) potential_energy: f64,
@@ -242,10 +242,10 @@ mod tests {
         let a = pool.new_state(&mut math);
 
         assert_eq!(a.idx_in_trajectory, 0);
-        assert!(a.p_sum.col_ref(0).iter().all(|&x| x == 0f64));
-        assert_eq!(a.p_sum.col_ref(0).len(), dim);
-        assert_eq!(a.grad.col_ref(0).len(), dim);
-        assert_eq!(a.q.col_ref(0).len(), dim);
-        assert_eq!(a.p.col_ref(0).len(), dim);
+        assert!(a.p_sum.col_as_slice(0).iter().all(|&x| x == 0f64));
+        assert_eq!(a.p_sum.col_as_slice(0).len(), dim);
+        assert_eq!(a.grad.col_as_slice(0).len(), dim);
+        assert_eq!(a.q.col_as_slice(0).len(), dim);
+        assert_eq!(a.p.col_as_slice(0).len(), dim);
     }
 }

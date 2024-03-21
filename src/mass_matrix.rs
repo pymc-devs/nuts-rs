@@ -21,8 +21,8 @@ impl<M: Math> Collector<M> for NullCollector {}
 
 #[derive(Debug)]
 pub(crate) struct DiagMassMatrix<M: Math> {
-    inv_stds: M::Array,
-    pub(crate) variance: M::Array,
+    inv_stds: M::Vector,
+    pub(crate) variance: M::Vector,
 }
 
 impl<M: Math> DiagMassMatrix<M> {
@@ -36,8 +36,8 @@ impl<M: Math> DiagMassMatrix<M> {
     pub(crate) fn update_diag_draw_grad(
         &mut self,
         math: &mut M,
-        draw_var: &M::Array,
-        grad_var: &M::Array,
+        draw_var: &M::Vector,
+        grad_var: &M::Vector,
         fill_invalid: Option<f64>,
         clamp: (f64, f64),
     ) {
@@ -54,7 +54,7 @@ impl<M: Math> DiagMassMatrix<M> {
     pub(crate) fn update_diag_grad(
         &mut self,
         math: &mut M,
-        gradient: &M::Array,
+        gradient: &M::Vector,
         fill_invalid: f64,
         clamp: (f64, f64),
     ) {
@@ -89,8 +89,8 @@ impl<M: Math> MassMatrix<M> for DiagMassMatrix<M> {
 
 #[derive(Debug)]
 pub(crate) struct RunningVariance<M: Math> {
-    mean: M::Array,
-    variance: M::Array,
+    mean: M::Vector,
+    variance: M::Vector,
     count: u64,
 }
 
@@ -104,7 +104,7 @@ impl<M: Math> RunningVariance<M> {
     }
 
     //pub(crate) fn add_sample(&mut self, value: impl Iterator<Item = f64>) {
-    pub(crate) fn add_sample(&mut self, math: &mut M, value: &M::Array) {
+    pub(crate) fn add_sample(&mut self, math: &mut M, value: &M::Vector) {
         self.count += 1;
         if self.count == 1 {
             math.copy_into(value, &mut self.mean);
@@ -114,7 +114,7 @@ impl<M: Math> RunningVariance<M> {
     }
 
     /// Return current variance and scaling factor
-    pub(crate) fn current(&self) -> (&M::Array, f64) {
+    pub(crate) fn current(&self) -> (&M::Vector, f64) {
         assert!(self.count > 1);
         (&self.variance, ((self.count - 1) as f64).recip())
     }
@@ -125,8 +125,8 @@ impl<M: Math> RunningVariance<M> {
 }
 
 pub(crate) struct DrawGradCollector<M: Math> {
-    pub(crate) draw: M::Array,
-    pub(crate) grad: M::Array,
+    pub(crate) draw: M::Vector,
+    pub(crate) grad: M::Vector,
     pub(crate) is_good: bool,
 }
 
