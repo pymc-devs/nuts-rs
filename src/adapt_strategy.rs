@@ -720,6 +720,7 @@ mod test {
             maxdepth: 10u64,
             store_gradient: true,
             store_unconstrained: true,
+            check_turning: true,
         };
 
         let rng = {
