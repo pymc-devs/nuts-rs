@@ -1,20 +1,19 @@
-#[cfg(feature = "arrow")]
 use arrow2::array::{MutableFixedSizeListArray, MutableUtf8Array, TryPush};
-#[cfg(feature = "arrow")]
 use arrow2::{
     array::{MutableArray, MutableBooleanArray, MutablePrimitiveArray, StructArray},
     datatypes::{DataType, Field},
 };
+use rand::Rng;
 use thiserror::Error;
 
+use std::sync::Arc;
 use std::{fmt::Debug, marker::PhantomData};
 
 use crate::math::logaddexp;
+use crate::sampler::Settings;
 use crate::state::{State, StatePool};
 
 use crate::math_base::Math;
-#[cfg(feature = "arrow")]
-use crate::SamplerArgs;
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
@@ -38,7 +37,7 @@ pub type Result<T> = std::result::Result<T, NutsError>;
 ///   a cutoff value or nan.
 /// - The logp function caused a recoverable error (eg if an ODE solver
 ///   failed)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DivergenceInfo {
     pub start_momentum: Option<Box<[f64]>>,
     pub start_location: Option<Box<[f64]>>,
@@ -47,7 +46,7 @@ pub struct DivergenceInfo {
     pub energy_error: Option<f64>,
     pub end_idx_in_trajectory: Option<i64>,
     pub start_idx_in_trajectory: Option<i64>,
-    pub logp_function_error: Option<Box<dyn std::error::Error + Send>>,
+    pub logp_function_error: Option<Arc<dyn std::error::Error + Send + Sync>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -70,7 +69,7 @@ impl rand::distributions::Distribution<Direction> for rand::distributions::Stand
 ///
 /// Collectors can compute statistics like the mean acceptance rate
 /// or collect data for mass matrix adaptation.
-pub(crate) trait Collector<M: Math> {
+pub trait Collector<M: Math> {
     fn register_leapfrog(
         &mut self,
         _math: &mut M,
@@ -90,8 +89,12 @@ pub trait LogpError: std::error::Error {
     fn is_recoverable(&self) -> bool;
 }
 
+pub trait HamiltonianStats<M: Math>: SamplerStats<M> {
+    fn stat_step_size(stats: &Self::Stats) -> f64;
+}
+
 /// The hamiltonian defined by the potential energy and the kinetic energy
-pub(crate) trait Hamiltonian<M>
+pub trait Hamiltonian<M>: HamiltonianStats<M>
 where
     M: Math,
 {
@@ -99,12 +102,6 @@ where
     //type State: State;
     /// Errors that happen during logp evaluation
     type LogpError: LogpError + Send;
-    /// Statistics that should be exported to the trace as part of the sampler stats
-    #[cfg(feature = "arrow")]
-    type Stats: Send + Debug + ArrowRow + 'static;
-
-    #[cfg(not(feature = "arrow"))]
-    type Stats: Send + Debug + 'static;
 
     /// Perform one leapfrog step.
     ///
@@ -138,54 +135,13 @@ where
         rng: &mut R,
     );
 
-    /// Return sampler statistics defined in Self::Stats
-    fn current_stats(&self) -> Self::Stats;
-
     fn new_empty_state(&mut self, math: &mut M, pool: &mut StatePool<M>) -> State<M>;
 
     /// Crate a new state pool that can be used to crate new states.
     fn new_pool(&mut self, math: &mut M, capacity: usize) -> StatePool<M>;
+
+    fn copy_state(&mut self, math: &mut M, pool: &mut StatePool<M>, state: &State<M>) -> State<M>;
 }
-
-/*
-/// A point in phase space
-///
-/// This also needs to store the sum of momentum terms
-/// from the initial point of the trajectory to this point,
-/// so that it can compute the termination criterion in
-/// `is_turming`.
-pub trait State: Clone + Debug {
-    /// The state pool can be used to crate new states
-    type Pool;
-
-    /// Write the position stored in the state to a different location
-    fn write_position(&self, out: &mut [f64]);
-
-    /// Write the gradient stored in the state to a different location
-    fn write_gradient(&self, out: &mut [f64]);
-
-    /// Write the momentum in the state to a different location
-    fn write_momentum(&self, out: &mut [f64]);
-
-    /// Compute the termination criterion for NUTS
-    fn is_turning(&self, other: &Self) -> bool;
-
-    /// The total energy (potential + kinetic)
-    fn energy(&self) -> f64;
-    fn potential_energy(&self) -> f64;
-    fn index_in_trajectory(&self) -> i64;
-
-    /// Initialize the point to be the first in the trajectory.
-    ///
-    /// Set index_in_trajectory to 0 and reinitialize the sum of
-    /// the momentum terms.
-    fn make_init_point(&mut self);
-
-    fn log_acceptance_probability(&self, initial_energy: f64) -> f64 {
-        (initial_energy - self.energy()).min(0.)
-    }
-}
-*/
 
 /// Information about a draw, exported as part of the sampler stats
 #[derive(Debug)]
@@ -252,8 +208,8 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M>> NutsTree<M, H, C> {
             log_size: 0.,
             initial_energy,
             is_main: true,
-            _phantom: PhantomData::default(),
-            _phantom2: PhantomData::default(),
+            _phantom: PhantomData,
+            _phantom2: PhantomData,
         }
     }
 
@@ -394,8 +350,8 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M>> NutsTree<M, H, C> {
             log_size,
             initial_energy: self.initial_energy,
             is_main: false,
-            _phantom: PhantomData::default(),
-            _phantom2: PhantomData::default(),
+            _phantom: PhantomData,
+            _phantom2: PhantomData,
         }))
     }
 
@@ -415,6 +371,7 @@ pub struct NutsOptions {
     pub store_gradient: bool,
     pub store_unconstrained: bool,
     pub check_turning: bool,
+    pub store_divergences: bool,
 }
 
 pub(crate) fn draw<M, P, R, C>(
@@ -461,101 +418,58 @@ where
     Ok((tree.draw, info))
 }
 
-#[cfg(feature = "arrow")]
-pub trait ArrowRow {
-    type Builder: ArrowBuilder<Self>;
+pub trait SamplerStats<M: Math> {
+    type Stats: Send + Debug + Clone;
+    type Builder: StatTraceBuilder<Self::Stats>;
 
-    fn new_builder(dim: usize, args: &SamplerArgs) -> Self::Builder;
+    fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder;
+    fn current_stats(&self, math: &mut M) -> Self::Stats;
 }
 
-#[cfg(feature = "arrow")]
-pub trait ArrowBuilder<T: ?Sized> {
-    fn append_value(&mut self, value: &T);
+impl StatTraceBuilder<()> for () {
+    fn append_value(&mut self, _value: ()) {}
+
+    fn finalize(self) -> Option<StructArray> {
+        None
+    }
+}
+
+pub trait StatTraceBuilder<T: ?Sized>: Clone + Send {
+    fn append_value(&mut self, value: T);
     fn finalize(self) -> Option<StructArray>;
 }
 
-#[derive(Debug)]
-pub(crate) struct NutsSampleStats<HStats: Send + Debug, AdaptStats: Send + Debug> {
-    pub depth: u64,
-    pub maxdepth_reached: bool,
-    pub idx_in_trajectory: i64,
-    pub logp: f64,
-    pub energy: f64,
-    pub energy_error: f64,
-    pub divergence_info: Option<DivergenceInfo>,
-    pub chain: u64,
+#[derive(Debug, Clone)]
+pub struct NutsSampleStats<HStats: Send + Debug + Clone, AdaptStats: Send + Debug + Clone> {
+    depth: u64,
+    maxdepth_reached: bool,
+    idx_in_trajectory: i64,
+    logp: f64,
+    energy: f64,
+    energy_error: f64,
+    pub(crate) divergence_info: Option<DivergenceInfo>,
+    pub(crate) chain: u64,
+    pub(crate) draw: u64,
+    gradient: Option<Box<[f64]>>,
+    unconstrained: Option<Box<[f64]>>,
+    pub(crate) potential_stats: HStats,
+    pub(crate) strategy_stats: AdaptStats,
+    pub(crate) tuning: bool,
+}
+
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct SampleStats {
     pub draw: u64,
-    pub gradient: Option<Box<[f64]>>,
-    pub unconstrained: Option<Box<[f64]>>,
-    pub potential_stats: HStats,
-    pub strategy_stats: AdaptStats,
+    pub chain: u64,
+    pub diverging: bool,
+    pub tuning: bool,
+    pub num_steps: usize,
+    pub step_size: f64,
 }
 
-/// Diagnostic information about draws and the state of the sampler for each draw
-pub trait SampleStats: Send + Debug {
-    /// The depth of the NUTS tree that the draw was sampled from
-    fn depth(&self) -> u64;
-    /// Whether the trajectory was stopped because the maximum size
-    /// was reached.
-    fn maxdepth_reached(&self) -> bool;
-    /// The index of the accepted sample in the trajectory
-    fn index_in_trajectory(&self) -> i64;
-    /// The unnormalized posterior density at the draw
-    fn logp(&self) -> f64;
-    /// The value of the hamiltonian of the draw
-    fn energy(&self) -> f64;
-    /// More detailed information if the draw came from a diverging trajectory.
-    fn divergence_info(&self) -> Option<&DivergenceInfo>;
-    /// An ID for the chain that the sample produce the draw.
-    fn chain(&self) -> u64;
-    /// The draw number
-    fn draw(&self) -> u64;
-    /// The logp gradient at the location of the draw. This is only stored
-    /// if NutsOptions.store_gradient is `true`.
-    fn gradient(&self) -> Option<&[f64]>;
-    /// The draw in the unconstrained space.
-    fn unconstrained(&self) -> Option<&[f64]>;
-}
-
-impl<H, A> SampleStats for NutsSampleStats<H, A>
-where
-    H: Send + Debug,
-    A: Send + Debug,
-{
-    fn depth(&self) -> u64 {
-        self.depth
-    }
-    fn maxdepth_reached(&self) -> bool {
-        self.maxdepth_reached
-    }
-    fn index_in_trajectory(&self) -> i64 {
-        self.idx_in_trajectory
-    }
-    fn logp(&self) -> f64 {
-        self.logp
-    }
-    fn energy(&self) -> f64 {
-        self.energy
-    }
-    fn divergence_info(&self) -> Option<&DivergenceInfo> {
-        self.divergence_info.as_ref()
-    }
-    fn chain(&self) -> u64 {
-        self.chain
-    }
-    fn draw(&self) -> u64 {
-        self.draw
-    }
-    fn gradient(&self) -> Option<&[f64]> {
-        self.gradient.as_ref().map(|x| &x[..])
-    }
-    fn unconstrained(&self) -> Option<&[f64]> {
-        self.unconstrained.as_ref().map(|x| &x[..])
-    }
-}
-
-#[cfg(feature = "arrow")]
-pub(crate) struct StatsBuilder<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> {
+#[derive(Clone)]
+pub struct NutsStatsBuilder<H, A> {
     depth: MutablePrimitiveArray<u64>,
     maxdepth_reached: MutableBooleanArray,
     index_in_trajectory: MutablePrimitiveArray<i64>,
@@ -566,8 +480,8 @@ pub(crate) struct StatsBuilder<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> 
     energy_error: MutablePrimitiveArray<f64>,
     unconstrained: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
     gradient: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
-    hamiltonian: <H::Stats as ArrowRow>::Builder,
-    adapt: <A::Stats as ArrowRow>::Builder,
+    hamiltonian: H,
+    adapt: A,
     diverging: MutableBooleanArray,
     divergence_start: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
     divergence_start_grad: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
@@ -576,12 +490,21 @@ pub(crate) struct StatsBuilder<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> 
     divergence_msg: Option<MutableUtf8Array<i64>>,
 }
 
-#[cfg(feature = "arrow")]
-impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> StatsBuilder<M, H, A> {
-    fn new_with_capacity(dim: usize, settings: &SamplerArgs) -> Self {
-        let capacity = (settings.num_tune + settings.num_draws) as usize;
+impl<HB, AB> NutsStatsBuilder<HB, AB> {
+    fn new_with_capacity<
+        M: Math,
+        H: Hamiltonian<M, Builder = HB>,
+        A: AdaptStrategy<M, Builder = AB>,
+    >(
+        settings: &impl Settings,
+        hamiltonian: &H,
+        adapt: &A,
+        dim: usize,
+        options: &NutsOptions,
+    ) -> Self {
+        let capacity = settings.hint_num_tune() + settings.hint_num_draws();
 
-        let gradient = if settings.store_gradient {
+        let gradient = if options.store_gradient {
             let items = MutablePrimitiveArray::new();
             Some(MutableFixedSizeListArray::new_with_field(
                 items, "item", false, dim,
@@ -590,7 +513,7 @@ impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> StatsBuilder<M, H, A> {
             None
         };
 
-        let unconstrained = if settings.store_unconstrained {
+        let unconstrained = if options.store_unconstrained {
             let items = MutablePrimitiveArray::new();
             Some(MutableFixedSizeListArray::new_with_field(
                 items, "item", false, dim,
@@ -599,7 +522,7 @@ impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> StatsBuilder<M, H, A> {
             None
         };
 
-        let (div_start, div_start_grad, div_end, div_mom, div_msg) = if settings.store_divergences {
+        let (div_start, div_start_grad, div_end, div_mom, div_msg) = if options.store_divergences {
             let start_location_prim = MutablePrimitiveArray::new();
             let start_location_list =
                 MutableFixedSizeListArray::new_with_field(start_location_prim, "item", false, dim);
@@ -644,8 +567,8 @@ impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> StatsBuilder<M, H, A> {
             energy_error: MutablePrimitiveArray::with_capacity(capacity),
             gradient,
             unconstrained,
-            hamiltonian: <H::Stats as ArrowRow>::new_builder(dim, settings),
-            adapt: <A::Stats as ArrowRow>::new_builder(dim, settings),
+            hamiltonian: hamiltonian.new_builder(settings, dim),
+            adapt: adapt.new_builder(settings, dim),
             diverging: MutableBooleanArray::with_capacity(capacity),
             divergence_start: div_start,
             divergence_start_grad: div_start_grad,
@@ -656,11 +579,14 @@ impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> StatsBuilder<M, H, A> {
     }
 }
 
-#[cfg(feature = "arrow")]
-impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>>
-    ArrowBuilder<NutsSampleStats<H::Stats, A::Stats>> for StatsBuilder<M, H, A>
+impl<HS, AS, HB, AB> StatTraceBuilder<NutsSampleStats<HS, AS>> for NutsStatsBuilder<HB, AB>
+where
+    HB: StatTraceBuilder<HS>,
+    AB: StatTraceBuilder<AS>,
+    HS: Clone + Send + Debug,
+    AS: Clone + Send + Debug,
 {
-    fn append_value(&mut self, value: &NutsSampleStats<H::Stats, A::Stats>) {
+    fn append_value(&mut self, value: NutsSampleStats<HS, AS>) {
         self.depth.push(Some(value.depth));
         self.maxdepth_reached.push(Some(value.maxdepth_reached));
         self.index_in_trajectory.push(Some(value.idx_in_trajectory));
@@ -668,14 +594,14 @@ impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>>
         self.energy.push(Some(value.energy));
         self.chain.push(Some(value.chain));
         self.draw.push(Some(value.draw));
-        self.diverging.push(Some(value.divergence_info().is_some()));
+        self.diverging.push(Some(value.divergence_info.is_some()));
         self.energy_error.push(Some(value.energy_error));
 
         if let Some(store) = self.gradient.as_mut() {
             store
                 .try_push(
                     value
-                        .gradient()
+                        .gradient
                         .as_ref()
                         .map(|vals| vals.iter().map(|&x| Some(x))),
                 )
@@ -686,14 +612,14 @@ impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>>
             store
                 .try_push(
                     value
-                        .unconstrained()
+                        .unconstrained
                         .as_ref()
                         .map(|vals| vals.iter().map(|&x| Some(x))),
                 )
                 .unwrap();
         }
 
-        let info_option = value.divergence_info();
+        let info_option = value.divergence_info.as_ref();
         if let Some(div_start) = self.divergence_start.as_mut() {
             div_start
                 .try_push(info_option.and_then(|info| {
@@ -704,7 +630,7 @@ impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>>
                 .unwrap();
         }
 
-        let info_option = value.divergence_info();
+        let info_option = value.divergence_info.as_ref();
         if let Some(div_grad) = self.divergence_start_grad.as_mut() {
             div_grad
                 .try_push(info_option.and_then(|info| {
@@ -745,8 +671,8 @@ impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>>
                 .unwrap();
         }
 
-        self.hamiltonian.append_value(&value.potential_stats);
-        self.adapt.append_value(&value.strategy_stats);
+        self.hamiltonian.append_value(value.potential_stats);
+        self.adapt.append_value(value.strategy_stats);
     }
 
     fn finalize(mut self) -> Option<StructArray> {
@@ -851,13 +777,9 @@ impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>>
 }
 
 /// Draw samples from the posterior distribution using Hamiltonian MCMC.
-pub trait Chain<M: Math> {
-    type Hamiltonian; //: Hamiltonian<M>;
-    type AdaptStrategy; //: AdaptStrategy<M>;
-    type Stats: SampleStats + 'static;
-
-    #[cfg(feature = "arrow")]
-    type Builder: ArrowBuilder<Self::Stats>;
+pub trait Chain<M: Math>: SamplerStats<M> {
+    type Hamiltonian: Hamiltonian<M>;
+    type AdaptStrategy: AdaptStrategy<M>;
 
     /// Initialize the sampler to a position. This should be called
     /// before calling draw.
@@ -868,14 +790,14 @@ pub trait Chain<M: Math> {
     /// Draw a new sample and return the position and some diagnosic information.
     fn draw(&mut self) -> Result<(Box<[f64]>, Self::Stats)>;
 
+    // Extract a summary of the sample stats
+    fn stats_summary(stats: &Self::Stats) -> SampleStats;
+
     /// The dimensionality of the posterior.
     fn dim(&self) -> usize;
-
-    #[cfg(feature = "arrow")]
-    fn stats_builder(&self, dim: usize, settings: &SamplerArgs) -> Self::Builder;
 }
 
-pub(crate) struct NutsChain<M, P, R, A>
+pub struct NutsChain<M, P, R, A>
 where
     M: Math,
     P: Hamiltonian<M>,
@@ -892,6 +814,7 @@ where
     draw_count: u64,
     strategy: A,
     math: M,
+    stats: Option<NutsSampleStats<P::Stats, A::Stats>>,
 }
 
 impl<M, P, R, A> NutsChain<M, P, R, A>
@@ -924,47 +847,69 @@ where
             draw_count: 0,
             strategy,
             math,
+            stats: None,
         }
     }
 }
 
-pub(crate) trait AdaptStrategy<M: Math> {
+pub trait AdaptStats<M: Math>: SamplerStats<M> {
+    fn num_grad_evals(stats: &Self::Stats) -> usize;
+}
+
+pub trait AdaptStrategy<M: Math>: AdaptStats<M> {
     type Potential: Hamiltonian<M>;
     type Collector: Collector<M>;
-    #[cfg(feature = "arrow")]
-    type Stats: Send + Debug + ArrowRow + 'static;
-    #[cfg(not(feature = "arrow"))]
-    type Stats: Send + Debug + 'static;
     type Options: Copy + Send + Default;
 
     fn new(math: &mut M, options: Self::Options, num_tune: u64) -> Self;
 
-    fn init(
+    fn init<R: Rng + ?Sized>(
         &mut self,
         math: &mut M,
         options: &mut NutsOptions,
         potential: &mut Self::Potential,
         state: &State<M>,
+        rng: &mut R,
     );
 
-    fn adapt(
+    fn adapt<R: Rng + ?Sized>(
         &mut self,
         math: &mut M,
         options: &mut NutsOptions,
         potential: &mut Self::Potential,
         draw: u64,
         collector: &Self::Collector,
+        state: &State<M>,
+        rng: &mut R,
     );
 
     fn new_collector(&self, math: &mut M) -> Self::Collector;
+    fn is_tuning(&self) -> bool;
+}
 
-    fn current_stats(
-        &self,
-        math: &mut M,
-        options: &NutsOptions,
-        potential: &Self::Potential,
-        collector: &Self::Collector,
-    ) -> Self::Stats;
+impl<M, H, R, A> SamplerStats<M> for NutsChain<M, H, R, A>
+where
+    M: Math,
+    H: Hamiltonian<M> + SamplerStats<M>,
+    R: rand::Rng,
+    A: AdaptStrategy<M, Potential = H>,
+{
+    type Builder = NutsStatsBuilder<H::Builder, A::Builder>;
+    type Stats = NutsSampleStats<H::Stats, A::Stats>;
+
+    fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder {
+        NutsStatsBuilder::new_with_capacity(
+            settings,
+            &self.potential,
+            &self.strategy,
+            dim,
+            &self.options,
+        )
+    }
+
+    fn current_stats(&self, _math: &mut M) -> Self::Stats {
+        self.stats.as_ref().expect("No stats available").clone()
+    }
 }
 
 impl<M, H, R, A> Chain<M> for NutsChain<M, H, R, A>
@@ -976,7 +921,6 @@ where
 {
     type Hamiltonian = H;
     type AdaptStrategy = A;
-    type Stats = NutsSampleStats<H::Stats, A::Stats>;
 
     fn set_position(&mut self, position: &[f64]) -> Result<()> {
         let state = self
@@ -988,6 +932,7 @@ where
             &mut self.options,
             &mut self.potential,
             &self.init,
+            &mut self.rng,
         );
         Ok(())
     }
@@ -1004,6 +949,7 @@ where
         )?;
         let mut position: Box<[f64]> = vec![0f64; self.math.dim()].into();
         state.write_position(&mut self.math, &mut position);
+
         let stats = NutsSampleStats {
             depth: info.depth,
             maxdepth_reached: info.reached_maxdepth,
@@ -1014,13 +960,8 @@ where
             divergence_info: info.divergence_info,
             chain: self.chain,
             draw: self.draw_count,
-            potential_stats: self.potential.current_stats(),
-            strategy_stats: self.strategy.current_stats(
-                &mut self.math,
-                &self.options,
-                &self.potential,
-                &self.collector,
-            ),
+            potential_stats: self.potential.current_stats(&mut self.math),
+            strategy_stats: self.strategy.current_stats(&mut self.math),
             gradient: if self.options.store_gradient {
                 let mut gradient: Box<[f64]> = vec![0f64; self.math.dim()].into();
                 state.write_gradient(&mut self.math, &mut gradient);
@@ -1035,16 +976,22 @@ where
             } else {
                 None
             },
+            tuning: self.strategy.is_tuning(),
         };
+
         self.strategy.adapt(
             &mut self.math,
             &mut self.options,
             &mut self.potential,
             self.draw_count,
             &self.collector,
+            &state,
+            &mut self.rng,
         );
-        self.init = state;
+
         self.draw_count += 1;
+
+        self.init = state;
         Ok((position, stats))
     }
 
@@ -1052,25 +999,35 @@ where
         self.math.dim()
     }
 
-    #[cfg(feature = "arrow")]
-    type Builder = StatsBuilder<M, Self::Hamiltonian, Self::AdaptStrategy>;
-
-    #[cfg(feature = "arrow")]
-    fn stats_builder(&self, dim: usize, settings: &SamplerArgs) -> Self::Builder {
-        StatsBuilder::new_with_capacity(dim, settings)
+    fn stats_summary(stats: &Self::Stats) -> SampleStats {
+        let pot_stats = &stats.potential_stats;
+        let step_size = H::stat_step_size(pot_stats);
+        let adapt_stats = &stats.strategy_stats;
+        let num_steps = A::num_grad_evals(adapt_stats);
+        SampleStats {
+            draw: stats.draw,
+            chain: stats.chain,
+            diverging: stats.divergence_info.is_some(),
+            tuning: stats.tuning,
+            num_steps,
+            step_size,
+        }
     }
 }
 
 #[cfg(test)]
-#[cfg(feature = "arrow")]
 mod tests {
     use rand::thread_rng;
 
     use crate::{
-        adapt_strategy::test_logps::NormalLogp, cpu_math::CpuMath, new_sampler, Chain, SamplerArgs,
+        adapt_strategy::test_logps::NormalLogp,
+        cpu_math::CpuMath,
+        nuts::{Chain, SamplerStats},
+        sampler::DiagGradNutsSettings,
+        Settings,
     };
 
-    use super::ArrowBuilder;
+    use super::StatTraceBuilder;
 
     #[test]
     fn to_arrow() {
@@ -1078,19 +1035,18 @@ mod tests {
         let func = NormalLogp::new(ndim, 3.);
         let math = CpuMath::new(func);
 
-        let settings = SamplerArgs::default();
+        let settings = DiagGradNutsSettings::default();
         let mut rng = thread_rng();
 
-        let mut chain = new_sampler(math, settings, 0, &mut rng);
+        let mut chain = settings.new_chain(0, math, &mut rng);
 
-        let mut builder = chain.stats_builder(ndim, &settings);
+        let mut builder = chain.new_builder(&settings, ndim);
 
         for _ in 0..10 {
             let (_, stats) = chain.draw().unwrap();
-            builder.append_value(&stats);
+            builder.append_value(stats);
         }
 
-        let stats = builder.finalize();
-        dbg!(stats);
+        builder.finalize();
     }
 }

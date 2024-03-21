@@ -1,10 +1,18 @@
+use arrow2::{
+    array::{MutableArray, MutableFixedSizeListArray, MutablePrimitiveArray, StructArray, TryPush},
+    datatypes::{DataType, Field},
+};
+
 use crate::{
     math_base::Math,
     nuts::Collector,
+    nuts::SamplerStats,
+    nuts::StatTraceBuilder,
+    sampler::Settings,
     state::{InnerState, State},
 };
 
-pub(crate) trait MassMatrix<M: Math> {
+pub trait MassMatrix<M: Math>: SamplerStats<M> {
     fn update_velocity(&self, math: &mut M, state: &mut InnerState<M>);
     fn update_kinetic_energy(&self, math: &mut M, state: &mut InnerState<M>);
     fn randomize_momentum<R: rand::Rng + ?Sized>(
@@ -15,29 +23,102 @@ pub(crate) trait MassMatrix<M: Math> {
     );
 }
 
-pub(crate) struct NullCollector {}
+pub struct NullCollector {}
 
 impl<M: Math> Collector<M> for NullCollector {}
 
 #[derive(Debug)]
-pub(crate) struct DiagMassMatrix<M: Math> {
-    inv_stds: M::Array,
-    pub(crate) variance: M::Array,
+pub struct DiagMassMatrix<M: Math> {
+    inv_stds: M::Vector,
+    pub(crate) variance: M::Vector,
+    store_mass_matrix: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct DiagMassMatrixStats {
+    pub mass_matrix_inv: Option<Box<[f64]>>,
+}
+
+#[derive(Clone)]
+pub struct DiagMassMatrixStatsBuilder {
+    mass_matrix_inv: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
+}
+
+impl StatTraceBuilder<DiagMassMatrixStats> for DiagMassMatrixStatsBuilder {
+    fn append_value(&mut self, value: DiagMassMatrixStats) {
+        if let Some(store) = self.mass_matrix_inv.as_mut() {
+            store
+                .try_push(
+                    value
+                        .mass_matrix_inv
+                        .as_ref()
+                        .map(|vals| vals.iter().map(|&x| Some(x))),
+                )
+                .unwrap();
+        }
+    }
+
+    fn finalize(self) -> Option<StructArray> {
+        if let Some(mut store) = self.mass_matrix_inv {
+            let fields = vec![Field::new(
+                "mass_matrix_inv",
+                store.data_type().clone(),
+                true,
+            )];
+
+            let arrays = vec![store.as_box()];
+
+            Some(StructArray::new(DataType::Struct(fields), arrays, None))
+        } else {
+            None
+        }
+    }
+}
+
+impl<M: Math> SamplerStats<M> for DiagMassMatrix<M> {
+    type Builder = DiagMassMatrixStatsBuilder;
+    type Stats = DiagMassMatrixStats;
+
+    fn new_builder(&self, _settings: &impl Settings, dim: usize) -> Self::Builder {
+        if self.store_mass_matrix {
+            let items = MutablePrimitiveArray::new();
+            let values = MutableFixedSizeListArray::new_with_field(items, "item", false, dim);
+            Self::Builder {
+                mass_matrix_inv: Some(values),
+            }
+        } else {
+            Self::Builder {
+                mass_matrix_inv: None,
+            }
+        }
+    }
+
+    fn current_stats(&self, math: &mut M) -> Self::Stats {
+        let matrix = if self.store_mass_matrix {
+            Some(math.box_array(&self.variance))
+        } else {
+            None
+        };
+        DiagMassMatrixStats {
+            mass_matrix_inv: matrix,
+        }
+    }
 }
 
 impl<M: Math> DiagMassMatrix<M> {
-    pub(crate) fn new(math: &mut M) -> Self {
+    pub(crate) fn new(math: &mut M, store_mass_matrix: bool) -> Self {
         Self {
             inv_stds: math.new_array(),
             variance: math.new_array(),
+            store_mass_matrix,
         }
     }
 
     pub(crate) fn update_diag_draw_grad(
         &mut self,
         math: &mut M,
-        draw_var: &M::Array,
-        grad_var: &M::Array,
+        draw_var: &M::Vector,
+        grad_var: &M::Vector,
         fill_invalid: Option<f64>,
         clamp: (f64, f64),
     ) {
@@ -54,7 +135,7 @@ impl<M: Math> DiagMassMatrix<M> {
     pub(crate) fn update_diag_grad(
         &mut self,
         math: &mut M,
-        gradient: &M::Array,
+        gradient: &M::Vector,
         fill_invalid: f64,
         clamp: (f64, f64),
     ) {
@@ -88,9 +169,9 @@ impl<M: Math> MassMatrix<M> for DiagMassMatrix<M> {
 }
 
 #[derive(Debug)]
-pub(crate) struct RunningVariance<M: Math> {
-    mean: M::Array,
-    variance: M::Array,
+pub struct RunningVariance<M: Math> {
+    mean: M::Vector,
+    variance: M::Vector,
     count: u64,
 }
 
@@ -103,18 +184,22 @@ impl<M: Math> RunningVariance<M> {
         }
     }
 
-    //pub(crate) fn add_sample(&mut self, value: impl Iterator<Item = f64>) {
-    pub(crate) fn add_sample(&mut self, math: &mut M, value: &M::Array) {
+    pub(crate) fn add_sample(&mut self, math: &mut M, value: &M::Vector) {
         self.count += 1;
         if self.count == 1 {
             math.copy_into(value, &mut self.mean);
         } else {
-            math.array_update_variance(&mut self.mean, &mut self.variance, value, (self.count as f64).recip());
+            math.array_update_variance(
+                &mut self.mean,
+                &mut self.variance,
+                value,
+                (self.count as f64).recip(),
+            );
         }
     }
 
     /// Return current variance and scaling factor
-    pub(crate) fn current(&self) -> (&M::Array, f64) {
+    pub(crate) fn current(&self) -> (&M::Vector, f64) {
         assert!(self.count > 1);
         (&self.variance, ((self.count - 1) as f64).recip())
     }
@@ -124,9 +209,9 @@ impl<M: Math> RunningVariance<M> {
     }
 }
 
-pub(crate) struct DrawGradCollector<M: Math> {
-    pub(crate) draw: M::Array,
-    pub(crate) grad: M::Array,
+pub struct DrawGradCollector<M: Math> {
+    pub(crate) draw: M::Vector,
+    pub(crate) grad: M::Vector,
     pub(crate) is_good: bool,
 }
 

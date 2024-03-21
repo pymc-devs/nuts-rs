@@ -1,25 +1,23 @@
 use std::{fmt::Debug, marker::PhantomData};
 
-#[cfg(feature = "arrow")]
 use arrow2::{
-    array::{MutableArray, MutableFixedSizeListArray, MutablePrimitiveArray, StructArray, TryPush},
+    array::{MutableArray, MutablePrimitiveArray, StructArray},
     datatypes::{DataType, Field},
 };
+use rand::Rng;
 
 use crate::{
     mass_matrix::{DiagMassMatrix, DrawGradCollector, MassMatrix, RunningVariance},
     math_base::Math,
-    nuts::{AdaptStrategy, Collector, NutsOptions},
+    nuts::{AdaptStats, AdaptStrategy, Collector, Direction, Hamiltonian, NutsOptions},
     potential::EuclideanPotential,
+    sampler::Settings,
     state::State,
     stepsize::{AcceptanceRateCollector, DualAverage, DualAverageOptions},
     DivergenceInfo,
 };
 
-#[cfg(feature = "arrow")]
-use crate::nuts::{ArrowBuilder, ArrowRow};
-#[cfg(feature = "arrow")]
-use crate::SamplerArgs;
+use crate::nuts::{SamplerStats, StatTraceBuilder};
 
 const LOWER_LIMIT: f64 = 1e-20f64;
 const UPPER_LIMIT: f64 = 1e20f64;
@@ -27,12 +25,15 @@ const UPPER_LIMIT: f64 = 1e20f64;
 const INIT_LOWER_LIMIT: f64 = 1e-20f64;
 const INIT_UPPER_LIMIT: f64 = 1e20f64;
 
-pub(crate) struct DualAverageStrategy<F, M> {
+pub struct DualAverageStrategy<F, M> {
     step_size_adapt: DualAverage,
     options: DualAverageSettings,
     enabled: bool,
     use_mean_sym: bool,
     finalized: bool,
+    last_mean_tree_accept: f64,
+    last_sym_mean_tree_accept: f64,
+    last_n_steps: u64,
     _phantom1: PhantomData<F>,
     _phantom2: PhantomData<M>,
 }
@@ -59,7 +60,7 @@ pub struct DualAverageStats {
     pub n_steps: u64,
 }
 
-#[cfg(feature = "arrow")]
+#[derive(Clone)]
 pub struct DualAverageStatsBuilder {
     step_size_bar: MutablePrimitiveArray<f64>,
     mean_tree_accept: MutablePrimitiveArray<f64>,
@@ -67,9 +68,8 @@ pub struct DualAverageStatsBuilder {
     n_steps: MutablePrimitiveArray<u64>,
 }
 
-#[cfg(feature = "arrow")]
-impl ArrowBuilder<DualAverageStats> for DualAverageStatsBuilder {
-    fn append_value(&mut self, value: &DualAverageStats) {
+impl StatTraceBuilder<DualAverageStats> for DualAverageStatsBuilder {
+    fn append_value(&mut self, value: DualAverageStats) {
         self.step_size_bar.push(Some(value.step_size_bar));
         self.mean_tree_accept.push(Some(value.mean_tree_accept));
         self.mean_tree_accept_sym
@@ -96,17 +96,32 @@ impl ArrowBuilder<DualAverageStats> for DualAverageStatsBuilder {
     }
 }
 
-#[cfg(feature = "arrow")]
-impl ArrowRow for DualAverageStats {
+impl<M: Math, Mass: MassMatrix<M>> SamplerStats<M> for DualAverageStrategy<M, Mass> {
     type Builder = DualAverageStatsBuilder;
+    type Stats = DualAverageStats;
 
-    fn new_builder(_dim: usize, _settings: &SamplerArgs) -> Self::Builder {
+    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {
         Self::Builder {
             step_size_bar: MutablePrimitiveArray::new(),
             mean_tree_accept: MutablePrimitiveArray::new(),
             mean_tree_accept_sym: MutablePrimitiveArray::new(),
             n_steps: MutablePrimitiveArray::new(),
         }
+    }
+
+    fn current_stats(&self, _math: &mut M) -> Self::Stats {
+        DualAverageStats {
+            step_size_bar: self.step_size_adapt.current_step_size_adapted(),
+            mean_tree_accept: self.last_mean_tree_accept,
+            mean_tree_accept_sym: self.last_sym_mean_tree_accept,
+            n_steps: self.last_n_steps,
+        }
+    }
+}
+
+impl<M: Math, Mass: MassMatrix<M>> AdaptStats<M> for DualAverageStrategy<M, Mass> {
+    fn num_grad_evals(stats: &Self::Stats) -> usize {
+        stats.n_steps as usize
     }
 }
 
@@ -130,7 +145,6 @@ impl Default for DualAverageSettings {
 impl<M: Math, Mass: MassMatrix<M>> AdaptStrategy<M> for DualAverageStrategy<M, Mass> {
     type Potential = EuclideanPotential<M, Mass>;
     type Collector = AcceptanceRateCollector<M>;
-    type Stats = DualAverageStats;
     type Options = DualAverageSettings;
 
     fn new(_math: &mut M, options: Self::Options, _num_tune: u64) -> Self {
@@ -140,34 +154,43 @@ impl<M: Math, Mass: MassMatrix<M>> AdaptStrategy<M> for DualAverageStrategy<M, M
             step_size_adapt: DualAverage::new(options.params, options.initial_step),
             finalized: false,
             use_mean_sym: false,
-            _phantom1: PhantomData::default(),
-            _phantom2: PhantomData::default(),
+            last_n_steps: 0,
+            last_sym_mean_tree_accept: 0.0,
+            last_mean_tree_accept: 0.0,
+            _phantom1: PhantomData,
+            _phantom2: PhantomData,
         }
     }
 
-    fn init(
+    fn init<R: Rng + ?Sized>(
         &mut self,
-        _math: &mut M,
-        _options: &mut NutsOptions,
+        math: &mut M,
+        options: &mut NutsOptions,
         potential: &mut Self::Potential,
-        _state: &State<M>,
+        state: &State<M>,
+        rng: &mut R,
     ) {
         potential.step_size = self.options.initial_step;
     }
 
-    fn adapt(
+    fn adapt<R: Rng + ?Sized>(
         &mut self,
         _math: &mut M,
         _options: &mut NutsOptions,
         potential: &mut Self::Potential,
         _draw: u64,
         collector: &Self::Collector,
+        _state: &State<M>,
+        _rng: &mut R,
     ) {
-        let current = if self.use_mean_sym {
-            collector.mean_sym.current()
-        } else {
-            collector.mean.current()
-        };
+        let mean_sym = collector.mean_sym.current();
+        let mean = collector.mean.current();
+        let n_steps = collector.mean.count();
+        self.last_mean_tree_accept = mean;
+        self.last_sym_mean_tree_accept = mean_sym;
+        self.last_n_steps = n_steps;
+
+        let current = if self.use_mean_sym { mean_sym } else { mean };
         if self.finalized {
             self.step_size_adapt
                 .advance(current, self.options.target_accept);
@@ -186,19 +209,8 @@ impl<M: Math, Mass: MassMatrix<M>> AdaptStrategy<M> for DualAverageStrategy<M, M
         AcceptanceRateCollector::new()
     }
 
-    fn current_stats(
-        &self,
-        _math: &mut M,
-        _options: &NutsOptions,
-        _potential: &Self::Potential,
-        collector: &Self::Collector,
-    ) -> Self::Stats {
-        DualAverageStats {
-            step_size_bar: self.step_size_adapt.current_step_size_adapted(),
-            mean_tree_accept: collector.mean.current(),
-            mean_tree_accept_sym: collector.mean_sym.current(),
-            n_steps: collector.mean.count(),
-        }
+    fn is_tuning(&self) -> bool {
+        self.enabled
     }
 }
 
@@ -208,12 +220,12 @@ pub struct DiagAdaptExpSettings {
     pub store_mass_matrix: bool,
 }
 
-pub(crate) struct ExpWindowDiagAdapt<M: Math> {
+pub struct ExpWindowDiagAdapt<M: Math> {
     exp_variance_draw: RunningVariance<M>,
     exp_variance_grad: RunningVariance<M>,
     exp_variance_grad_bg: RunningVariance<M>,
     exp_variance_draw_bg: RunningVariance<M>,
-    settings: DiagAdaptExpSettings,
+    _settings: DiagAdaptExpSettings,
     _phantom: PhantomData<M>,
 }
 
@@ -244,13 +256,14 @@ impl<M: Math> ExpWindowDiagAdapt<M> {
         self.exp_variance_draw_bg.count()
     }
 
+    /// Give the opportunity to update the potential and return if it was changed
     fn update_potential(
         &self,
         math: &mut M,
         potential: &mut EuclideanPotential<M, DiagMassMatrix<M>>,
-    ) {
+    ) -> bool {
         if self.current_count() < 3 {
-            return;
+            return false;
         }
 
         let (draw_var, draw_scale) = self.exp_variance_draw.current();
@@ -264,78 +277,33 @@ impl<M: Math> ExpWindowDiagAdapt<M> {
             None,
             (LOWER_LIMIT, UPPER_LIMIT),
         );
+
+        true
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ExpWindowDiagAdaptStats {
-    pub mass_matrix_inv: Option<Box<[f64]>>,
+pub type ExpWindowDiagAdaptStats = ();
+type ExpWindowDiagAdaptStatsBuilder = ();
+
+impl<M: Math> SamplerStats<M> for ExpWindowDiagAdapt<M> {
+    type Builder = ExpWindowDiagAdaptStats;
+    type Stats = ExpWindowDiagAdaptStatsBuilder;
+
+    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {}
+
+    fn current_stats(&self, _math: &mut M) -> Self::Stats {}
 }
 
-#[cfg(feature = "arrow")]
-pub struct ExpWindowDiagAdaptStatsBuilder {
-    mass_matrix_inv: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
-}
-
-#[cfg(feature = "arrow")]
-impl ArrowBuilder<ExpWindowDiagAdaptStats> for ExpWindowDiagAdaptStatsBuilder {
-    fn append_value(&mut self, value: &ExpWindowDiagAdaptStats) {
-        if let Some(store) = self.mass_matrix_inv.as_mut() {
-            store
-                .try_push(
-                    value
-                        .mass_matrix_inv
-                        .as_ref()
-                        .map(|vals| vals.iter().map(|&x| Some(x))),
-                )
-                .unwrap();
-        }
-    }
-
-    fn finalize(self) -> Option<StructArray> {
-        if let Some(mut store) = self.mass_matrix_inv {
-            let fields = vec![Field::new(
-                "mass_matrix_inv",
-                store.data_type().clone(),
-                true,
-            )];
-
-            let arrays = vec![store.as_box()];
-
-            Some(StructArray::new(DataType::Struct(fields), arrays, None))
-        } else {
-            None
-        }
-    }
-}
-
-#[cfg(feature = "arrow")]
-impl ArrowRow for ExpWindowDiagAdaptStats {
-    type Builder = ExpWindowDiagAdaptStatsBuilder;
-
-    fn new_builder(dim: usize, settings: &SamplerArgs) -> Self::Builder {
-        if settings
-            .mass_matrix_adapt
-            .mass_matrix_options
-            .store_mass_matrix
-        {
-            let items = MutablePrimitiveArray::new();
-            let values = MutableFixedSizeListArray::new_with_field(items, "item", false, dim);
-            Self::Builder {
-                mass_matrix_inv: Some(values),
-            }
-        } else {
-            Self::Builder {
-                mass_matrix_inv: None,
-            }
-        }
+impl<M: Math> AdaptStats<M> for ExpWindowDiagAdapt<M> {
+    // This is never called
+    fn num_grad_evals(_stats: &Self::Stats) -> usize {
+        unimplemented!()
     }
 }
 
 impl<M: Math> AdaptStrategy<M> for ExpWindowDiagAdapt<M> {
     type Potential = EuclideanPotential<M, DiagMassMatrix<M>>;
     type Collector = DrawGradCollector<M>;
-    type Stats = ExpWindowDiagAdaptStats;
     type Options = DiagAdaptExpSettings;
 
     fn new(math: &mut M, options: Self::Options, _num_tune: u64) -> Self {
@@ -344,17 +312,18 @@ impl<M: Math> AdaptStrategy<M> for ExpWindowDiagAdapt<M> {
             exp_variance_grad: RunningVariance::new(math),
             exp_variance_draw_bg: RunningVariance::new(math),
             exp_variance_grad_bg: RunningVariance::new(math),
-            settings: options,
-            _phantom: PhantomData::default(),
+            _settings: options,
+            _phantom: PhantomData,
         }
     }
 
-    fn init(
+    fn init<R: Rng + ?Sized>(
         &mut self,
         math: &mut M,
         _options: &mut NutsOptions,
         potential: &mut Self::Potential,
         state: &State<M>,
+        _rng: &mut R,
     ) {
         self.exp_variance_draw.add_sample(math, &state.q);
         self.exp_variance_draw_bg.add_sample(math, &state.q);
@@ -369,13 +338,15 @@ impl<M: Math> AdaptStrategy<M> for ExpWindowDiagAdapt<M> {
         );
     }
 
-    fn adapt(
+    fn adapt<R: Rng + ?Sized>(
         &mut self,
         _math: &mut M,
         _options: &mut NutsOptions,
         _potential: &mut Self::Potential,
         _draw: u64,
         _collector: &Self::Collector,
+        _state: &State<M>,
+        _rng: &mut R,
     ) {
         // Must be controlled from a different meta strategy
     }
@@ -384,25 +355,12 @@ impl<M: Math> AdaptStrategy<M> for ExpWindowDiagAdapt<M> {
         DrawGradCollector::new(math)
     }
 
-    fn current_stats(
-        &self,
-        math: &mut M,
-        _options: &NutsOptions,
-        potential: &Self::Potential,
-        _collector: &Self::Collector,
-    ) -> Self::Stats {
-        let diag = if self.settings.store_mass_matrix {
-            Some(math.box_array(&potential.mass_matrix.variance))
-        } else {
-            None
-        };
-        ExpWindowDiagAdaptStats {
-            mass_matrix_inv: diag,
-        }
+    fn is_tuning(&self) -> bool {
+        todo!()
     }
 }
 
-pub(crate) struct GradDiagStrategy<M: Math> {
+pub struct GradDiagStrategy<M: Math> {
     step_size: DualAverageStrategy<M, DiagMassMatrix<M>>,
     mass_matrix: ExpWindowDiagAdapt<M>,
     options: GradDiagOptions,
@@ -412,6 +370,8 @@ pub(crate) struct GradDiagStrategy<M: Math> {
 
     // The first draw number for the final step size adaptation window
     final_step_size_window: u64,
+    tuning: bool,
+    has_initial_mass_matrix: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -437,10 +397,34 @@ impl Default for GradDiagOptions {
     }
 }
 
+impl<M: Math> SamplerStats<M> for GradDiagStrategy<M> {
+    type Stats = CombinedStats<DualAverageStats, ExpWindowDiagAdaptStats>;
+    type Builder = CombinedStatsBuilder<DualAverageStatsBuilder, ExpWindowDiagAdaptStatsBuilder>;
+
+    fn current_stats(&self, math: &mut M) -> Self::Stats {
+        CombinedStats {
+            stats1: self.step_size.current_stats(math),
+            stats2: self.mass_matrix.current_stats(math),
+        }
+    }
+
+    fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder {
+        CombinedStatsBuilder {
+            stats1: self.step_size.new_builder(settings, dim),
+            stats2: self.mass_matrix.new_builder(settings, dim),
+        }
+    }
+}
+
+impl<M: Math> AdaptStats<M> for GradDiagStrategy<M> {
+    fn num_grad_evals(stats: &Self::Stats) -> usize {
+        stats.stats1.n_steps as usize
+    }
+}
+
 impl<M: Math> AdaptStrategy<M> for GradDiagStrategy<M> {
     type Potential = EuclideanPotential<M, DiagMassMatrix<M>>;
     type Collector = CombinedCollector<M, AcceptanceRateCollector<M>, DrawGradCollector<M>>;
-    type Stats = CombinedStats<DualAverageStats, ExpWindowDiagAdaptStats>;
     type Options = GradDiagOptions;
 
     fn new(math: &mut M, options: Self::Options, num_tune: u64) -> Self {
@@ -458,30 +442,36 @@ impl<M: Math> AdaptStrategy<M> for GradDiagStrategy<M> {
             num_tune,
             early_end,
             final_step_size_window: final_second_step_size,
+            tuning: true,
+            has_initial_mass_matrix: true,
         }
     }
 
-    fn init(
+    fn init<R: Rng + ?Sized>(
         &mut self,
         math: &mut M,
         options: &mut NutsOptions,
         potential: &mut Self::Potential,
         state: &State<M>,
+        rng: &mut R,
     ) {
-        self.step_size.init(math, options, potential, state);
-        self.mass_matrix.init(math, options, potential, state);
+        self.mass_matrix.init(math, options, potential, state, rng);
+        self.step_size.init(math, options, potential, state, rng);
         self.step_size.enable();
     }
 
-    fn adapt(
+    fn adapt<R: Rng + ?Sized>(
         &mut self,
         math: &mut M,
         options: &mut NutsOptions,
         potential: &mut Self::Potential,
         draw: u64,
         collector: &Self::Collector,
+        state: &State<M>,
+        rng: &mut R,
     ) {
         if draw >= self.num_tune {
+            self.tuning = false;
             return;
         }
 
@@ -503,12 +493,18 @@ impl<M: Math> AdaptStrategy<M> for GradDiagStrategy<M> {
             if could_switch && (!is_late) {
                 self.mass_matrix.switch(math);
             }
-            self.mass_matrix.update_potential(math, potential);
+            let did_change = self.mass_matrix.update_potential(math, potential);
             if is_late {
                 self.step_size.use_mean_sym();
             }
-            self.step_size
-                .adapt(math, options, potential, draw, &collector.collector1);
+            // First time we change the mass matrix
+            if did_change & self.has_initial_mass_matrix {
+                self.has_initial_mass_matrix = false;
+                self.step_size.init(math, options, potential, state, rng);
+            } else {
+                self.step_size
+                    .adapt(math, options, potential, draw, &collector.collector1, state, rng);
+            }
             return;
         }
 
@@ -516,74 +512,42 @@ impl<M: Math> AdaptStrategy<M> for GradDiagStrategy<M> {
             self.step_size.finalize();
         }
         self.step_size
-            .adapt(math, options, potential, draw, &collector.collector1);
+            .adapt(math, options, potential, draw, &collector.collector1, state, rng);
     }
 
     fn new_collector(&self, math: &mut M) -> Self::Collector {
         CombinedCollector {
             collector1: self.step_size.new_collector(math),
             collector2: self.mass_matrix.new_collector(math),
-            _phantom: PhantomData::default(),
+            _phantom: PhantomData,
         }
     }
 
-    fn current_stats(
-        &self,
-        math: &mut M,
-        options: &NutsOptions,
-        potential: &Self::Potential,
-        collector: &Self::Collector,
-    ) -> Self::Stats {
-        CombinedStats {
-            stats1: self
-                .step_size
-                .current_stats(math, options, potential, &collector.collector1),
-            stats2: self
-                .mass_matrix
-                .current_stats(math, options, potential, &collector.collector2),
-        }
+    fn is_tuning(&self) -> bool {
+        self.tuning
     }
 }
 
-#[cfg(feature = "arrow")]
 #[derive(Debug, Clone)]
-pub struct CombinedStats<D1: Debug + ArrowRow, D2: Debug + ArrowRow> {
+pub struct CombinedStats<D1, D2> {
     pub stats1: D1,
     pub stats2: D2,
 }
 
-#[cfg(not(feature = "arrow"))]
-#[derive(Debug, Clone)]
-pub struct CombinedStats<D1: Debug, D2: Debug> {
-    pub stats1: D1,
-    pub stats2: D2,
+#[derive(Clone)]
+pub struct CombinedStatsBuilder<B1: Clone, B2: Clone> {
+    stats1: B1,
+    stats2: B2,
 }
 
-#[cfg(feature = "arrow")]
-pub struct CombinedStatsBuilder<D1: ArrowRow, D2: ArrowRow> {
-    stats1: D1::Builder,
-    stats2: D2::Builder,
-}
-
-#[cfg(feature = "arrow")]
-impl<D1: Debug + ArrowRow, D2: Debug + ArrowRow> ArrowRow for CombinedStats<D1, D2> {
-    type Builder = CombinedStatsBuilder<D1, D2>;
-
-    fn new_builder(dim: usize, settings: &SamplerArgs) -> Self::Builder {
-        Self::Builder {
-            stats1: D1::new_builder(dim, settings),
-            stats2: D2::new_builder(dim, settings),
-        }
-    }
-}
-
-#[cfg(feature = "arrow")]
-impl<D1: Debug + ArrowRow, D2: Debug + ArrowRow> ArrowBuilder<CombinedStats<D1, D2>>
-    for CombinedStatsBuilder<D1, D2>
+impl<S1, S2, B1, B2> StatTraceBuilder<CombinedStats<S1, S2>> for CombinedStatsBuilder<B1, B2>
+where
+    B1: StatTraceBuilder<S1>,
+    B2: StatTraceBuilder<S2>,
 {
-    fn append_value(&mut self, value: &CombinedStats<D1, D2>) {
-        self.stats1.append_value(&value.stats1);
-        self.stats2.append_value(&value.stats2);
+    fn append_value(&mut self, value: CombinedStats<S1, S2>) {
+        self.stats1.append_value(value.stats1);
+        self.stats2.append_value(value.stats2);
     }
 
     fn finalize(self) -> Option<StructArray> {
@@ -607,7 +571,7 @@ impl<D1: Debug + ArrowRow, D2: Debug + ArrowRow> ArrowBuilder<CombinedStats<D1, 
     }
 }
 
-pub(crate) struct CombinedCollector<M: Math, C1: Collector<M>, C2: Collector<M>> {
+pub struct CombinedCollector<M: Math, C1: Collector<M>, C2: Collector<M>> {
     collector1: C1,
     collector2: C2,
     _phantom: PhantomData<M>,
@@ -711,7 +675,7 @@ mod test {
         let options = GradDiagOptions::default();
         let strategy = GradDiagStrategy::new(&mut math, options, num_tune);
 
-        let mass_matrix = DiagMassMatrix::new(&mut math);
+        let mass_matrix = DiagMassMatrix::new(&mut math, true);
         let max_energy_error = 1000f64;
         let step_size = 0.1f64;
 
@@ -720,6 +684,8 @@ mod test {
             maxdepth: 10u64,
             store_gradient: true,
             store_unconstrained: true,
+            check_turning: true,
+            store_divergences: false,
         };
 
         let rng = {
