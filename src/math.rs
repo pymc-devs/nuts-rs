@@ -2,7 +2,7 @@ use itertools::izip;
 use multiversion::multiversion;
 
 #[cfg(feature = "simd_support")]
-use std::simd::{f64x4, SimdFloat, StdFloat};
+use std::simd::{f64x4, num::SimdFloat, StdFloat};
 
 pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
     if a == b {
@@ -294,15 +294,11 @@ mod tests {
     use proptest::prelude::*;
 
     fn assert_approx_eq(a: f64, b: f64) {
-        if a.is_nan() {
-            if b.is_nan() | b.is_infinite() {
-                return;
-            }
+        if a.is_nan() && b.is_nan() | b.is_infinite() {
+            return;
         }
-        if b.is_nan() {
-            if a.is_nan() | a.is_infinite() {
-                return;
-            }
+        if b.is_nan() && a.is_nan() | a.is_infinite() {
+            return;
         }
         assert_ulps_eq!(a, b);
     }

@@ -76,7 +76,7 @@ for _ in 0..2000 {
     if let Some(div_info) = info.divergence_info() {
         println!("Divergence at position {:?}", div_info.start_location);
     }
-    dbg!(&info);
+    //dbg!(&info);
 }
 ```
 

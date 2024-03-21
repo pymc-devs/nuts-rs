@@ -1,22 +1,20 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
-#[cfg(feature = "arrow")]
 use arrow2::array::{MutableArray, MutablePrimitiveArray, StructArray};
-#[cfg(feature = "arrow")]
 use arrow2::datatypes::{DataType, Field};
 
 use crate::mass_matrix::MassMatrix;
 use crate::math_base::Math;
-use crate::nuts::{Collector, Direction, DivergenceInfo, Hamiltonian, LogpError, NutsError};
+use crate::nuts::{
+    Collector, Direction, DivergenceInfo, Hamiltonian, HamiltonianStats, LogpError, NutsError,
+};
+use crate::nuts::{SamplerStats, StatTraceBuilder};
+use crate::sampler::Settings;
 use crate::state::{State, StatePool};
-#[cfg(feature = "arrow")]
-use crate::SamplerArgs;
 
-#[cfg(feature = "arrow")]
-use crate::nuts::{ArrowBuilder, ArrowRow};
-
-pub(crate) struct EuclideanPotential<M: Math, Mass: MassMatrix<M>> {
+pub struct EuclideanPotential<M: Math, Mass: MassMatrix<M>> {
     pub(crate) mass_matrix: Mass,
     max_energy_error: f64,
     pub(crate) step_size: f64,
@@ -29,50 +27,74 @@ impl<M: Math, Mass: MassMatrix<M>> EuclideanPotential<M, Mass> {
             mass_matrix,
             max_energy_error,
             step_size,
-            _phantom: PhantomData::default(),
+            _phantom: PhantomData,
         }
     }
 }
 
 #[derive(Copy, Clone, Debug)]
-pub(crate) struct PotentialStats {
+pub struct PotentialStats<S: Clone + Debug> {
     step_size: f64,
+    mass_matrix_stats: S,
 }
 
-#[cfg(feature = "arrow")]
-pub(crate) struct PotentialStatsBuilder {
+#[derive(Clone)]
+pub struct PotentialStatsBuilder<B> {
     step_size: MutablePrimitiveArray<f64>,
+    mass_matrix: B,
 }
 
-#[cfg(feature = "arrow")]
-impl ArrowBuilder<PotentialStats> for PotentialStatsBuilder {
-    fn append_value(&mut self, value: &PotentialStats) {
+impl<S: Clone + Debug, B: StatTraceBuilder<S>> StatTraceBuilder<PotentialStats<S>>
+    for PotentialStatsBuilder<B>
+{
+    fn append_value(&mut self, value: PotentialStats<S>) {
         self.step_size.push(Some(value.step_size));
+        self.mass_matrix.append_value(value.mass_matrix_stats)
     }
 
     fn finalize(mut self) -> Option<StructArray> {
-        let fields = vec![Field::new("step_size", DataType::Float64, false)];
+        let mut fields = vec![Field::new("step_size", DataType::Float64, false)];
 
-        let arrays = vec![self.step_size.as_box()];
+        let mut arrays = vec![self.step_size.as_box()];
+
+        if let Some(mass_matrix) = self.mass_matrix.finalize() {
+            let (m_fields, m_data, m_bitmap) = mass_matrix.into_data();
+            assert!(m_bitmap.is_none());
+            fields.extend(m_fields);
+            arrays.extend(m_data);
+        }
 
         Some(StructArray::new(DataType::Struct(fields), arrays, None))
     }
 }
 
-#[cfg(feature = "arrow")]
-impl ArrowRow for PotentialStats {
-    type Builder = PotentialStatsBuilder;
+impl<M: Math, Mass: MassMatrix<M>> SamplerStats<M> for EuclideanPotential<M, Mass> {
+    type Builder = PotentialStatsBuilder<Mass::Builder>;
+    type Stats = PotentialStats<Mass::Stats>;
 
-    fn new_builder(_dim: usize, _settings: &SamplerArgs) -> Self::Builder {
+    fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder {
         Self::Builder {
             step_size: MutablePrimitiveArray::new(),
+            mass_matrix: self.mass_matrix.new_builder(settings, dim),
         }
+    }
+
+    fn current_stats(&self, math: &mut M) -> Self::Stats {
+        PotentialStats {
+            step_size: self.step_size,
+            mass_matrix_stats: self.mass_matrix.current_stats(math),
+        }
+    }
+}
+
+impl<M: Math, Mass: MassMatrix<M>> HamiltonianStats<M> for EuclideanPotential<M, Mass> {
+    fn stat_step_size(stats: &Self::Stats) -> f64 {
+        stats.step_size
     }
 }
 
 impl<M: Math, Mass: MassMatrix<M>> Hamiltonian<M> for EuclideanPotential<M, Mass> {
     type LogpError = M::LogpErr;
-    type Stats = PotentialStats;
 
     fn leapfrog<C: Collector<M>>(
         &mut self,
@@ -101,7 +123,7 @@ impl<M: Math, Mass: MassMatrix<M>> Hamiltonian<M> for EuclideanPotential<M, Mass
                 return Err(NutsError::LogpFailure(Box::new(logp_error)));
             }
             let div_info = DivergenceInfo {
-                logp_function_error: Some(Box::new(logp_error)),
+                logp_function_error: Some(Arc::new(Box::new(logp_error))),
                 start_location: Some(math.box_array(&start.q)),
                 start_gradient: Some(math.box_array(&start.grad)),
                 start_momentum: Some(math.box_array(&start.p)),
@@ -177,18 +199,16 @@ impl<M: Math, Mass: MassMatrix<M>> Hamiltonian<M> for EuclideanPotential<M, Mass
         self.mass_matrix.update_kinetic_energy(math, inner);
     }
 
-    fn current_stats(&self) -> Self::Stats {
-        PotentialStats {
-            step_size: self.step_size,
-        }
-    }
-
     fn new_empty_state(&mut self, math: &mut M, pool: &mut StatePool<M>) -> State<M> {
         pool.new_state(math)
     }
 
     fn new_pool(&mut self, math: &mut M, capacity: usize) -> StatePool<M> {
         StatePool::new(math, capacity)
+    }
+
+    fn copy_state(&mut self, math: &mut M, pool: &mut StatePool<M>, state: &State<M>) -> State<M> {
+        pool.copy_state(math, state)
     }
 }
 

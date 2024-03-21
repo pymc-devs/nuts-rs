@@ -1,4 +1,3 @@
-#![cfg_attr(feature = "simd_support", feature(stdsimd))]
 #![cfg_attr(feature = "simd_support", feature(portable_simd))]
 #![cfg_attr(feature = "simd_support", feature(slice_as_chunks))]
 //! Sample from posterior distributions using the No U-turn Sampler (NUTS).
@@ -12,7 +11,8 @@
 //! ## Usage
 //!
 //! ```
-//! use nuts_rs::{CpuLogpFunc, CpuMath, LogpError, new_sampler, SamplerArgs, Chain, SampleStats};
+//! use nuts_rs::{CpuLogpFunc, CpuMath, LogpError, DiagGradNutsSettings, Chain, SampleStats,
+//! Settings};
 //! use thiserror::Error;
 //! use rand::thread_rng;
 //!
@@ -52,11 +52,11 @@
 //! }
 //!
 //! // We get the default sampler arguments
-//! let mut sampler_args = SamplerArgs::default();
+//! let mut settings = DiagGradNutsSettings::default();
 //!
 //! // and modify as we like
-//! sampler_args.num_tune = 1000;
-//! sampler_args.maxdepth = 3;  // small value just for testing...
+//! settings.num_tune = 1000;
+//! settings.maxdepth = 3;  // small value just for testing...
 //!
 //! // We instanciate our posterior density function
 //! let logp_func = PosteriorDensity {};
@@ -64,7 +64,7 @@
 //!
 //! let chain = 0;
 //! let mut rng = thread_rng();
-//! let mut sampler = new_sampler(math, sampler_args, chain, &mut rng);
+//! let mut sampler = settings.new_chain(0, math, &mut rng);
 //!
 //! // Set to some initial position and start drawing samples.
 //! sampler.set_position(&vec![0f64; 10]).expect("Unrecoverable error during init");
@@ -73,10 +73,8 @@
 //!     let (draw, info) = sampler.draw().expect("Unrecoverable error during sampling");
 //!     trace.push(draw);
 //!     // Or get more detailed information about divergences
-//!     if let Some(div_info) = info.divergence_info() {
-//!         println!("Divergence at position {:?}", div_info.start_location);
-//!     }
-//!     dbg!(&info);
+//!     //dbg!(settings.sample_stats::<CpuMath<PosteriorDensity>>(&info).draw);
+//!     //dbg!(&info);
 //! }
 //! ```
 //!
@@ -86,23 +84,33 @@
 //! [PyMC](https://docs.pymc.io/en/v3/), only tuning of mass matrix and step size differs
 //! somewhat.
 
-pub(crate) mod adapt_strategy;
-pub(crate) mod cpu_math;
-pub(crate) mod mass_matrix;
-pub(crate) mod math;
-pub(crate) mod math_base;
-pub(crate) mod nuts;
-pub(crate) mod potential;
-pub(crate) mod sampler;
-pub(crate) mod state;
-pub(crate) mod stepsize;
+mod adapt_strategy;
+mod cpu_math;
+mod mass_matrix;
+mod math;
+mod math_base;
+mod nuts;
+mod potential;
+mod sampler;
+mod state;
+mod stepsize;
 
 pub use adapt_strategy::DualAverageSettings;
 pub use cpu_math::{CpuLogpFunc, CpuMath};
-#[cfg(feature = "arrow")]
-pub use nuts::{ArrowBuilder, ArrowRow};
+pub use math_base::Math;
 pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError, SampleStats};
-pub use sampler::test_logps;
 pub use sampler::{
-    new_sampler, sample_sequentially, InitPointFunc, JitterInitFunc, MathMaker, SamplerArgs,
+    sample_sequentially, ChainOutput, ChainProgress, DiagGradNutsSettings, DrawStorage, Model,
+    ProgressCallback, Sampler, SamplerWaitResult, Settings, Trace,
 };
+
+/*
+struct A {}
+
+struct B<'a> { a: &'a A }
+
+struct C {
+    a: Arc<A>,
+    b: B<>,
+}
+*/
