@@ -101,7 +101,12 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     }
 
     fn axpy_out(&mut self, x: &Self::Vector, y: &Self::Vector, a: f64, out: &mut Self::Vector) {
-        axpy_out(x.col_as_slice(0), y.col_as_slice(0), a, out.col_as_slice_mut(0));
+        axpy_out(
+            x.col_as_slice(0),
+            y.col_as_slice(0),
+            a,
+            out.col_as_slice_mut(0),
+        );
     }
 
     fn axpy(&mut self, x: &Self::Vector, y: &mut Self::Vector, a: f64) {
@@ -125,8 +130,17 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         })
     }
 
-    fn array_mult(&mut self, array1: &Self::Vector, array2: &Self::Vector, dest: &mut Self::Vector) {
-        multiply(array1.col_as_slice(0), array2.col_as_slice(0), dest.col_as_slice_mut(0))
+    fn array_mult(
+        &mut self,
+        array1: &Self::Vector,
+        array2: &Self::Vector,
+        dest: &mut Self::Vector,
+    ) {
+        multiply(
+            array1.col_as_slice(0),
+            array2.col_as_slice(0),
+            dest.col_as_slice_mut(0),
+        )
     }
 
     fn array_vector_dot(&mut self, array1: &Self::Vector, array2: &Self::Vector) -> f64 {

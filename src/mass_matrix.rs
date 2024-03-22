@@ -1,10 +1,18 @@
+use arrow2::{
+    array::{MutableArray, MutableFixedSizeListArray, MutablePrimitiveArray, StructArray, TryPush},
+    datatypes::{DataType, Field},
+};
+
 use crate::{
     math_base::Math,
+    nuts::ArrowBuilder,
+    nuts::ArrowRow,
     nuts::Collector,
+    sampler::Settings,
     state::{InnerState, State},
 };
 
-pub(crate) trait MassMatrix<M: Math> {
+pub(crate) trait MassMatrix<M: Math>: ArrowRow<M> {
     fn update_velocity(&self, math: &mut M, state: &mut InnerState<M>);
     fn update_kinetic_energy(&self, math: &mut M, state: &mut InnerState<M>);
     fn randomize_momentum<R: rand::Rng + ?Sized>(
@@ -20,16 +28,88 @@ pub(crate) struct NullCollector {}
 impl<M: Math> Collector<M> for NullCollector {}
 
 #[derive(Debug)]
-pub(crate) struct DiagMassMatrix<M: Math> {
+pub struct DiagMassMatrix<M: Math> {
     inv_stds: M::Vector,
     pub(crate) variance: M::Vector,
+    store_mass_matrix: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct DiagMassMatrixStats {
+    pub mass_matrix_inv: Option<Box<[f64]>>,
+}
+
+pub struct DiagMassMatrixStatsBuilder {
+    mass_matrix_inv: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
+}
+
+impl ArrowBuilder<DiagMassMatrixStats> for DiagMassMatrixStatsBuilder {
+    fn append_value(&mut self, value: &DiagMassMatrixStats) {
+        if let Some(store) = self.mass_matrix_inv.as_mut() {
+            store
+                .try_push(
+                    value
+                        .mass_matrix_inv
+                        .as_ref()
+                        .map(|vals| vals.iter().map(|&x| Some(x))),
+                )
+                .unwrap();
+        }
+    }
+
+    fn finalize(self) -> Option<StructArray> {
+        if let Some(mut store) = self.mass_matrix_inv {
+            let fields = vec![Field::new(
+                "mass_matrix_inv",
+                store.data_type().clone(),
+                true,
+            )];
+
+            let arrays = vec![store.as_box()];
+
+            Some(StructArray::new(DataType::Struct(fields), arrays, None))
+        } else {
+            None
+        }
+    }
+}
+
+impl<M: Math> ArrowRow<M> for DiagMassMatrix<M> {
+    type Builder = DiagMassMatrixStatsBuilder;
+    type Stats = DiagMassMatrixStats;
+
+    fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder {
+        if self.store_mass_matrix {
+            let items = MutablePrimitiveArray::new();
+            let values = MutableFixedSizeListArray::new_with_field(items, "item", false, dim);
+            Self::Builder {
+                mass_matrix_inv: Some(values),
+            }
+        } else {
+            Self::Builder {
+                mass_matrix_inv: None,
+            }
+        }
+    }
+
+    fn current_stats(&self, math: &mut M) -> Self::Stats {
+        let matrix = if self.store_mass_matrix {
+            Some(math.box_array(&self.variance))
+        } else {
+            None
+        };
+        DiagMassMatrixStats {
+            mass_matrix_inv: matrix,
+        }
+    }
 }
 
 impl<M: Math> DiagMassMatrix<M> {
-    pub(crate) fn new(math: &mut M) -> Self {
+    pub(crate) fn new(math: &mut M, store_mass_matrix: bool) -> Self {
         Self {
             inv_stds: math.new_array(),
             variance: math.new_array(),
+            store_mass_matrix,
         }
     }
 
@@ -109,7 +189,12 @@ impl<M: Math> RunningVariance<M> {
         if self.count == 1 {
             math.copy_into(value, &mut self.mean);
         } else {
-            math.array_update_variance(&mut self.mean, &mut self.variance, value, (self.count as f64).recip());
+            math.array_update_variance(
+                &mut self.mean,
+                &mut self.variance,
+                value,
+                (self.count as f64).recip(),
+            );
         }
     }
 

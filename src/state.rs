@@ -20,7 +20,7 @@ impl<M: Math> StateStorage<M> {
 }
 
 pub(crate) struct StatePool<M: Math> {
-    storage: Rc<StateStorage<M>>
+    storage: Rc<StateStorage<M>>,
 }
 
 impl<M: Math> StatePool<M> {
@@ -33,9 +33,7 @@ impl<M: Math> StatePool<M> {
     pub(crate) fn new_state(&self, math: &mut M) -> State<M> {
         let inner = match self.storage.free_states.borrow_mut().pop() {
             Some(inner) => inner,
-            None => {
-                Rc::new(InnerStateReusable::new(math, &self))
-            }
+            None => Rc::new(InnerStateReusable::new(math, &self)),
         };
         State {
             inner: std::mem::ManuallyDrop::new(inner),
