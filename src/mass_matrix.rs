@@ -78,7 +78,7 @@ impl<M: Math> SamplerStatTrace<M> for DiagMassMatrix<M> {
     type Builder = DiagMassMatrixStatsBuilder;
     type Stats = DiagMassMatrixStats;
 
-    fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder {
+    fn new_builder(&self, _settings: &impl Settings, dim: usize) -> Self::Builder {
         if self.store_mass_matrix {
             let items = MutablePrimitiveArray::new();
             let values = MutableFixedSizeListArray::new_with_field(items, "item", false, dim);

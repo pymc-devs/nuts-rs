@@ -580,7 +580,7 @@ impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> StatsBuilder<M, H, A> {
         dim: usize,
         options: &NutsOptions,
     ) -> Self {
-        let capacity = (settings.hint_num_tune() + settings.hint_num_draws());
+        let capacity = settings.hint_num_tune() + settings.hint_num_draws();
 
         let gradient = if options.store_gradient {
             let items = MutablePrimitiveArray::new();

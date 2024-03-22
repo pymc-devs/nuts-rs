@@ -1,13 +1,13 @@
 use std::{fmt::Debug, marker::PhantomData};
 
 use arrow2::{
-    array::{MutableArray, MutableFixedSizeListArray, MutablePrimitiveArray, StructArray, TryPush},
+    array::{MutableArray, MutablePrimitiveArray, StructArray},
     datatypes::{DataType, Field},
 };
 
 use crate::{
     mass_matrix::{
-        DiagMassMatrix, DiagMassMatrixStats, DiagMassMatrixStatsBuilder, DrawGradCollector,
+        DiagMassMatrix, DrawGradCollector,
         MassMatrix, RunningVariance,
     },
     math_base::Math,
@@ -101,7 +101,7 @@ impl<M: Math, Mass: MassMatrix<M>> SamplerStatTrace<M> for DualAverageStrategy<M
     type Builder = DualAverageStatsBuilder;
     type Stats = DualAverageStats;
 
-    fn new_builder(&self, settings: &impl Settings, _dim: usize) -> Self::Builder {
+    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {
         Self::Builder {
             step_size_bar: MutablePrimitiveArray::new(),
             mean_tree_accept: MutablePrimitiveArray::new(),
@@ -110,7 +110,7 @@ impl<M: Math, Mass: MassMatrix<M>> SamplerStatTrace<M> for DualAverageStrategy<M
         }
     }
 
-    fn current_stats(&self, math: &mut M) -> Self::Stats {
+    fn current_stats(&self, _math: &mut M) -> Self::Stats {
         DualAverageStats {
             step_size_bar: self.step_size_adapt.current_step_size_adapted(),
             mean_tree_accept: self.last_mean_tree_accept,
@@ -152,8 +152,8 @@ impl<M: Math, Mass: MassMatrix<M>> AdaptStrategy<M> for DualAverageStrategy<M, M
             last_n_steps: 0,
             last_sym_mean_tree_accept: 0.0,
             last_mean_tree_accept: 0.0,
-            _phantom1: PhantomData::default(),
-            _phantom2: PhantomData::default(),
+            _phantom1: PhantomData,
+            _phantom2: PhantomData,
         }
     }
 
@@ -274,12 +274,12 @@ impl<M: Math> SamplerStatTrace<M> for ExpWindowDiagAdapt<M> {
     type Builder = ExpWindowDiagAdaptStats;
     type Stats = ExpWindowDiagAdaptStatsBuilder;
 
-    fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder {
-        ()
+    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {
+        
     }
 
-    fn current_stats(&self, math: &mut M) -> Self::Stats {
-        ()
+    fn current_stats(&self, _math: &mut M) -> Self::Stats {
+        
     }
 }
 
@@ -295,7 +295,7 @@ impl<M: Math> AdaptStrategy<M> for ExpWindowDiagAdapt<M> {
             exp_variance_draw_bg: RunningVariance::new(math),
             exp_variance_grad_bg: RunningVariance::new(math),
             settings: options,
-            _phantom: PhantomData::default(),
+            _phantom: PhantomData,
         }
     }
 
@@ -474,7 +474,7 @@ impl<M: Math> AdaptStrategy<M> for GradDiagStrategy<M> {
         CombinedCollector {
             collector1: self.step_size.new_collector(math),
             collector2: self.mass_matrix.new_collector(math),
-            _phantom: PhantomData::default(),
+            _phantom: PhantomData,
         }
     }
 }
