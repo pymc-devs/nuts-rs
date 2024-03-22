@@ -19,7 +19,7 @@ use crate::{
     DivergenceInfo,
 };
 
-use crate::nuts::{StatTraceBuilder, SamplerStatTrace};
+use crate::nuts::{SamplerStatTrace, StatTraceBuilder};
 
 const LOWER_LIMIT: f64 = 1e-20f64;
 const UPPER_LIMIT: f64 = 1e20f64;

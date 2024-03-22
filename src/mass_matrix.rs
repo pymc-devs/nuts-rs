@@ -6,9 +6,10 @@ use arrow2::{
 use crate::{
     math_base::Math,
     nuts::Collector,
+    nuts::SamplerStatTrace,
+    nuts::StatTraceBuilder,
     sampler::Settings,
     state::{InnerState, State},
-    nuts::StatTraceBuilder, nuts::SamplerStatTrace,
 };
 
 pub(crate) trait MassMatrix<M: Math>: SamplerStatTrace<M> {

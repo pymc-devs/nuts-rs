@@ -7,8 +7,8 @@ use arrow2::datatypes::{DataType, Field};
 
 use crate::mass_matrix::MassMatrix;
 use crate::math_base::Math;
-use crate::nuts::{SamplerStatTrace, StatTraceBuilder};
 use crate::nuts::{Collector, Direction, DivergenceInfo, Hamiltonian, LogpError, NutsError};
+use crate::nuts::{SamplerStatTrace, StatTraceBuilder};
 use crate::sampler::Settings;
 use crate::state::{State, StatePool};
 
@@ -41,7 +41,7 @@ pub(crate) struct PotentialStatsBuilder<B> {
     mass_matrix: B,
 }
 
-impl<S: Clone + Debug, B: SamplerStatTrace<S>> StatTraceBuilder<PotentialStats<S>>
+impl<S: Clone + Debug, B: StatTraceBuilder<S>> StatTraceBuilder<PotentialStats<S>>
     for PotentialStatsBuilder<B>
 {
     fn append_value(&mut self, value: &PotentialStats<S>) {

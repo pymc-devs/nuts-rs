@@ -15,11 +15,11 @@ use crate::{
     adapt_strategy::{GradDiagOptions, GradDiagStrategy},
     mass_matrix::DiagMassMatrix,
     math_base::Math,
-    nuts::{SamplerStatTrace, Chain, NutsChain, NutsOptions},
+    nuts::{Chain, NutsChain, NutsOptions, SamplerStatTrace},
     potential::EuclideanPotential,
 };
 
-pub trait Settings: Clone + Copy + Default + Sync + Send {
+pub trait Settings: Clone + Copy + Default + Sync + Send + 'static {
     type Chain<M: Math>: Chain<M>;
 
     fn new_chain<M: Math, R: Rng + ?Sized>(
@@ -74,7 +74,6 @@ impl Default for DiagGradNutsSettings {
 }
 
 impl Settings for DiagGradNutsSettings {
-    //type Stats = NutsSampleStats<PotentialStats<DiagMassMatrixStats>, ExpWindowDiagAdaptStats>;
     type Chain<M: Math> =
         NutsChain<M, EuclideanPotential<M, DiagMassMatrix<M>>, SmallRng, GradDiagStrategy<M>>;
 
@@ -217,7 +216,7 @@ pub trait Model: Send + Sync {
         &'model self,
         rng: &mut R,
         chain_id: u64,
-        settings: S,
+        settings: &'model S,
     ) -> Result<Self::Trace<'model, S>>;
     fn math(&self) -> Result<Self::Math<'_>>;
     fn init_position<R: Rng + ?Sized>(&self, rng: &mut R, position: &mut [f64]) -> Result<()>;
