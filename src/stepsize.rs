@@ -116,7 +116,7 @@ impl<M: Math> AcceptanceRateCollector<M> {
             initial_energy: 0.,
             mean: RunningMean::new(),
             mean_sym: RunningMean::new(),
-            phantom: PhantomData::default(),
+            phantom: PhantomData,
         }
     }
 }

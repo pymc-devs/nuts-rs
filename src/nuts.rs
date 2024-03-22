@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::{fmt::Debug, marker::PhantomData};
 
 use crate::math::logaddexp;
-use crate::sampler::{DiagGradNutsSettings, Settings};
+use crate::sampler::Settings;
 use crate::state::{State, StatePool};
 
 use crate::math_base::Math;
@@ -89,7 +89,7 @@ pub trait LogpError: std::error::Error {
 }
 
 /// The hamiltonian defined by the potential energy and the kinetic energy
-pub(crate) trait Hamiltonian<M>: ArrowRow<M>
+pub(crate) trait Hamiltonian<M>: SamplerStatTrace<M>
 where
     M: Math,
 {
@@ -241,8 +241,8 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M>> NutsTree<M, H, C> {
             log_size: 0.,
             initial_energy,
             is_main: true,
-            _phantom: PhantomData::default(),
-            _phantom2: PhantomData::default(),
+            _phantom: PhantomData,
+            _phantom2: PhantomData,
         }
     }
 
@@ -383,8 +383,8 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M>> NutsTree<M, H, C> {
             log_size,
             initial_energy: self.initial_energy,
             is_main: false,
-            _phantom: PhantomData::default(),
-            _phantom2: PhantomData::default(),
+            _phantom: PhantomData,
+            _phantom2: PhantomData,
         }))
     }
 
@@ -451,23 +451,23 @@ where
     Ok((tree.draw, info))
 }
 
-pub(crate) trait ArrowRow<M: Math> {
+pub(crate) trait SamplerStatTrace<M: Math> {
     type Stats: Send + Debug + Clone;
-    type Builder: ArrowBuilder<Self::Stats>;
+    type Builder: StatTraceBuilder<Self::Stats>;
 
     fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder;
     fn current_stats(&self, math: &mut M) -> Self::Stats;
 }
 
-impl ArrowBuilder<()> for () {
-    fn append_value(&mut self, value: &()) {}
+impl StatTraceBuilder<()> for () {
+    fn append_value(&mut self, _value: &()) {}
 
     fn finalize(self) -> Option<StructArray> {
         None
     }
 }
 
-pub trait ArrowBuilder<T: ?Sized> {
+pub trait StatTraceBuilder<T: ?Sized> {
     fn append_value(&mut self, value: &T);
     fn finalize(self) -> Option<StructArray>;
 }
@@ -561,8 +561,8 @@ pub struct StatsBuilder<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> {
     energy_error: MutablePrimitiveArray<f64>,
     unconstrained: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
     gradient: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
-    hamiltonian: <H as ArrowRow<M>>::Builder,
-    adapt: <A as ArrowRow<M>>::Builder,
+    hamiltonian: <H as SamplerStatTrace<M>>::Builder,
+    adapt: <A as SamplerStatTrace<M>>::Builder,
     diverging: MutableBooleanArray,
     divergence_start: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
     divergence_start_grad: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
@@ -580,7 +580,7 @@ impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> StatsBuilder<M, H, A> {
         dim: usize,
         options: &NutsOptions,
     ) -> Self {
-        let capacity = (settings.hint_num_tune() + settings.hint_num_draws()) as usize;
+        let capacity = (settings.hint_num_tune() + settings.hint_num_draws());
 
         let gradient = if options.store_gradient {
             let items = MutablePrimitiveArray::new();
@@ -653,13 +653,13 @@ impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>> StatsBuilder<M, H, A> {
             divergence_end: div_end,
             divergence_momentum: div_mom,
             divergence_msg: div_msg,
-            _phantom: PhantomData::default(),
+            _phantom: PhantomData,
         }
     }
 }
 
 impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>>
-    ArrowBuilder<NutsSampleStats<H::Stats, A::Stats>> for StatsBuilder<M, H, A>
+    StatTraceBuilder<NutsSampleStats<H::Stats, A::Stats>> for StatsBuilder<M, H, A>
 {
     fn append_value(&mut self, value: &NutsSampleStats<H::Stats, A::Stats>) {
         self.depth.push(Some(value.depth));
@@ -852,7 +852,7 @@ impl<M: Math, H: Hamiltonian<M>, A: AdaptStrategy<M>>
 }
 
 /// Draw samples from the posterior distribution using Hamiltonian MCMC.
-pub trait Chain<M: Math>: ArrowRow<M> {
+pub trait Chain<M: Math>: SamplerStatTrace<M> {
     type Hamiltonian; //: Hamiltonian<M>;
     type AdaptStrategy; //: AdaptStrategy<M>;
 
@@ -924,7 +924,7 @@ where
     }
 }
 
-pub(crate) trait AdaptStrategy<M: Math>: ArrowRow<M> {
+pub(crate) trait AdaptStrategy<M: Math>: SamplerStatTrace<M> {
     type Potential: Hamiltonian<M>;
     type Collector: Collector<M>;
     type Options: Copy + Send + Default;
@@ -951,10 +951,10 @@ pub(crate) trait AdaptStrategy<M: Math>: ArrowRow<M> {
     fn new_collector(&self, math: &mut M) -> Self::Collector;
 }
 
-impl<M, H, R, A> ArrowRow<M> for NutsChain<M, H, R, A>
+impl<M, H, R, A> SamplerStatTrace<M> for NutsChain<M, H, R, A>
 where
     M: Math,
-    H: Hamiltonian<M> + ArrowRow<M>,
+    H: Hamiltonian<M> + SamplerStatTrace<M>,
     R: rand::Rng,
     A: AdaptStrategy<M, Potential = H>,
 {
@@ -971,7 +971,7 @@ where
         )
     }
 
-    fn current_stats(&self, math: &mut M) -> Self::Stats {
+    fn current_stats(&self, _math: &mut M) -> Self::Stats {
         self.stats.as_ref().expect("No stats available").clone()
     }
 }
@@ -1069,7 +1069,7 @@ mod tests {
         sampler::DiagGradNutsSettings, Chain,
     };
 
-    use super::ArrowBuilder;
+    use super::StatTraceBuilder;
 
     #[test]
     fn to_arrow() {

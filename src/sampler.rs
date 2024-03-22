@@ -2,23 +2,21 @@ use anyhow::{Context, Result};
 use arrow2::array::Array;
 use rand::{rngs::SmallRng, thread_rng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rayon::{ScopeFifo, ThreadPool};
+use rayon::ScopeFifo;
 use std::{
     sync::{
-        mpsc::{channel, Receiver, Sender, SyncSender},
-        Arc, Condvar, Mutex, RwLock,
+        mpsc::{channel, Receiver, Sender},
+        Arc, Mutex,
     },
     time::Duration,
 };
 
 use crate::{
-    adapt_strategy::{
-        ExpWindowDiagAdapt, ExpWindowDiagAdaptStats, GradDiagOptions, GradDiagStrategy,
-    },
-    mass_matrix::{DiagMassMatrix, DiagMassMatrixStats},
+    adapt_strategy::{GradDiagOptions, GradDiagStrategy},
+    mass_matrix::DiagMassMatrix,
     math_base::Math,
-    nuts::{ArrowRow, Chain, Hamiltonian, NutsChain, NutsError, NutsOptions, NutsSampleStats},
-    potential::{EuclideanPotential, PotentialStats},
+    nuts::{SamplerStatTrace, Chain, NutsChain, NutsOptions},
+    potential::EuclideanPotential,
 };
 
 pub trait Settings: Clone + Copy + Default + Sync + Send {
@@ -165,6 +163,12 @@ pub struct JitterInitFunc {
     mu: Option<Box<[f64]>>,
 }
 
+impl Default for JitterInitFunc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JitterInitFunc {
     /// Initialize new chains with jitter in [-1, 1] around zero
     pub fn new() -> JitterInitFunc {
@@ -194,7 +198,7 @@ impl InitPointFunc for JitterInitFunc {
 pub trait Trace<M: Math, S: Settings>: Send + Sync {
     fn append_value(
         &mut self,
-        info: &<S::Chain<M> as ArrowRow<M>>::Stats,
+        info: &<S::Chain<M> as SamplerStatTrace<M>>::Stats,
         point: &[f64],
     ) -> Result<()>;
     fn finalize(self) -> Result<Box<dyn Array>>;
@@ -215,7 +219,7 @@ pub trait Model: Send + Sync {
         chain_id: u64,
         settings: S,
     ) -> Result<Self::Trace<'model, S>>;
-    fn math<'model>(&'model self) -> Result<Self::Math<'model>>;
+    fn math(&self) -> Result<Self::Math<'_>>;
     fn init_position<R: Rng + ?Sized>(&self, rng: &mut R, position: &mut [f64]) -> Result<()>;
 }
 
@@ -257,7 +261,6 @@ impl<'scope, M: Model + 'scope, S: Settings> ChainProcess<'scope, M, S> {
         updates: Sender<u64>,
     ) -> Result<Self> {
         let (result_tx, result_rx) = channel();
-        let settings = settings.clone();
 
         let mut rng = if let Some(seed) = seed {
             ChaCha8Rng::seed_from_u64(seed)
@@ -276,7 +279,7 @@ impl<'scope, M: Model + 'scope, S: Settings> ChainProcess<'scope, M, S> {
 
         scope.spawn_fifo(move |_| {
             let trace = trace_inner;
-            let settings = settings.clone();
+            let settings = settings;
 
             let mut sample = move || {
                 let logp = model.math().context("Failed to create model density")?;
@@ -316,7 +319,7 @@ impl<'scope, M: Model + 'scope, S: Settings> ChainProcess<'scope, M, S> {
                     // could for instance be because the main thread was interrupted.
                     // In this case we just want to return the draws we have so far.
                     let result = updates.send(chain_id);
-                    if let Err(_) = result {
+                    if result.is_err() {
                         break;
                     }
                 }
@@ -328,7 +331,7 @@ impl<'scope, M: Model + 'scope, S: Settings> ChainProcess<'scope, M, S> {
 
         Ok(Self {
             chain_idx: chain_id as _,
-            trace: trace,
+            trace,
             results: result_rx,
         })
     }

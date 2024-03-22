@@ -19,7 +19,7 @@ use crate::{
     DivergenceInfo,
 };
 
-use crate::nuts::{ArrowBuilder, ArrowRow};
+use crate::nuts::{StatTraceBuilder, SamplerStatTrace};
 
 const LOWER_LIMIT: f64 = 1e-20f64;
 const UPPER_LIMIT: f64 = 1e20f64;
@@ -69,7 +69,7 @@ pub struct DualAverageStatsBuilder {
     n_steps: MutablePrimitiveArray<u64>,
 }
 
-impl ArrowBuilder<DualAverageStats> for DualAverageStatsBuilder {
+impl StatTraceBuilder<DualAverageStats> for DualAverageStatsBuilder {
     fn append_value(&mut self, value: &DualAverageStats) {
         self.step_size_bar.push(Some(value.step_size_bar));
         self.mean_tree_accept.push(Some(value.mean_tree_accept));
@@ -97,7 +97,7 @@ impl ArrowBuilder<DualAverageStats> for DualAverageStatsBuilder {
     }
 }
 
-impl<M: Math, Mass: MassMatrix<M>> ArrowRow<M> for DualAverageStrategy<M, Mass> {
+impl<M: Math, Mass: MassMatrix<M>> SamplerStatTrace<M> for DualAverageStrategy<M, Mass> {
     type Builder = DualAverageStatsBuilder;
     type Stats = DualAverageStats;
 
@@ -270,7 +270,7 @@ impl<M: Math> ExpWindowDiagAdapt<M> {
 pub(crate) type ExpWindowDiagAdaptStats = ();
 type ExpWindowDiagAdaptStatsBuilder = ();
 
-impl<M: Math> ArrowRow<M> for ExpWindowDiagAdapt<M> {
+impl<M: Math> SamplerStatTrace<M> for ExpWindowDiagAdapt<M> {
     type Builder = ExpWindowDiagAdaptStats;
     type Stats = ExpWindowDiagAdaptStatsBuilder;
 
@@ -370,7 +370,7 @@ impl Default for GradDiagOptions {
     }
 }
 
-impl<M: Math> ArrowRow<M> for GradDiagStrategy<M> {
+impl<M: Math> SamplerStatTrace<M> for GradDiagStrategy<M> {
     type Stats = CombinedStats<DualAverageStats, ExpWindowDiagAdaptStats>;
     type Builder = CombinedStatsBuilder<DualAverageStatsBuilder, ExpWindowDiagAdaptStatsBuilder>;
 
@@ -490,10 +490,10 @@ pub struct CombinedStatsBuilder<B1, B2> {
     stats2: B2,
 }
 
-impl<S1, S2, B1, B2> ArrowBuilder<CombinedStats<S1, S2>> for CombinedStatsBuilder<B1, B2>
+impl<S1, S2, B1, B2> StatTraceBuilder<CombinedStats<S1, S2>> for CombinedStatsBuilder<B1, B2>
 where
-    B1: ArrowBuilder<S1>,
-    B2: ArrowBuilder<S2>,
+    B1: StatTraceBuilder<S1>,
+    B2: StatTraceBuilder<S2>,
 {
     fn append_value(&mut self, value: &CombinedStats<S1, S2>) {
         self.stats1.append_value(&value.stats1);

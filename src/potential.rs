@@ -7,7 +7,7 @@ use arrow2::datatypes::{DataType, Field};
 
 use crate::mass_matrix::MassMatrix;
 use crate::math_base::Math;
-use crate::nuts::{ArrowBuilder, ArrowRow};
+use crate::nuts::{SamplerStatTrace, StatTraceBuilder};
 use crate::nuts::{Collector, Direction, DivergenceInfo, Hamiltonian, LogpError, NutsError};
 use crate::sampler::Settings;
 use crate::state::{State, StatePool};
@@ -25,7 +25,7 @@ impl<M: Math, Mass: MassMatrix<M>> EuclideanPotential<M, Mass> {
             mass_matrix,
             max_energy_error,
             step_size,
-            _phantom: PhantomData::default(),
+            _phantom: PhantomData,
         }
     }
 }
@@ -41,7 +41,7 @@ pub(crate) struct PotentialStatsBuilder<B> {
     mass_matrix: B,
 }
 
-impl<S: Clone + Debug, B: ArrowBuilder<S>> ArrowBuilder<PotentialStats<S>>
+impl<S: Clone + Debug, B: SamplerStatTrace<S>> StatTraceBuilder<PotentialStats<S>>
     for PotentialStatsBuilder<B>
 {
     fn append_value(&mut self, value: &PotentialStats<S>) {
@@ -58,7 +58,7 @@ impl<S: Clone + Debug, B: ArrowBuilder<S>> ArrowBuilder<PotentialStats<S>>
     }
 }
 
-impl<M: Math, Mass: MassMatrix<M>> ArrowRow<M> for EuclideanPotential<M, Mass> {
+impl<M: Math, Mass: MassMatrix<M>> SamplerStatTrace<M> for EuclideanPotential<M, Mass> {
     type Builder = PotentialStatsBuilder<Mass::Builder>;
     type Stats = PotentialStats<Mass::Stats>;
 

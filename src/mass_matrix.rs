@@ -5,14 +5,13 @@ use arrow2::{
 
 use crate::{
     math_base::Math,
-    nuts::ArrowBuilder,
-    nuts::ArrowRow,
     nuts::Collector,
     sampler::Settings,
     state::{InnerState, State},
+    nuts::StatTraceBuilder, nuts::SamplerStatTrace,
 };
 
-pub(crate) trait MassMatrix<M: Math>: ArrowRow<M> {
+pub(crate) trait MassMatrix<M: Math>: SamplerStatTrace<M> {
     fn update_velocity(&self, math: &mut M, state: &mut InnerState<M>);
     fn update_kinetic_energy(&self, math: &mut M, state: &mut InnerState<M>);
     fn randomize_momentum<R: rand::Rng + ?Sized>(
@@ -43,7 +42,7 @@ pub struct DiagMassMatrixStatsBuilder {
     mass_matrix_inv: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
 }
 
-impl ArrowBuilder<DiagMassMatrixStats> for DiagMassMatrixStatsBuilder {
+impl StatTraceBuilder<DiagMassMatrixStats> for DiagMassMatrixStatsBuilder {
     fn append_value(&mut self, value: &DiagMassMatrixStats) {
         if let Some(store) = self.mass_matrix_inv.as_mut() {
             store
@@ -74,7 +73,7 @@ impl ArrowBuilder<DiagMassMatrixStats> for DiagMassMatrixStatsBuilder {
     }
 }
 
-impl<M: Math> ArrowRow<M> for DiagMassMatrix<M> {
+impl<M: Math> SamplerStatTrace<M> for DiagMassMatrix<M> {
     type Builder = DiagMassMatrixStatsBuilder;
     type Stats = DiagMassMatrixStats;
 
