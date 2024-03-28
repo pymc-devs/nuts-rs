@@ -396,12 +396,12 @@ impl<'scope, M: Model + 'scope, S: Settings> ChainProcess<'scope, M, S> {
                 loop {
                     match msg {
                         Err(TryRecvError::Disconnected) => {
-                            return Ok(trace
+                            return trace
                                 .lock()
                                 .expect("Could not unlock trace lock. Poisoned mutex")
                                 .take()
                                 .expect("Trace was empty")
-                                .finalize()?)
+                                .finalize()
                         }
                         Ok(ChainCommand::Pause) => {
                             msg = stop_marker_rx.recv().map_err(|e| e.into());
@@ -431,12 +431,12 @@ impl<'scope, M: Model + 'scope, S: Settings> ChainProcess<'scope, M, S> {
                     msg = stop_marker_rx.try_recv();
                 }
 
-                Ok(trace
+                trace
                     .lock()
                     .expect("Could not unlock trace lock. Poisoned mutex")
                     .take()
                     .expect("Trace was empty")
-                    .finalize()?)
+                    .finalize()
             };
 
             results
@@ -517,7 +517,7 @@ impl Sampler {
                         chain_id as u64,
                         settings.seed(),
                         settings_ref,
-                        &scope,
+                        scope,
                         results.clone(),
                     );
                     chains.push(chain);
@@ -614,7 +614,7 @@ impl Sampler {
 
     pub fn wait_timeout(mut self, timeout: Duration) -> SamplerWaitResult {
         let start = Instant::now();
-        let mut remaining = Some(timeout.clone());
+        let mut remaining = Some(timeout);
         while remaining.is_some() {
             match self.results.recv_timeout(timeout) {
                 Ok(Ok(trace)) => {
@@ -628,7 +628,7 @@ impl Sampler {
                         std::panic::resume_unwind(payload)
                     };
                     return SamplerWaitResult::Trace(
-                        self.finished.into_iter().map(|x| Some(x)).into(),
+                        self.finished.into_iter().map(Some).into(),
                     );
                 }
                 Err(RecvTimeoutError::Timeout) => break,
