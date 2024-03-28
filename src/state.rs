@@ -19,18 +19,18 @@ impl<M: Math> StateStorage<M> {
     }
 }
 
-pub(crate) struct StatePool<M: Math> {
+pub struct StatePool<M: Math> {
     storage: Rc<StateStorage<M>>,
 }
 
 impl<M: Math> StatePool<M> {
-    pub(crate) fn new(math: &mut M, capacity: usize) -> StatePool<M> {
+    pub fn new(math: &mut M, capacity: usize) -> StatePool<M> {
         StatePool {
             storage: Rc::new(StateStorage::new(math, capacity)),
         }
     }
 
-    pub(crate) fn new_state(&self, math: &mut M) -> State<M> {
+    pub fn new_state(&self, math: &mut M) -> State<M> {
         let inner = match self.storage.free_states.borrow_mut().pop() {
             Some(inner) => inner,
             None => Rc::new(InnerStateReusable::new(math, self)),
@@ -42,7 +42,7 @@ impl<M: Math> StatePool<M> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct InnerState<M: Math> {
+pub struct InnerState<M: Math> {
     pub(crate) p: M::Vector,
     pub(crate) q: M::Vector,
     pub(crate) v: M::Vector,
@@ -76,7 +76,7 @@ impl<'pool, M: Math> InnerStateReusable<M> {
     }
 }
 
-pub(crate) struct State<M: Math> {
+pub struct State<M: Math> {
     inner: std::mem::ManuallyDrop<Rc<InnerStateReusable<M>>>,
 }
 
@@ -89,7 +89,7 @@ impl<M: Math> Deref for State<M> {
 }
 
 #[derive(Debug)]
-pub(crate) struct StateInUse {}
+pub struct StateInUse {}
 
 type Result<T> = std::result::Result<T, StateInUse>;
 
@@ -212,13 +212,13 @@ impl<M: Math> State<M> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{cpu_math::CpuMath, test_logps::NormalLogp};
+    use crate::{cpu_math::CpuMath, sampler::test_logps::NormalLogp};
 
     use super::*;
 
     #[test]
     fn crate_pool() {
-        let logp = NormalLogp::new(10, 0.2);
+        let logp = NormalLogp { dim: 10, mu: 0.2 };
         let mut math = CpuMath::new(logp);
         let pool = StatePool::new(&mut math, 10);
         let mut state = pool.new_state(&mut math);
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn make_state() {
         let dim = 10;
-        let logp = NormalLogp::new(dim, 0.2);
+        let logp = NormalLogp { dim, mu: 0.2 };
         let mut math = CpuMath::new(logp);
         let pool = StatePool::new(&mut math, 10);
         let a = pool.new_state(&mut math);

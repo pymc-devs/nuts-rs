@@ -68,7 +68,7 @@ impl rand::distributions::Distribution<Direction> for rand::distributions::Stand
 ///
 /// Collectors can compute statistics like the mean acceptance rate
 /// or collect data for mass matrix adaptation.
-pub(crate) trait Collector<M: Math> {
+pub trait Collector<M: Math> {
     fn register_leapfrog(
         &mut self,
         _math: &mut M,
@@ -89,7 +89,7 @@ pub trait LogpError: std::error::Error {
 }
 
 /// The hamiltonian defined by the potential energy and the kinetic energy
-pub(crate) trait Hamiltonian<M>: SamplerStats<M>
+pub trait Hamiltonian<M>: SamplerStats<M>
 where
     M: Math,
 {
@@ -411,7 +411,7 @@ where
     Ok((tree.draw, info))
 }
 
-pub(crate) trait SamplerStats<M: Math> {
+pub trait SamplerStats<M: Math> {
     type Stats: Send + Debug + Clone;
     type Builder: StatTraceBuilder<Self::Stats>;
 
@@ -433,7 +433,7 @@ pub trait StatTraceBuilder<T: ?Sized>: Clone + Send {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct NutsSampleStats<HStats: Send + Debug + Clone, AdaptStats: Send + Debug + Clone> {
+pub struct NutsSampleStats<HStats: Send + Debug + Clone, AdaptStats: Send + Debug + Clone> {
     depth: u64,
     maxdepth_reached: bool,
     idx_in_trajectory: i64,
@@ -460,7 +460,7 @@ pub struct SampleStats {
 }
 
 #[derive(Clone)]
-pub(crate) struct NutsStatsBuilder<H, A> {
+pub struct NutsStatsBuilder<H, A> {
     depth: MutablePrimitiveArray<u64>,
     maxdepth_reached: MutableBooleanArray,
     index_in_trajectory: MutablePrimitiveArray<i64>,
@@ -767,18 +767,8 @@ where
     }
 }
 
-impl<H, A> From<NutsSampleStats<H, A>> for SampleStats
-where
-    H: Clone + Debug + Send,
-    A: Clone + Debug + Send,
-{
-    fn from(value: NutsSampleStats<H, A>) -> Self {
-        todo!()
-    }
-}
-
 /// Draw samples from the posterior distribution using Hamiltonian MCMC.
-pub(crate) trait Chain<M: Math>: SamplerStats<M> {
+pub trait Chain<M: Math>: SamplerStats<M> {
     type Hamiltonian; //: Hamiltonian<M>;
     type AdaptStrategy; //: AdaptStrategy<M>;
 
@@ -853,7 +843,7 @@ where
     }
 }
 
-pub(crate) trait AdaptStrategy<M: Math>: SamplerStats<M> {
+pub trait AdaptStrategy<M: Math>: SamplerStats<M> {
     type Potential: Hamiltonian<M>;
     type Collector: Collector<M>;
     type Options: Copy + Send + Default;
@@ -943,16 +933,6 @@ where
         let mut position: Box<[f64]> = vec![0f64; self.math.dim()].into();
         state.write_position(&mut self.math, &mut position);
 
-        self.strategy.adapt(
-            &mut self.math,
-            &mut self.options,
-            &mut self.potential,
-            self.draw_count,
-            &self.collector,
-        );
-
-        self.draw_count += 1;
-
         let stats = NutsSampleStats {
             depth: info.depth,
             maxdepth_reached: info.reached_maxdepth,
@@ -982,6 +962,16 @@ where
             tuning: self.strategy.is_tuning(),
         };
 
+        self.strategy.adapt(
+            &mut self.math,
+            &mut self.options,
+            &mut self.potential,
+            self.draw_count,
+            &self.collector,
+        );
+
+        self.draw_count += 1;
+
         self.init = state;
         Ok((position, stats))
     }
@@ -1005,8 +995,11 @@ mod tests {
     use rand::thread_rng;
 
     use crate::{
-        adapt_strategy::test_logps::NormalLogp, cpu_math::CpuMath, sampler::DiagGradNutsSettings,
-        Chain, Settings,
+        adapt_strategy::test_logps::NormalLogp,
+        cpu_math::CpuMath,
+        nuts::{Chain, SamplerStats},
+        sampler::DiagGradNutsSettings,
+        Settings,
     };
 
     use super::StatTraceBuilder;
@@ -1022,11 +1015,11 @@ mod tests {
 
         let mut chain = settings.new_chain(0, math, &mut rng);
 
-        let mut builder = chain.new_builder(ndim, &settings);
+        let mut builder = chain.new_builder(&settings, ndim);
 
         for _ in 0..10 {
             let (_, stats) = chain.draw().unwrap();
-            builder.append_value(&stats);
+            builder.append_value(stats);
         }
 
         let stats = builder.finalize();

@@ -31,13 +31,13 @@ impl<M: Math, Mass: MassMatrix<M>> EuclideanPotential<M, Mass> {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub(crate) struct PotentialStats<S: Clone + Debug> {
+pub struct PotentialStats<S: Clone + Debug> {
     step_size: f64,
     mass_matrix_stats: S,
 }
 
 #[derive(Clone)]
-pub(crate) struct PotentialStatsBuilder<B> {
+pub struct PotentialStatsBuilder<B> {
     step_size: MutablePrimitiveArray<f64>,
     mass_matrix: B,
 }

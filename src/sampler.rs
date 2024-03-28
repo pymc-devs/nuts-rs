@@ -241,8 +241,9 @@ enum ChainCommand {
     Pause,
 }
 
-type Builder<'model, M: Model + 'model, S: Settings> =
-    <S::Chain<M::Math<'model>> as SamplerStats<M::Math<'model>>>::Builder;
+type Builder<'model, M, S> = <<S as Settings>::Chain<<M as Model>::Math<'model>> as SamplerStats<
+    <M as Model>::Math<'model>,
+>>::Builder;
 
 struct ChainTrace<'model, M: Model + 'model, S: Settings>
 //where S::Chain<M>: SamplerStats<M::Math<'model>>
@@ -346,7 +347,6 @@ impl<'scope, M: Model + 'scope, S: Settings> ChainProcess<'scope, M, S> {
 
         scope.spawn_fifo(move |_| {
             let trace = trace_inner;
-            let settings = settings;
 
             let mut sample = move || {
                 let logp = model.math().context("Failed to create model density")?;
@@ -636,56 +636,75 @@ impl Sampler {
         }
         SamplerWaitResult::Timeout(self)
     }
+
+    pub fn progress(&mut self) -> Result<Box<[Option<ChainProgress>]>> {
+        self.commands.send(SamplerCommand::Progress)?;
+        let response = self.responses.recv()?;
+        let SamplerResponse::Progress(progress) = response else {
+            bail!("Got invalid response from sample controller thread");
+        };
+        Ok(progress)
+    }
 }
 
-/*
 pub mod test_logps {
     use crate::{
         cpu_math::{CpuLogpFunc, CpuMath},
-        math_base::Math,
         nuts::LogpError,
     };
     use multiversion::multiversion;
     use thiserror::Error;
 
-    use super::Model;
+    use super::{DrawStorage, Model};
 
     #[derive(Clone, Debug)]
     pub struct NormalLogp {
-        dim: usize,
-        mu: f64,
+        pub dim: usize,
+        pub mu: f64,
     }
 
-    impl Model for NormalLogp {
-        type Math = CpuMath<NormalLogp>;
+    #[derive(Clone)]
+    pub struct Storage {}
 
-        type DrawStorage<'model, S: super::Settings> = ();
+    impl DrawStorage for Storage {
+        fn append_value(&mut self, _point: &[f64]) -> anyhow::Result<()> {
+            Ok(())
+        }
 
-        fn new_trace<'model, S: super::Settings, R: rand::prelude::Rng + ?Sized>(
-            &'model self,
-            rng: &mut R,
-            chain_id: u64,
-            settings: &'model S,
-        ) -> anyhow::Result<Self::DrawStorage<'model, S>> {
+        fn finalize(self) -> anyhow::Result<Box<dyn arrow2::array::Array>> {
             todo!()
         }
 
+        fn inspect(&mut self) -> anyhow::Result<Box<dyn arrow2::array::Array>> {
+            self.clone().finalize()
+        }
+    }
+
+    impl Model for NormalLogp {
+        type Math<'math> = CpuMath<NormalLogp>;
+
+        type DrawStorage<'model, S: super::Settings> = Storage;
+
+        fn new_trace<'model, S: super::Settings, R: rand::prelude::Rng + ?Sized>(
+            &'model self,
+            _rng: &mut R,
+            _chain_id: u64,
+            _settings: &'model S,
+        ) -> anyhow::Result<Self::DrawStorage<'model, S>> {
+            Ok(Storage {})
+        }
+
         fn math(&self) -> anyhow::Result<Self::Math<'_>> {
-            todo!()
+            Ok(CpuMath::new(self.clone()))
         }
 
         fn init_position<R: rand::prelude::Rng + ?Sized>(
             &self,
-            rng: &mut R,
+            _rng: &mut R,
             position: &mut [f64],
         ) -> anyhow::Result<()> {
-            todo!()
-        }
-    }
-
-    impl NormalLogp {
-        pub fn new(dim: usize, mu: f64) -> NormalLogp {
-            NormalLogp { dim, mu }
+            position.iter_mut().for_each(|x| *x = 0.);
+            Ok(())
         }
     }
 
@@ -767,9 +786,9 @@ pub mod test_logps {
 
 #[cfg(test)]
 mod tests {
+    use super::test_logps::NormalLogp;
     use crate::{
-        cpu_math::CpuMath, sample_sequentially, sampler::Settings, test_logps::NormalLogp, Chain,
-        DiagGradNutsSettings,
+        cpu_math::CpuMath, sample_sequentially, sampler::Settings, Chain, DiagGradNutsSettings,
     };
 
     use anyhow::Result;
@@ -779,7 +798,7 @@ mod tests {
 
     #[test]
     fn sample_chain() -> Result<()> {
-        let logp = NormalLogp::new(10, 0.1);
+        let logp = NormalLogp { dim: 10, mu: 0.1 };
         let math = CpuMath::new(logp);
         let mut settings = DiagGradNutsSettings::default();
         settings.num_tune = 100;
@@ -790,10 +809,12 @@ mod tests {
 
         let mut chain = settings.new_chain(0, math, &mut rng);
 
-        let (draw, info) = chain.draw()?;
-        info.into().logp;
-        info.draw();
+        let (_draw, info) = chain.draw()?;
+        assert!(settings.sample_stats::<CpuMath<NormalLogp>>(&info).tuning);
+        assert_eq!(info.draw, 0);
 
+        let logp = NormalLogp { dim: 10, mu: 0.1 };
+        let math = CpuMath::new(logp);
         let chain = sample_sequentially(math, settings, &start, 200, 1, &mut rng).unwrap();
         let mut draws = chain.collect_vec();
         assert_eq!(draws.len(), 200);
@@ -801,14 +822,14 @@ mod tests {
         let draw0 = draws.remove(100).unwrap();
         let (vals, stats) = draw0;
         assert_eq!(vals.len(), 10);
-        assert_eq!(stats.chain(), 1);
-        assert_eq!(stats.draw(), 100);
+        assert_eq!(stats.chain, 1);
+        assert_eq!(stats.draw, 100);
         Ok(())
     }
 
     #[test]
     fn sample_seq() {
-        let logp = NormalLogp::new(10, 0.1);
+        let logp = NormalLogp { dim: 10, mu: 0.1 };
         let math = CpuMath::new(logp);
         let mut settings = DiagGradNutsSettings::default();
         settings.num_tune = 100;
@@ -824,8 +845,7 @@ mod tests {
         let draw0 = draws.remove(100).unwrap();
         let (vals, stats) = draw0;
         assert_eq!(vals.len(), 10);
-        assert_eq!(stats.chain(), 1);
-        assert_eq!(stats.draw(), 100);
+        assert_eq!(stats.chain, 1);
+        assert_eq!(stats.draw, 100);
     }
 }
-*/

@@ -12,7 +12,7 @@ use crate::{
     state::{InnerState, State},
 };
 
-pub(crate) trait MassMatrix<M: Math>: SamplerStats<M> {
+pub trait MassMatrix<M: Math>: SamplerStats<M> {
     fn update_velocity(&self, math: &mut M, state: &mut InnerState<M>);
     fn update_kinetic_energy(&self, math: &mut M, state: &mut InnerState<M>);
     fn randomize_momentum<R: rand::Rng + ?Sized>(
@@ -23,7 +23,7 @@ pub(crate) trait MassMatrix<M: Math>: SamplerStats<M> {
     );
 }
 
-pub(crate) struct NullCollector {}
+pub struct NullCollector {}
 
 impl<M: Math> Collector<M> for NullCollector {}
 
@@ -169,7 +169,7 @@ impl<M: Math> MassMatrix<M> for DiagMassMatrix<M> {
 }
 
 #[derive(Debug)]
-pub(crate) struct RunningVariance<M: Math> {
+pub struct RunningVariance<M: Math> {
     mean: M::Vector,
     variance: M::Vector,
     count: u64,
@@ -210,7 +210,7 @@ impl<M: Math> RunningVariance<M> {
     }
 }
 
-pub(crate) struct DrawGradCollector<M: Math> {
+pub struct DrawGradCollector<M: Math> {
     pub(crate) draw: M::Vector,
     pub(crate) grad: M::Vector,
     pub(crate) is_good: bool,

@@ -12,7 +12,8 @@
 //! ## Usage
 //!
 //! ```
-//! use nuts_rs::{CpuLogpFunc, CpuMath, LogpError, new_sampler, SamplerArgs, Chain, SampleStats};
+//! use nuts_rs::{CpuLogpFunc, CpuMath, LogpError, DiagGradNutsSettings, Chain, SampleStats,
+//! Settings};
 //! use thiserror::Error;
 //! use rand::thread_rng;
 //!
@@ -52,11 +53,11 @@
 //! }
 //!
 //! // We get the default sampler arguments
-//! let mut sampler_args = SamplerArgs::default();
+//! let mut settings = DiagGradNutsSettings::default();
 //!
 //! // and modify as we like
-//! sampler_args.num_tune = 1000;
-//! sampler_args.maxdepth = 3;  // small value just for testing...
+//! settings.num_tune = 1000;
+//! settings.maxdepth = 3;  // small value just for testing...
 //!
 //! // We instanciate our posterior density function
 //! let logp_func = PosteriorDensity {};
@@ -64,7 +65,7 @@
 //!
 //! let chain = 0;
 //! let mut rng = thread_rng();
-//! let mut sampler = new_sampler(math, sampler_args, chain, &mut rng);
+//! let mut sampler = settings.new_chain(0, math, &mut rng);
 //!
 //! // Set to some initial position and start drawing samples.
 //! sampler.set_position(&vec![0f64; 10]).expect("Unrecoverable error during init");
@@ -73,9 +74,7 @@
 //!     let (draw, info) = sampler.draw().expect("Unrecoverable error during sampling");
 //!     trace.push(draw);
 //!     // Or get more detailed information about divergences
-//!     if let Some(div_info) = info.divergence_info() {
-//!         println!("Divergence at position {:?}", div_info.start_location);
-//!     }
+//!     dbg!(settings.sample_stats::<CpuMath<PosteriorDensity>>(&info).draw);
 //!     dbg!(&info);
 //! }
 //! ```
@@ -100,10 +99,8 @@ pub(crate) mod stepsize;
 pub use adapt_strategy::DualAverageSettings;
 pub use cpu_math::{CpuLogpFunc, CpuMath};
 pub use math_base::Math;
-pub use nuts::{DivergenceInfo, LogpError, NutsError};
-//pub use sampler::test_logps;
-//pub use sampler::{new_sampler, sample_sequentially, InitPointFunc, JitterInitFunc, MathMaker};
-pub use sampler::{DiagGradNutsSettings, Model, Sampler, Settings};
+pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError, SampleStats};
+pub use sampler::{sample_sequentially, DiagGradNutsSettings, Model, Sampler, Settings};
 
 /*
 struct A {}

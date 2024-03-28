@@ -24,7 +24,7 @@ const UPPER_LIMIT: f64 = 1e20f64;
 const INIT_LOWER_LIMIT: f64 = 1e-20f64;
 const INIT_UPPER_LIMIT: f64 = 1e20f64;
 
-pub(crate) struct DualAverageStrategy<F, M> {
+pub struct DualAverageStrategy<F, M> {
     step_size_adapt: DualAverage,
     options: DualAverageSettings,
     enabled: bool,
@@ -210,12 +210,12 @@ pub struct DiagAdaptExpSettings {
     pub store_mass_matrix: bool,
 }
 
-pub(crate) struct ExpWindowDiagAdapt<M: Math> {
+pub struct ExpWindowDiagAdapt<M: Math> {
     exp_variance_draw: RunningVariance<M>,
     exp_variance_grad: RunningVariance<M>,
     exp_variance_grad_bg: RunningVariance<M>,
     exp_variance_draw_bg: RunningVariance<M>,
-    settings: DiagAdaptExpSettings,
+    _settings: DiagAdaptExpSettings,
     _phantom: PhantomData<M>,
 }
 
@@ -269,7 +269,7 @@ impl<M: Math> ExpWindowDiagAdapt<M> {
     }
 }
 
-pub(crate) type ExpWindowDiagAdaptStats = ();
+pub type ExpWindowDiagAdaptStats = ();
 type ExpWindowDiagAdaptStatsBuilder = ();
 
 impl<M: Math> SamplerStats<M> for ExpWindowDiagAdapt<M> {
@@ -292,7 +292,7 @@ impl<M: Math> AdaptStrategy<M> for ExpWindowDiagAdapt<M> {
             exp_variance_grad: RunningVariance::new(math),
             exp_variance_draw_bg: RunningVariance::new(math),
             exp_variance_grad_bg: RunningVariance::new(math),
-            settings: options,
+            _settings: options,
             _phantom: PhantomData,
         }
     }
@@ -531,7 +531,7 @@ where
     }
 }
 
-pub(crate) struct CombinedCollector<M: Math, C1: Collector<M>, C2: Collector<M>> {
+pub struct CombinedCollector<M: Math, C1: Collector<M>, C2: Collector<M>> {
     collector1: C1,
     collector2: C2,
     _phantom: PhantomData<M>,

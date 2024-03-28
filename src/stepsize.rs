@@ -103,7 +103,7 @@ impl RunningMean {
     }
 }
 
-pub(crate) struct AcceptanceRateCollector<M: Math> {
+pub struct AcceptanceRateCollector<M: Math> {
     initial_energy: f64,
     pub(crate) mean: RunningMean,
     pub(crate) mean_sym: RunningMean,
