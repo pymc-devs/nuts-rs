@@ -6,10 +6,7 @@ use arrow2::{
 };
 
 use crate::{
-    mass_matrix::{
-        DiagMassMatrix, DrawGradCollector,
-        MassMatrix, RunningVariance,
-    },
+    mass_matrix::{DiagMassMatrix, DrawGradCollector, MassMatrix, RunningVariance},
     math_base::Math,
     nuts::{AdaptStrategy, Collector, NutsOptions},
     potential::EuclideanPotential,
@@ -19,7 +16,7 @@ use crate::{
     DivergenceInfo,
 };
 
-use crate::nuts::{SamplerStatTrace, StatTraceBuilder};
+use crate::nuts::{SamplerStats, StatTraceBuilder};
 
 const LOWER_LIMIT: f64 = 1e-20f64;
 const UPPER_LIMIT: f64 = 1e20f64;
@@ -62,6 +59,7 @@ pub struct DualAverageStats {
     pub n_steps: u64,
 }
 
+#[derive(Clone)]
 pub struct DualAverageStatsBuilder {
     step_size_bar: MutablePrimitiveArray<f64>,
     mean_tree_accept: MutablePrimitiveArray<f64>,
@@ -70,7 +68,7 @@ pub struct DualAverageStatsBuilder {
 }
 
 impl StatTraceBuilder<DualAverageStats> for DualAverageStatsBuilder {
-    fn append_value(&mut self, value: &DualAverageStats) {
+    fn append_value(&mut self, value: DualAverageStats) {
         self.step_size_bar.push(Some(value.step_size_bar));
         self.mean_tree_accept.push(Some(value.mean_tree_accept));
         self.mean_tree_accept_sym
@@ -97,7 +95,7 @@ impl StatTraceBuilder<DualAverageStats> for DualAverageStatsBuilder {
     }
 }
 
-impl<M: Math, Mass: MassMatrix<M>> SamplerStatTrace<M> for DualAverageStrategy<M, Mass> {
+impl<M: Math, Mass: MassMatrix<M>> SamplerStats<M> for DualAverageStrategy<M, Mass> {
     type Builder = DualAverageStatsBuilder;
     type Stats = DualAverageStats;
 
@@ -200,6 +198,10 @@ impl<M: Math, Mass: MassMatrix<M>> AdaptStrategy<M> for DualAverageStrategy<M, M
     fn new_collector(&self, _math: &mut M) -> Self::Collector {
         AcceptanceRateCollector::new()
     }
+
+    fn is_tuning(&self) -> bool {
+        self.enabled
+    }
 }
 
 /// Settings for mass matrix adaptation
@@ -270,17 +272,13 @@ impl<M: Math> ExpWindowDiagAdapt<M> {
 pub(crate) type ExpWindowDiagAdaptStats = ();
 type ExpWindowDiagAdaptStatsBuilder = ();
 
-impl<M: Math> SamplerStatTrace<M> for ExpWindowDiagAdapt<M> {
+impl<M: Math> SamplerStats<M> for ExpWindowDiagAdapt<M> {
     type Builder = ExpWindowDiagAdaptStats;
     type Stats = ExpWindowDiagAdaptStatsBuilder;
 
-    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {
-        
-    }
+    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {}
 
-    fn current_stats(&self, _math: &mut M) -> Self::Stats {
-        
-    }
+    fn current_stats(&self, _math: &mut M) -> Self::Stats {}
 }
 
 impl<M: Math> AdaptStrategy<M> for ExpWindowDiagAdapt<M> {
@@ -333,6 +331,10 @@ impl<M: Math> AdaptStrategy<M> for ExpWindowDiagAdapt<M> {
     fn new_collector(&self, math: &mut M) -> Self::Collector {
         DrawGradCollector::new(math)
     }
+
+    fn is_tuning(&self) -> bool {
+        todo!()
+    }
 }
 
 pub struct GradDiagStrategy<M: Math> {
@@ -345,6 +347,7 @@ pub struct GradDiagStrategy<M: Math> {
 
     // The first draw number for the final step size adaptation window
     final_step_size_window: u64,
+    tuning: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -370,7 +373,7 @@ impl Default for GradDiagOptions {
     }
 }
 
-impl<M: Math> SamplerStatTrace<M> for GradDiagStrategy<M> {
+impl<M: Math> SamplerStats<M> for GradDiagStrategy<M> {
     type Stats = CombinedStats<DualAverageStats, ExpWindowDiagAdaptStats>;
     type Builder = CombinedStatsBuilder<DualAverageStatsBuilder, ExpWindowDiagAdaptStatsBuilder>;
 
@@ -409,6 +412,7 @@ impl<M: Math> AdaptStrategy<M> for GradDiagStrategy<M> {
             num_tune,
             early_end,
             final_step_size_window: final_second_step_size,
+            tuning: true,
         }
     }
 
@@ -433,6 +437,7 @@ impl<M: Math> AdaptStrategy<M> for GradDiagStrategy<M> {
         collector: &Self::Collector,
     ) {
         if draw >= self.num_tune {
+            self.tuning = false;
             return;
         }
 
@@ -477,6 +482,10 @@ impl<M: Math> AdaptStrategy<M> for GradDiagStrategy<M> {
             _phantom: PhantomData,
         }
     }
+
+    fn is_tuning(&self) -> bool {
+        self.tuning
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -485,7 +494,8 @@ pub struct CombinedStats<D1, D2> {
     pub stats2: D2,
 }
 
-pub struct CombinedStatsBuilder<B1, B2> {
+#[derive(Clone)]
+pub struct CombinedStatsBuilder<B1: Clone, B2: Clone> {
     stats1: B1,
     stats2: B2,
 }
@@ -495,9 +505,9 @@ where
     B1: StatTraceBuilder<S1>,
     B2: StatTraceBuilder<S2>,
 {
-    fn append_value(&mut self, value: &CombinedStats<S1, S2>) {
-        self.stats1.append_value(&value.stats1);
-        self.stats2.append_value(&value.stats2);
+    fn append_value(&mut self, value: CombinedStats<S1, S2>) {
+        self.stats1.append_value(value.stats1);
+        self.stats2.append_value(value.stats2);
     }
 
     fn finalize(self) -> Option<StructArray> {

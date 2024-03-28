@@ -100,11 +100,10 @@ pub(crate) mod stepsize;
 pub use adapt_strategy::DualAverageSettings;
 pub use cpu_math::{CpuLogpFunc, CpuMath};
 pub use math_base::Math;
-pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError};
-pub use sampler::test_logps;
+pub use nuts::{DivergenceInfo, LogpError, NutsError};
+//pub use sampler::test_logps;
 //pub use sampler::{new_sampler, sample_sequentially, InitPointFunc, JitterInitFunc, MathMaker};
-pub use sampler::DiagGradNutsSettings;
-pub use sampler::{InitPointFunc, JitterInitFunc, MathMaker};
+pub use sampler::{DiagGradNutsSettings, Model, Sampler, Settings};
 
 /*
 struct A {}

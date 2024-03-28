@@ -8,7 +8,7 @@ use arrow2::datatypes::{DataType, Field};
 use crate::mass_matrix::MassMatrix;
 use crate::math_base::Math;
 use crate::nuts::{Collector, Direction, DivergenceInfo, Hamiltonian, LogpError, NutsError};
-use crate::nuts::{SamplerStatTrace, StatTraceBuilder};
+use crate::nuts::{SamplerStats, StatTraceBuilder};
 use crate::sampler::Settings;
 use crate::state::{State, StatePool};
 
@@ -36,6 +36,7 @@ pub(crate) struct PotentialStats<S: Clone + Debug> {
     mass_matrix_stats: S,
 }
 
+#[derive(Clone)]
 pub(crate) struct PotentialStatsBuilder<B> {
     step_size: MutablePrimitiveArray<f64>,
     mass_matrix: B,
@@ -44,9 +45,9 @@ pub(crate) struct PotentialStatsBuilder<B> {
 impl<S: Clone + Debug, B: StatTraceBuilder<S>> StatTraceBuilder<PotentialStats<S>>
     for PotentialStatsBuilder<B>
 {
-    fn append_value(&mut self, value: &PotentialStats<S>) {
+    fn append_value(&mut self, value: PotentialStats<S>) {
         self.step_size.push(Some(value.step_size));
-        self.mass_matrix.append_value(&value.mass_matrix_stats)
+        self.mass_matrix.append_value(value.mass_matrix_stats)
     }
 
     fn finalize(mut self) -> Option<StructArray> {
@@ -58,7 +59,7 @@ impl<S: Clone + Debug, B: StatTraceBuilder<S>> StatTraceBuilder<PotentialStats<S
     }
 }
 
-impl<M: Math, Mass: MassMatrix<M>> SamplerStatTrace<M> for EuclideanPotential<M, Mass> {
+impl<M: Math, Mass: MassMatrix<M>> SamplerStats<M> for EuclideanPotential<M, Mass> {
     type Builder = PotentialStatsBuilder<Mass::Builder>;
     type Stats = PotentialStats<Mass::Stats>;
 

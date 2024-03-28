@@ -6,13 +6,13 @@ use arrow2::{
 use crate::{
     math_base::Math,
     nuts::Collector,
-    nuts::SamplerStatTrace,
+    nuts::SamplerStats,
     nuts::StatTraceBuilder,
     sampler::Settings,
     state::{InnerState, State},
 };
 
-pub(crate) trait MassMatrix<M: Math>: SamplerStatTrace<M> {
+pub(crate) trait MassMatrix<M: Math>: SamplerStats<M> {
     fn update_velocity(&self, math: &mut M, state: &mut InnerState<M>);
     fn update_kinetic_energy(&self, math: &mut M, state: &mut InnerState<M>);
     fn randomize_momentum<R: rand::Rng + ?Sized>(
@@ -39,12 +39,13 @@ pub struct DiagMassMatrixStats {
     pub mass_matrix_inv: Option<Box<[f64]>>,
 }
 
+#[derive(Clone)]
 pub struct DiagMassMatrixStatsBuilder {
     mass_matrix_inv: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
 }
 
 impl StatTraceBuilder<DiagMassMatrixStats> for DiagMassMatrixStatsBuilder {
-    fn append_value(&mut self, value: &DiagMassMatrixStats) {
+    fn append_value(&mut self, value: DiagMassMatrixStats) {
         if let Some(store) = self.mass_matrix_inv.as_mut() {
             store
                 .try_push(
@@ -74,7 +75,7 @@ impl StatTraceBuilder<DiagMassMatrixStats> for DiagMassMatrixStatsBuilder {
     }
 }
 
-impl<M: Math> SamplerStatTrace<M> for DiagMassMatrix<M> {
+impl<M: Math> SamplerStats<M> for DiagMassMatrix<M> {
     type Builder = DiagMassMatrixStatsBuilder;
     type Stats = DiagMassMatrixStats;
 
