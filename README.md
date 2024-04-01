@@ -8,7 +8,7 @@ For details see the original [NUTS paper](https://arxiv.org/abs/1111.4246)
 and the more recent [introduction](https://arxiv.org/abs/1701.02434).
 
 This crate was developed as a faster replacement of the sampler in PyMC,
-to be used with the new numba backend of aesara. The python wrapper
+to be used with the new numba backend of PyTensor. The python wrapper
 for this sampler is [nutpie](https://github.com/pymc-devs/nutpie).
 
 ## Usage
