@@ -173,7 +173,10 @@ impl<M: Math, Mass: MassMatrix<M>> AdaptStrategy<M> for DualAverageStrategy<M, M
         let mut pool = potential.new_pool(math, 1);
 
         let mut state = potential.copy_state(math, &mut pool, state);
-        state.try_mut_inner().expect("New state should have only one reference").idx_in_trajectory = 0;
+        state
+            .try_mut_inner()
+            .expect("New state should have only one reference")
+            .idx_in_trajectory = 0;
         potential.randomize_momentum(math, &mut state, rng);
 
         let mut collector = AcceptanceRateCollector::new();
@@ -205,14 +208,8 @@ impl<M: Math, Mass: MassMatrix<M>> AdaptStrategy<M> for DualAverageStrategy<M, M
         for _ in 0..100 {
             let mut collector = AcceptanceRateCollector::new();
             collector.register_init(math, &state, options);
-            let state_next = potential.leapfrog(
-                math,
-                &mut pool,
-                &state,
-                dir,
-                state.energy(),
-                &mut collector,
-            );
+            let state_next =
+                potential.leapfrog(math, &mut pool, &state, dir, state.energy(), &mut collector);
             let Ok(_) = state_next else {
                 potential.step_size = self.options.initial_step;
                 return;
@@ -221,14 +218,16 @@ impl<M: Math, Mass: MassMatrix<M>> AdaptStrategy<M> for DualAverageStrategy<M, M
             match dir {
                 Direction::Forward => {
                     if (accept_stat <= self.options.target_accept) | (potential.step_size > 1e5) {
-                        self.step_size_adapt = DualAverage::new(self.options.params, potential.step_size);
+                        self.step_size_adapt =
+                            DualAverage::new(self.options.params, potential.step_size);
                         return;
                     }
                     potential.step_size *= 2.;
                 }
                 Direction::Backward => {
                     if (accept_stat >= self.options.target_accept) | (potential.step_size < 1e-10) {
-                        self.step_size_adapt = DualAverage::new(self.options.params, potential.step_size);
+                        self.step_size_adapt =
+                            DualAverage::new(self.options.params, potential.step_size);
                         return;
                     }
                     potential.step_size /= 2.;
@@ -289,7 +288,10 @@ pub struct DiagAdaptExpSettings {
 
 impl Default for DiagAdaptExpSettings {
     fn default() -> Self {
-        Self { store_mass_matrix: false, use_grad_based_estimate: true }
+        Self {
+            store_mass_matrix: false,
+            use_grad_based_estimate: true,
+        }
     }
 }
 
@@ -586,8 +588,15 @@ impl<M: Math> AdaptStrategy<M> for GradDiagStrategy<M> {
                 self.has_initial_mass_matrix = false;
                 self.step_size.init(math, options, potential, state, rng);
             } else {
-                self.step_size
-                    .adapt(math, options, potential, draw, &collector.collector1, state, rng);
+                self.step_size.adapt(
+                    math,
+                    options,
+                    potential,
+                    draw,
+                    &collector.collector1,
+                    state,
+                    rng,
+                );
             }
             return;
         }
@@ -595,8 +604,15 @@ impl<M: Math> AdaptStrategy<M> for GradDiagStrategy<M> {
         if draw == self.num_tune - 1 {
             self.step_size.finalize();
         }
-        self.step_size
-            .adapt(math, options, potential, draw, &collector.collector1, state, rng);
+        self.step_size.adapt(
+            math,
+            options,
+            potential,
+            draw,
+            &collector.collector1,
+            state,
+            rng,
+        );
     }
 
     fn new_collector(&self, math: &mut M) -> Self::Collector {

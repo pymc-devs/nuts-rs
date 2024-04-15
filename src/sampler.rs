@@ -364,7 +364,9 @@ impl<'scope, M: Model + 'scope, S: Settings> ChainProcess<'scope, M, S> {
         rng.set_stream(chain_id);
 
         let trace = Arc::new(Mutex::new(None));
-        let progress = Arc::new(Mutex::new(ChainProgress::new(settings.hint_num_draws() + settings.hint_num_tune())));
+        let progress = Arc::new(Mutex::new(ChainProgress::new(
+            settings.hint_num_draws() + settings.hint_num_tune(),
+        )));
 
         let trace_inner = trace.clone();
         let progress_inner = progress.clone();
@@ -511,12 +513,10 @@ impl<I: Iterator<Item = ChainOutput>> From<I> for Trace {
     }
 }
 
-
 pub struct ProgressCallback {
     pub callback: Box<dyn FnMut(Box<[ChainProgress]>) + Send>,
     pub rate: Duration,
 }
-
 
 impl Sampler {
     pub fn new<S: Settings, M: Model>(
@@ -576,7 +576,8 @@ impl Sampler {
                         let timeout = progress_rate.checked_sub(last_progress.elapsed());
                         let timeout = timeout.unwrap_or_else(|| {
                             if let Some(ProgressCallback { callback, .. }) = &mut callback {
-                                let progress = chains.iter().map(|chain| chain.progress()).collect_vec();
+                                let progress =
+                                    chains.iter().map(|chain| chain.progress()).collect_vec();
                                 callback(progress.into());
                             }
                             last_progress = Instant::now();
@@ -615,7 +616,8 @@ impl Sampler {
                             Err(RecvTimeoutError::Timeout) => {}
                             Err(RecvTimeoutError::Disconnected) => {
                                 if let Some(ProgressCallback { callback, .. }) = &mut callback {
-                                    let progress = chains.iter().map(|chain| chain.progress()).collect_vec();
+                                    let progress =
+                                        chains.iter().map(|chain| chain.progress()).collect_vec();
                                     callback(progress.into());
                                 }
                                 return Ok(());
