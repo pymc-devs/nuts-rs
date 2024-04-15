@@ -511,7 +511,12 @@ impl<I: Iterator<Item = ChainOutput>> From<I> for Trace {
     }
 }
 
-pub type ProgressCallback = Box<dyn FnMut(Box<[ChainProgress]>) + Send>;
+
+pub struct ProgressCallback {
+    pub callback: Box<dyn FnMut(Box<[ChainProgress]>) + Send>,
+    pub rate: Duration,
+}
+
 
 impl Sampler {
     pub fn new<S: Settings, M: Model>(
@@ -533,8 +538,7 @@ impl Sampler {
 
             let settings_ref = &settings;
             let model_ref = &model;
-            let callback = callback;
-            let mut callback = callback.unwrap_or(Box::new(|_| {}));
+            let mut callback = callback;
 
             pool.scope_fifo(move |scope| {
                 let results = results_tx;
@@ -560,17 +564,21 @@ impl Sampler {
                 }
 
                 let mut main_loop = || {
-                    let progress = chains.iter().map(|chain| chain.progress()).collect_vec();
-                    callback(progress.into());
+                    let mut progress_rate = Duration::MAX;
+                    if let Some(ProgressCallback { callback, rate }) = &mut callback {
+                        let progress = chains.iter().map(|chain| chain.progress()).collect_vec();
+                        callback(progress.into());
+                        progress_rate = *rate;
+                    }
                     let mut last_progress = Instant::now();
-                    let progress_rate = Duration::from_millis(500);
 
                     loop {
                         let timeout = progress_rate.checked_sub(last_progress.elapsed());
                         let timeout = timeout.unwrap_or_else(|| {
-                            let progress =
-                                chains.iter().map(|chain| chain.progress()).collect_vec();
-                            callback(progress.into());
+                            if let Some(ProgressCallback { callback, .. }) = &mut callback {
+                                let progress = chains.iter().map(|chain| chain.progress()).collect_vec();
+                                callback(progress.into());
+                            }
                             last_progress = Instant::now();
                             progress_rate
                         });
@@ -606,8 +614,10 @@ impl Sampler {
                             }
                             Err(RecvTimeoutError::Timeout) => {}
                             Err(RecvTimeoutError::Disconnected) => {
-                                let progress = chains.iter().map(|chain| chain.progress()).collect_vec();
-                                callback(progress.into());
+                                if let Some(ProgressCallback { callback, .. }) = &mut callback {
+                                    let progress = chains.iter().map(|chain| chain.progress()).collect_vec();
+                                    callback(progress.into());
+                                }
                                 return Ok(());
                             }
                         };
