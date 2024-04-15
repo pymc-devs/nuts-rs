@@ -52,7 +52,9 @@ impl<M: Math> StatePool<M> {
             idx_in_trajectory,
             kinetic_energy,
             potential_energy,
-        } = new_state.try_mut_inner().expect("New state should not have references");
+        } = new_state
+            .try_mut_inner()
+            .expect("New state should not have references");
 
         math.copy_into(&state.q, q);
         math.copy_into(&state.p, p);
