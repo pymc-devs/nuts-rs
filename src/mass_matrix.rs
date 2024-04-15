@@ -114,6 +114,24 @@ impl<M: Math> DiagMassMatrix<M> {
         }
     }
 
+    pub(crate) fn update_diag_draw(
+        &mut self,
+        math: &mut M,
+        draw_var: &M::Vector,
+        scale: f64,
+        fill_invalid: Option<f64>,
+        clamp: (f64, f64),
+    ) {
+        math.array_update_var_inv_std_draw(
+            &mut self.variance,
+            &mut self.inv_stds,
+            draw_var,
+            scale,
+            fill_invalid,
+            clamp,
+        );
+    }
+
     pub(crate) fn update_diag_draw_grad(
         &mut self,
         math: &mut M,

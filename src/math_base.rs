@@ -77,6 +77,15 @@ pub trait Math {
         value: &Self::Vector,
         diff_scale: f64,
     );
+    fn array_update_var_inv_std_draw(
+        &mut self,
+        variance_out: &mut Self::Vector,
+        inv_std: &mut Self::Vector,
+        draw_var: &Self::Vector,
+        scale: f64,
+        fill_invalid: Option<f64>,
+        clamp: (f64, f64),
+    );
     fn array_update_var_inv_std_draw_grad(
         &mut self,
         variance_out: &mut Self::Vector,
