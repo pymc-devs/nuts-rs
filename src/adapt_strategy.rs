@@ -281,9 +281,16 @@ impl<M: Math, Mass: MassMatrix<M>> AdaptStrategy<M> for DualAverageStrategy<M, M
 }
 
 /// Settings for mass matrix adaptation
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct DiagAdaptExpSettings {
     pub store_mass_matrix: bool,
+    pub use_grad_based_estimate: bool,
+}
+
+impl Default for DiagAdaptExpSettings {
+    fn default() -> Self {
+        Self { store_mass_matrix: false, use_grad_based_estimate: true }
+    }
 }
 
 pub struct ExpWindowDiagAdapt<M: Math> {
@@ -336,13 +343,24 @@ impl<M: Math> ExpWindowDiagAdapt<M> {
         let (grad_var, grad_scale) = self.exp_variance_grad.current();
         assert!(draw_scale == grad_scale);
 
-        potential.mass_matrix.update_diag_draw_grad(
-            math,
-            draw_var,
-            grad_var,
-            None,
-            (LOWER_LIMIT, UPPER_LIMIT),
-        );
+        if self._settings.use_grad_based_estimate {
+            potential.mass_matrix.update_diag_draw_grad(
+                math,
+                draw_var,
+                grad_var,
+                None,
+                (LOWER_LIMIT, UPPER_LIMIT),
+            );
+        } else {
+            let scale = (self.exp_variance_draw.count() as f64).recip();
+            potential.mass_matrix.update_diag_draw(
+                math,
+                draw_var,
+                scale,
+                None,
+                (LOWER_LIMIT, UPPER_LIMIT),
+            );
+        }
 
         true
     }

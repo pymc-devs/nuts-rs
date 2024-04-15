@@ -238,6 +238,37 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
             });
         });
     }
+
+    fn array_update_var_inv_std_draw(
+        &mut self,
+        variance_out: &mut Self::Vector,
+        inv_std: &mut Self::Vector,
+        draw_var: &Self::Vector,
+        scale: f64,
+        fill_invalid: Option<f64>,
+        clamp: (f64, f64),
+    ) {
+        self.arch.dispatch(|| {
+            izip!(
+                variance_out.col_as_slice_mut(0).iter_mut(),
+                inv_std.col_as_slice_mut(0).iter_mut(),
+                draw_var.col_as_slice(0).iter(),
+            )
+            .for_each(|(var_out, inv_std_out, &draw_var)| {
+                let draw_var = draw_var * scale;
+                if (!draw_var.is_finite()) | (draw_var == 0f64) {
+                    if let Some(fill_val) = fill_invalid {
+                        *var_out = fill_val;
+                        *inv_std_out = fill_val.recip().sqrt();
+                    }
+                } else {
+                    let val = draw_var.clamp(clamp.0, clamp.1);
+                    *var_out = val;
+                    *inv_std_out = val.recip().sqrt();
+                }
+            });
+        });
+    }
 }
 
 pub trait CpuLogpFunc {
