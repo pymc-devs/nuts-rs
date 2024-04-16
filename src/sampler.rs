@@ -221,7 +221,9 @@ pub struct ChainProgress {
     pub tuning: bool,
     pub started: bool,
     pub latest_num_steps: usize,
+    pub total_num_steps: usize,
     pub step_size: f64,
+    pub runtime: Duration,
 }
 
 impl ChainProgress {
@@ -234,10 +236,12 @@ impl ChainProgress {
             started: false,
             latest_num_steps: 0,
             step_size: 0f64,
+            total_num_steps: 0,
+            runtime: Duration::ZERO,
         }
     }
 
-    fn update(&mut self, stats: &SampleStats) {
+    fn update(&mut self, stats: &SampleStats, draw_duration: Duration) {
         self.finished_draws += 1;
         if stats.diverging & !stats.tuning {
             self.divergences += 1;
@@ -245,7 +249,9 @@ impl ChainProgress {
         self.tuning = stats.tuning;
 
         self.latest_num_steps = stats.num_steps;
+        self.total_num_steps += stats.num_steps;
         self.step_size = stats.step_size;
+        self.runtime += draw_duration;
     }
 }
 
@@ -414,7 +420,6 @@ impl<'scope, M: Model + 'scope, S: Settings> ChainProcess<'scope, M, S> {
                     return Err(error.context("All initialization points failed"));
                 }
 
-                // TODO let the sampler decide
                 let draws = settings.hint_num_tune() + settings.hint_num_draws();
 
                 let mut msg = stop_marker_rx.try_recv();
@@ -433,6 +438,7 @@ impl<'scope, M: Model + 'scope, S: Settings> ChainProcess<'scope, M, S> {
                         Ok(ChainCommand::Resume) => {}
                     }
 
+                    let now = Instant::now();
                     let (point, info) = sampler.draw().unwrap();
                     let mut guard = trace
                         .lock()
@@ -445,7 +451,7 @@ impl<'scope, M: Model + 'scope, S: Settings> ChainProcess<'scope, M, S> {
                     progress
                         .lock()
                         .expect("Poisoned mutex")
-                        .update(&settings.sample_stats(&info));
+                        .update(&settings.sample_stats(&info), now.elapsed());
                     DrawStorage::append_value(&mut val.draws_builder, &point)?;
                     StatTraceBuilder::append_value(&mut val.stats_builder, info);
                     draw += 1;
@@ -514,7 +520,7 @@ impl<I: Iterator<Item = ChainOutput>> From<I> for Trace {
 }
 
 pub struct ProgressCallback {
-    pub callback: Box<dyn FnMut(Box<[ChainProgress]>) + Send>,
+    pub callback: Box<dyn FnMut(Duration, Box<[ChainProgress]>) + Send>,
     pub rate: Duration,
 }
 
@@ -564,13 +570,18 @@ impl Sampler {
                 }
 
                 let mut main_loop = || {
+                    let start_time = Instant::now();
+                    let mut pause_start = Instant::now();
+                    let mut pause_time = Duration::ZERO;
+
                     let mut progress_rate = Duration::MAX;
                     if let Some(ProgressCallback { callback, rate }) = &mut callback {
                         let progress = chains.iter().map(|chain| chain.progress()).collect_vec();
-                        callback(progress.into());
+                        callback(start_time.elapsed(), progress.into());
                         progress_rate = *rate;
                     }
                     let mut last_progress = Instant::now();
+                    let mut is_paused = false;
 
                     loop {
                         let timeout = progress_rate.checked_sub(last_progress.elapsed());
@@ -578,12 +589,17 @@ impl Sampler {
                             if let Some(ProgressCallback { callback, .. }) = &mut callback {
                                 let progress =
                                     chains.iter().map(|chain| chain.progress()).collect_vec();
-                                callback(progress.into());
+                                let mut elapsed = start_time.elapsed().saturating_sub(pause_time);
+                                if is_paused {
+                                    elapsed = elapsed.saturating_sub(pause_start.elapsed());
+                                }
+                                callback(elapsed, progress.into());
                             }
                             last_progress = Instant::now();
                             progress_rate
                         });
 
+                        // TODO return when all chains are done
                         match commands_rx.recv_timeout(timeout) {
                             Ok(SamplerCommand::Pause) => {
                                 for chain in chains.iter() {
@@ -591,6 +607,10 @@ impl Sampler {
                                     // We just want to ignore those threads.
                                     let _ = chain.pause();
                                 }
+                                if !is_paused {
+                                    pause_start = Instant::now();
+                                }
+                                is_paused = true;
                                 responses_tx.send(SamplerResponse::Ok())?;
                             }
                             Ok(SamplerCommand::Continue) => {
@@ -599,6 +619,8 @@ impl Sampler {
                                     // We just want to ignore those threads.
                                     let _ = chain.resume();
                                 }
+                                pause_time += pause_start.elapsed();
+                                is_paused = false;
                                 responses_tx.send(SamplerResponse::Ok())?;
                             }
                             Ok(SamplerCommand::InspectTrace) => {
@@ -618,7 +640,12 @@ impl Sampler {
                                 if let Some(ProgressCallback { callback, .. }) = &mut callback {
                                     let progress =
                                         chains.iter().map(|chain| chain.progress()).collect_vec();
-                                    callback(progress.into());
+                                    let mut elapsed =
+                                        start_time.elapsed().saturating_sub(pause_time);
+                                    if is_paused {
+                                        elapsed = elapsed.saturating_sub(pause_start.elapsed());
+                                    }
+                                    callback(elapsed, progress.into());
                                 }
                                 return Ok(());
                             }
@@ -697,7 +724,7 @@ impl Sampler {
         while remaining.is_some() {
             match self.results.recv_timeout(timeout) {
                 Ok(Ok(_)) => remaining = timeout.checked_sub(start.elapsed()),
-                Ok(Err(e)) => return SamplerWaitResult::Err(e, None), // TODO
+                Ok(Err(e)) => return SamplerWaitResult::Err(e, None),
                 Err(RecvTimeoutError::Disconnected) => {
                     let (res, trace) = self.abort();
                     if let Err(err) = res {
