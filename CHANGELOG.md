@@ -25,6 +25,15 @@ All notable changes to this project will be documented in this file.
 
 - Parameterize progress callback rate (Adrian Seyboldt)
 
+- Provide sampling duration in sampler progress (Adrian Seyboldt)
+
+- Add index of divergent draws to progress (Adrian Seyboldt)
+
+
+### Miscellaneous Tasks
+
+- Update changelog (Adrian Seyboldt)
+
 
 ### Refactor
 
