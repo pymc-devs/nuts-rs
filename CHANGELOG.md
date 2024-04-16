@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] - 2024-04-16
+
+### Documentation
+
+- Update README (Adrian Seyboldt)
+
+- Replace aesara with pytensor in docs (Christian Luhmann)
+
+- Update readme (Adrian Seyboldt)
+
+
+### Features
+
+- Allow more SIMD in array operations (Adrian Seyboldt)
+
+- Add option to disable NUTS turning check (Adrian Seyboldt)
+
+- Better initial step size estimate (Adrian Seyboldt)
+
+- Add option for draw-based mass matrix estimate (Adrian Seyboldt)
+
+- Parameterize progress callback rate (Adrian Seyboldt)
+
+
+### Refactor
+
+- Prepare for GPU support (Adrian Seyboldt)
+
+- Move sampler code from nutpie to nuts-rs (Adrian Seyboldt)
+
+
+### Styling
+
+- Fix formatting (Adrian Seyboldt)
+
+
 ## [0.8.0] - 2023-09-20
 
 ### Bug Fixes
