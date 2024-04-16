@@ -72,11 +72,10 @@
 //! for _ in 0..2000 {
 //!     let (draw, info) = sampler.draw().expect("Unrecoverable error during sampling");
 //!     trace.push(draw);
-//!     // Or get more detailed information about divergences
-//!     //dbg!(settings.sample_stats::<CpuMath<PosteriorDensity>>(&info).draw);
-//!     //dbg!(&info);
 //! }
 //! ```
+//!
+//! Users can also implement the `Model` trait for more control and parallel sampling.
 //!
 //! ## Implementation details
 //!
