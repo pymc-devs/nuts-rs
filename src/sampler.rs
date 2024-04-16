@@ -224,6 +224,7 @@ pub struct ChainProgress {
     pub total_num_steps: usize,
     pub step_size: f64,
     pub runtime: Duration,
+    pub divergent_draws: Vec<usize>,
 }
 
 impl ChainProgress {
@@ -238,14 +239,16 @@ impl ChainProgress {
             step_size: 0f64,
             total_num_steps: 0,
             runtime: Duration::ZERO,
+            divergent_draws: Vec::new(),
         }
     }
 
     fn update(&mut self, stats: &SampleStats, draw_duration: Duration) {
-        self.finished_draws += 1;
         if stats.diverging & !stats.tuning {
             self.divergences += 1;
+            self.divergent_draws.push(self.finished_draws);
         }
+        self.finished_draws += 1;
         self.tuning = stats.tuning;
 
         self.latest_num_steps = stats.num_steps;
