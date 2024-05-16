@@ -131,10 +131,11 @@ impl Model for NormalModel {
 fn sample() -> anyhow::Result<Trace> {
     let mu = vec![0.5; 100];
     let model = NormalModel::new(mu.into());
-    let mut settings = DiagGradNutsSettings::default();
-
-    settings.seed = 42;
-    settings.num_chains = 6;
+    let settings = DiagGradNutsSettings {
+        seed: 42,
+        num_chains: 6,
+        ..Default::default()
+    };
 
     let mut sampler = Sampler::new(model, settings, 6, None)?;
 
