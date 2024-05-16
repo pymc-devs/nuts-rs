@@ -9,6 +9,7 @@ use crate::{
     LogpError,
 };
 
+#[derive(Debug)]
 pub struct CpuMath<F: CpuLogpFunc> {
     logp_func: F,
     arch: pulp::Arch,

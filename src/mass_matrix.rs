@@ -1,6 +1,6 @@
-use arrow2::{
-    array::{MutableArray, MutableFixedSizeListArray, MutablePrimitiveArray, StructArray, TryPush},
-    datatypes::{DataType, Field},
+use arrow::{
+    array::{ArrayBuilder, FixedSizeListBuilder, PrimitiveBuilder, StructArray},
+    datatypes::{Field, Float64Type},
 };
 
 use crate::{
@@ -39,39 +39,49 @@ pub struct DiagMassMatrixStats {
     pub mass_matrix_inv: Option<Box<[f64]>>,
 }
 
-#[derive(Clone)]
 pub struct DiagMassMatrixStatsBuilder {
-    mass_matrix_inv: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
+    mass_matrix_inv: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
 }
 
 impl StatTraceBuilder<DiagMassMatrixStats> for DiagMassMatrixStatsBuilder {
     fn append_value(&mut self, value: DiagMassMatrixStats) {
+        let DiagMassMatrixStats { mass_matrix_inv } = value;
+
         if let Some(store) = self.mass_matrix_inv.as_mut() {
-            store
-                .try_push(
-                    value
-                        .mass_matrix_inv
-                        .as_ref()
-                        .map(|vals| vals.iter().map(|&x| Some(x))),
-                )
-                .unwrap();
+            if let Some(values) = mass_matrix_inv.as_ref() {
+                store.values().append_slice(values);
+                store.append(true);
+            } else {
+                store.append(false);
+            }
         }
     }
 
     fn finalize(self) -> Option<StructArray> {
-        if let Some(mut store) = self.mass_matrix_inv {
-            let fields = vec![Field::new(
-                "mass_matrix_inv",
-                store.data_type().clone(),
-                true,
-            )];
+        let Self { mass_matrix_inv } = self;
 
-            let arrays = vec![store.as_box()];
+        let array = ArrayBuilder::finish(&mut mass_matrix_inv?);
 
-            Some(StructArray::new(DataType::Struct(fields), arrays, None))
-        } else {
-            None
-        }
+        let fields = vec![Field::new(
+            "mass_matrix_inv",
+            array.data_type().clone(),
+            true,
+        )];
+        let arrays = vec![array];
+        Some(StructArray::new(fields.into(), arrays, None))
+    }
+
+    fn inspect(&self) -> Option<StructArray> {
+        let Self { mass_matrix_inv } = self;
+
+        let array = ArrayBuilder::finish_cloned(mass_matrix_inv.as_ref()?);
+        let fields = vec![Field::new(
+            "mass_matrix_inv",
+            array.data_type().clone(),
+            true,
+        )];
+        let arrays = vec![array];
+        Some(StructArray::new(fields.into(), arrays, None))
     }
 }
 
@@ -81,8 +91,8 @@ impl<M: Math> SamplerStats<M> for DiagMassMatrix<M> {
 
     fn new_builder(&self, _settings: &impl Settings, dim: usize) -> Self::Builder {
         if self.store_mass_matrix {
-            let items = MutablePrimitiveArray::new();
-            let values = MutableFixedSizeListArray::new_with_field(items, "item", false, dim);
+            let items = PrimitiveBuilder::new();
+            let values = FixedSizeListBuilder::new(items, dim as _);
             Self::Builder {
                 mass_matrix_inv: Some(values),
             }

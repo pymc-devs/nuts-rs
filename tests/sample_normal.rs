@@ -1,7 +1,11 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use arrow2::array::{
-    Array, MutableArray, MutableFixedSizeListArray, MutablePrimitiveArray, TryPush,
+use arrow::{
+    array::{Array, ArrayBuilder, FixedSizeListBuilder, PrimitiveBuilder},
+    datatypes::Float64Type,
 };
 use nuts_rs::{
     CpuLogpFunc, CpuMath, DiagGradNutsSettings, DrawStorage, LogpError, Model, Sampler,
@@ -50,31 +54,31 @@ impl<'a> CpuLogpFunc for NormalLogp<'a> {
     }
 }
 
-#[derive(Clone)]
 struct Storage {
-    draws: MutableFixedSizeListArray<MutablePrimitiveArray<f64>>,
+    draws: FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>,
 }
 
 impl Storage {
     fn new(size: usize) -> Storage {
-        let values = MutablePrimitiveArray::new();
-        let draws = MutableFixedSizeListArray::new(values, size);
+        let values = PrimitiveBuilder::new();
+        let draws = FixedSizeListBuilder::new(values, size as i32);
         Storage { draws }
     }
 }
 
 impl DrawStorage for Storage {
     fn append_value(&mut self, point: &[f64]) -> anyhow::Result<()> {
-        self.draws.try_push(Some(point.iter().map(|x| Some(*x))))?;
+        self.draws.values().append_slice(point);
+        self.draws.append(true);
         Ok(())
     }
 
-    fn finalize(mut self) -> anyhow::Result<Box<dyn Array>> {
-        Ok(self.draws.as_box())
+    fn finalize(mut self) -> anyhow::Result<Arc<dyn Array>> {
+        Ok(ArrayBuilder::finish(&mut self.draws))
     }
 
-    fn inspect(&mut self) -> anyhow::Result<Box<dyn Array>> {
-        self.clone().finalize()
+    fn inspect(&self) -> anyhow::Result<Arc<dyn Array>> {
+        Ok(ArrayBuilder::finish_cloned(&self.draws))
     }
 }
 
