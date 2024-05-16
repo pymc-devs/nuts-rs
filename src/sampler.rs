@@ -939,9 +939,11 @@ mod tests {
     fn sample_chain() -> Result<()> {
         let logp = NormalLogp { dim: 10, mu: 0.1 };
         let math = CpuMath::new(&logp);
-        let mut settings = DiagGradNutsSettings::default();
-        settings.num_tune = 100;
-        settings.num_draws = 100;
+        let settings = DiagGradNutsSettings {
+            num_tune: 100,
+            num_draws: 100,
+            ..Default::default()
+        };
         let start = vec![0.2; 10];
 
         let mut rng = StdRng::seed_from_u64(42);
@@ -968,17 +970,18 @@ mod tests {
     #[test]
     fn sample_parallel() -> Result<()> {
         let logp = NormalLogp { dim: 100, mu: 0.1 };
-        let mut settings = DiagGradNutsSettings::default();
-        settings.num_tune = 100;
-        settings.num_draws = 100;
-
-        settings.seed = 10;
+        let settings = DiagGradNutsSettings {
+            num_tune: 100,
+            num_draws: 100,
+            seed: 10,
+            ..Default::default()
+        };
 
         let model = CpuModel::new(logp.clone());
         let mut sampler = Sampler::new(model, settings, 4, None)?;
         sampler.pause()?;
         sampler.pause()?;
-        let trace = sampler.inspect_trace()?;
+        let _trace = sampler.inspect_trace()?;
         sampler.resume()?;
         let (ok, trace) = sampler.abort();
         ok?;
@@ -1030,9 +1033,11 @@ mod tests {
     fn sample_seq() {
         let logp = NormalLogp { dim: 10, mu: 0.1 };
         let math = CpuMath::new(&logp);
-        let mut settings = DiagGradNutsSettings::default();
-        settings.num_tune = 100;
-        settings.num_draws = 100;
+        let settings = DiagGradNutsSettings {
+            num_tune: 100,
+            num_draws: 100,
+            ..Default::default()
+        };
         let start = vec![0.2; 10];
 
         let mut rng = StdRng::seed_from_u64(42);

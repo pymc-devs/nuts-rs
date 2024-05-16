@@ -354,8 +354,8 @@ mod tests {
         fn check_logaddexp(x in -10f64..10f64, y in -10f64..10f64) {
             let a = (x.exp() + y.exp()).ln();
             let b = logaddexp(x, y);
-            let neginf = std::f64::NEG_INFINITY;
-            let nan = std::f64::NAN;
+            let neginf = f64::NEG_INFINITY;
+            let nan = f64::NAN;
             prop_assert!((a - b).abs() < 1e-10);
             prop_assert_eq!(b, logaddexp(y, x));
             prop_assert_eq!(x, logaddexp(x, neginf));
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn check_neginf() {
-        assert_eq!(logaddexp(std::f64::NEG_INFINITY, 2.), 2.);
-        assert_eq!(logaddexp(2., std::f64::NEG_INFINITY), 2.);
+        assert_eq!(logaddexp(f64::NEG_INFINITY, 2.), 2.);
+        assert_eq!(logaddexp(2., f64::NEG_INFINITY), 2.);
     }
 }
