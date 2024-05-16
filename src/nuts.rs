@@ -1,11 +1,12 @@
-use arrow2::array::{MutableFixedSizeListArray, MutableUtf8Array, TryPush};
-use arrow2::{
-    array::{MutableArray, MutableBooleanArray, MutablePrimitiveArray, StructArray},
-    datatypes::{DataType, Field},
+use arrow::array::{
+    Array, ArrayBuilder, BooleanBuilder, FixedSizeListBuilder, PrimitiveBuilder, StringBuilder,
+    StructArray,
 };
+use arrow::datatypes::{DataType, Field, Fields, Float64Type, Int64Type, UInt64Type};
 use rand::Rng;
 use thiserror::Error;
 
+use std::ops::Deref;
 use std::sync::Arc;
 use std::{fmt::Debug, marker::PhantomData};
 
@@ -213,6 +214,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M>> NutsTree<M, H, C> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn extend<R>(
         mut self,
@@ -306,9 +308,9 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M>> NutsTree<M, H, C> {
             log_size
         };
 
-        if other.log_size >= self_log_size {
-            self.draw = other.draw;
-        } else if rng.gen_bool((other.log_size - self_log_size).exp()) {
+        if (other.log_size >= self_log_size)
+            || (rng.gen_bool((other.log_size - self_log_size).exp()))
+        {
             self.draw = other.draw;
         }
 
@@ -432,11 +434,16 @@ impl StatTraceBuilder<()> for () {
     fn finalize(self) -> Option<StructArray> {
         None
     }
+
+    fn inspect(&self) -> Option<StructArray> {
+        None
+    }
 }
 
-pub trait StatTraceBuilder<T: ?Sized>: Clone + Send {
+pub trait StatTraceBuilder<T: ?Sized>: Send {
     fn append_value(&mut self, value: T);
     fn finalize(self) -> Option<StructArray>;
+    fn inspect(&self) -> Option<StructArray>;
 }
 
 #[derive(Debug, Clone)]
@@ -468,26 +475,25 @@ pub struct SampleStats {
     pub step_size: f64,
 }
 
-#[derive(Clone)]
 pub struct NutsStatsBuilder<H, A> {
-    depth: MutablePrimitiveArray<u64>,
-    maxdepth_reached: MutableBooleanArray,
-    index_in_trajectory: MutablePrimitiveArray<i64>,
-    logp: MutablePrimitiveArray<f64>,
-    energy: MutablePrimitiveArray<f64>,
-    chain: MutablePrimitiveArray<u64>,
-    draw: MutablePrimitiveArray<u64>,
-    energy_error: MutablePrimitiveArray<f64>,
-    unconstrained: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
-    gradient: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
+    depth: PrimitiveBuilder<UInt64Type>,
+    maxdepth_reached: BooleanBuilder,
+    index_in_trajectory: PrimitiveBuilder<Int64Type>,
+    logp: PrimitiveBuilder<Float64Type>,
+    energy: PrimitiveBuilder<Float64Type>,
+    chain: PrimitiveBuilder<UInt64Type>,
+    draw: PrimitiveBuilder<UInt64Type>,
+    energy_error: PrimitiveBuilder<Float64Type>,
+    unconstrained: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
+    gradient: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
     hamiltonian: H,
     adapt: A,
-    diverging: MutableBooleanArray,
-    divergence_start: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
-    divergence_start_grad: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
-    divergence_end: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
-    divergence_momentum: Option<MutableFixedSizeListArray<MutablePrimitiveArray<f64>>>,
-    divergence_msg: Option<MutableUtf8Array<i64>>,
+    diverging: BooleanBuilder,
+    divergence_start: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
+    divergence_start_grad: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
+    divergence_end: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
+    divergence_momentum: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
+    divergence_msg: Option<StringBuilder>,
 }
 
 impl<HB, AB> NutsStatsBuilder<HB, AB> {
@@ -505,45 +511,36 @@ impl<HB, AB> NutsStatsBuilder<HB, AB> {
         let capacity = settings.hint_num_tune() + settings.hint_num_draws();
 
         let gradient = if options.store_gradient {
-            let items = MutablePrimitiveArray::new();
-            Some(MutableFixedSizeListArray::new_with_field(
-                items, "item", false, dim,
-            ))
+            let items = PrimitiveBuilder::with_capacity(capacity);
+            Some(FixedSizeListBuilder::new(items, dim as i32))
         } else {
             None
         };
 
         let unconstrained = if options.store_unconstrained {
-            let items = MutablePrimitiveArray::new();
-            Some(MutableFixedSizeListArray::new_with_field(
-                items, "item", false, dim,
+            let items = PrimitiveBuilder::with_capacity(capacity);
+            Some(FixedSizeListBuilder::with_capacity(
+                items, dim as i32, capacity,
             ))
         } else {
             None
         };
 
         let (div_start, div_start_grad, div_end, div_mom, div_msg) = if options.store_divergences {
-            let start_location_prim = MutablePrimitiveArray::new();
-            let start_location_list =
-                MutableFixedSizeListArray::new_with_field(start_location_prim, "item", false, dim);
+            let start_location_prim = PrimitiveBuilder::new();
+            let start_location_list = FixedSizeListBuilder::new(start_location_prim, dim as i32);
 
-            let start_grad_prim = MutablePrimitiveArray::new();
-            let start_grad_list =
-                MutableFixedSizeListArray::new_with_field(start_grad_prim, "item", false, dim);
+            let start_grad_prim = PrimitiveBuilder::new();
+            let start_grad_list = FixedSizeListBuilder::new(start_grad_prim, dim as i32);
 
-            let end_location_prim = MutablePrimitiveArray::new();
-            let end_location_list =
-                MutableFixedSizeListArray::new_with_field(end_location_prim, "item", false, dim);
+            let end_location_prim = PrimitiveBuilder::new();
+            let end_location_list = FixedSizeListBuilder::new(end_location_prim, dim as i32);
 
-            let momentum_location_prim = MutablePrimitiveArray::new();
-            let momentum_location_list = MutableFixedSizeListArray::new_with_field(
-                momentum_location_prim,
-                "item",
-                false,
-                dim,
-            );
+            let momentum_location_prim = PrimitiveBuilder::new();
+            let momentum_location_list =
+                FixedSizeListBuilder::new(momentum_location_prim, dim as i32);
 
-            let msg_list = MutableUtf8Array::new();
+            let msg_list = StringBuilder::new();
 
             (
                 Some(start_location_list),
@@ -557,19 +554,19 @@ impl<HB, AB> NutsStatsBuilder<HB, AB> {
         };
 
         Self {
-            depth: MutablePrimitiveArray::with_capacity(capacity),
-            maxdepth_reached: MutableBooleanArray::with_capacity(capacity),
-            index_in_trajectory: MutablePrimitiveArray::with_capacity(capacity),
-            logp: MutablePrimitiveArray::with_capacity(capacity),
-            energy: MutablePrimitiveArray::with_capacity(capacity),
-            chain: MutablePrimitiveArray::with_capacity(capacity),
-            draw: MutablePrimitiveArray::with_capacity(capacity),
-            energy_error: MutablePrimitiveArray::with_capacity(capacity),
+            depth: PrimitiveBuilder::with_capacity(capacity),
+            maxdepth_reached: BooleanBuilder::with_capacity(capacity),
+            index_in_trajectory: PrimitiveBuilder::with_capacity(capacity),
+            logp: PrimitiveBuilder::with_capacity(capacity),
+            energy: PrimitiveBuilder::with_capacity(capacity),
+            chain: PrimitiveBuilder::with_capacity(capacity),
+            draw: PrimitiveBuilder::with_capacity(capacity),
+            energy_error: PrimitiveBuilder::with_capacity(capacity),
             gradient,
             unconstrained,
             hamiltonian: hamiltonian.new_builder(settings, dim),
             adapt: adapt.new_builder(settings, dim),
-            diverging: MutableBooleanArray::with_capacity(capacity),
+            diverging: BooleanBuilder::with_capacity(capacity),
             divergence_start: div_start,
             divergence_start_grad: div_start_grad,
             divergence_end: div_end,
@@ -587,95 +584,107 @@ where
     AS: Clone + Send + Debug,
 {
     fn append_value(&mut self, value: NutsSampleStats<HS, AS>) {
-        self.depth.push(Some(value.depth));
-        self.maxdepth_reached.push(Some(value.maxdepth_reached));
-        self.index_in_trajectory.push(Some(value.idx_in_trajectory));
-        self.logp.push(Some(value.logp));
-        self.energy.push(Some(value.energy));
-        self.chain.push(Some(value.chain));
-        self.draw.push(Some(value.draw));
-        self.diverging.push(Some(value.divergence_info.is_some()));
-        self.energy_error.push(Some(value.energy_error));
+        let NutsSampleStats {
+            depth,
+            maxdepth_reached,
+            idx_in_trajectory,
+            logp,
+            energy,
+            energy_error,
+            divergence_info,
+            chain,
+            draw,
+            gradient,
+            unconstrained,
+            potential_stats,
+            strategy_stats,
+            tuning,
+        } = value;
 
-        if let Some(store) = self.gradient.as_mut() {
-            store
-                .try_push(
-                    value
-                        .gradient
-                        .as_ref()
-                        .map(|vals| vals.iter().map(|&x| Some(x))),
-                )
-                .unwrap();
+        // We don't need to store tuning explicity
+        let _ = tuning;
+
+        self.depth.append_value(depth);
+        self.maxdepth_reached.append_value(maxdepth_reached);
+        self.index_in_trajectory.append_value(idx_in_trajectory);
+        self.logp.append_value(logp);
+        self.energy.append_value(energy);
+        self.chain.append_value(chain);
+        self.draw.append_value(draw);
+        self.diverging.append_value(divergence_info.is_some());
+        self.energy_error.append_value(energy_error);
+
+        fn add_slice<V: AsRef<[f64]>>(
+            store: &mut Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
+            values: Option<V>,
+        ) {
+            let Some(store) = store.as_mut() else {
+                return;
+            };
+
+            if let Some(values) = values.as_ref() {
+                store.values().append_slice(values.as_ref());
+                store.append(true);
+            } else {
+                store.append(false);
+            }
         }
 
-        if let Some(store) = self.unconstrained.as_mut() {
-            store
-                .try_push(
-                    value
-                        .unconstrained
-                        .as_ref()
-                        .map(|vals| vals.iter().map(|&x| Some(x))),
-                )
-                .unwrap();
-        }
+        add_slice(&mut self.gradient, gradient.as_ref());
+        add_slice(&mut self.unconstrained, unconstrained.as_ref());
 
-        let info_option = value.divergence_info.as_ref();
-        if let Some(div_start) = self.divergence_start.as_mut() {
-            div_start
-                .try_push(info_option.and_then(|info| {
-                    info.start_location
-                        .as_ref()
-                        .map(|vals| vals.iter().map(|&x| Some(x)))
-                }))
-                .unwrap();
-        }
-
-        let info_option = value.divergence_info.as_ref();
-        if let Some(div_grad) = self.divergence_start_grad.as_mut() {
-            div_grad
-                .try_push(info_option.and_then(|info| {
-                    info.start_gradient
-                        .as_ref()
-                        .map(|vals| vals.iter().map(|&x| Some(x)))
-                }))
-                .unwrap();
-        }
-
-        if let Some(div_end) = self.divergence_end.as_mut() {
-            div_end
-                .try_push(info_option.and_then(|info| {
-                    info.end_location
-                        .as_ref()
-                        .map(|vals| vals.iter().map(|&x| Some(x)))
-                }))
-                .unwrap();
-        }
-
-        if let Some(div_mom) = self.divergence_momentum.as_mut() {
-            div_mom
-                .try_push(info_option.and_then(|info| {
-                    info.start_momentum
-                        .as_ref()
-                        .map(|vals| vals.iter().map(|&x| Some(x)))
-                }))
-                .unwrap();
-        }
+        let div_info = divergence_info.as_ref();
+        add_slice(
+            &mut self.divergence_start,
+            div_info.and_then(|info| info.start_location.as_ref()),
+        );
+        add_slice(
+            &mut self.divergence_start_grad,
+            div_info.and_then(|info| info.start_gradient.as_ref()),
+        );
+        add_slice(
+            &mut self.divergence_end,
+            div_info.and_then(|info| info.end_location.as_ref()),
+        );
+        add_slice(
+            &mut self.divergence_momentum,
+            div_info.and_then(|info| info.start_momentum.as_ref()),
+        );
 
         if let Some(div_msg) = self.divergence_msg.as_mut() {
-            div_msg
-                .try_push(info_option.and_then(|info| {
-                    info.logp_function_error
-                        .as_ref()
-                        .map(|err| format!("{}", err))
-                }))
-                .unwrap();
+            if let Some(err) = div_info.and_then(|info| info.logp_function_error.as_ref()) {
+                div_msg.append_value(format!("{}", err));
+            } else {
+                div_msg.append_null();
+            }
         }
 
-        self.hamiltonian.append_value(value.potential_stats);
-        self.adapt.append_value(value.strategy_stats);
+        self.hamiltonian.append_value(potential_stats);
+        self.adapt.append_value(strategy_stats);
     }
 
-    fn finalize(mut self) -> Option<StructArray> {
+    fn finalize(self) -> Option<StructArray> {
+        let Self {
+            mut depth,
+            mut maxdepth_reached,
+            mut index_in_trajectory,
+            mut logp,
+            mut energy,
+            mut chain,
+            mut draw,
+            mut energy_error,
+            unconstrained,
+            gradient,
+            hamiltonian,
+            adapt,
+            mut diverging,
+            divergence_start,
+            divergence_start_grad,
+            divergence_end,
+            divergence_momentum,
+            divergence_msg,
+        } = self;
+
         let mut fields = vec![
             Field::new("depth", DataType::UInt64, false),
             Field::new("maxdepth_reached", DataType::Boolean, false),
@@ -688,91 +697,202 @@ where
             Field::new("energy_error", DataType::Float64, false),
         ];
 
-        let mut arrays = vec![
-            self.depth.as_box(),
-            self.maxdepth_reached.as_box(),
-            self.index_in_trajectory.as_box(),
-            self.logp.as_box(),
-            self.energy.as_box(),
-            self.chain.as_box(),
-            self.draw.as_box(),
-            self.diverging.as_box(),
-            self.energy_error.as_box(),
+        let mut arrays: Vec<Arc<_>> = vec![
+            ArrayBuilder::finish(&mut depth),
+            ArrayBuilder::finish(&mut maxdepth_reached),
+            ArrayBuilder::finish(&mut index_in_trajectory),
+            ArrayBuilder::finish(&mut logp),
+            ArrayBuilder::finish(&mut energy),
+            ArrayBuilder::finish(&mut chain),
+            ArrayBuilder::finish(&mut draw),
+            ArrayBuilder::finish(&mut diverging),
+            ArrayBuilder::finish(&mut energy_error),
         ];
 
-        if let Some(hamiltonian) = self.hamiltonian.finalize() {
-            let hamiltonian = hamiltonian.into_data();
-            assert!(hamiltonian.2.is_none());
-            fields.extend(hamiltonian.0);
-            arrays.extend(hamiltonian.1);
-        }
-        if let Some(adapt) = self.adapt.finalize() {
-            let adapt = adapt.into_data();
-            assert!(adapt.2.is_none());
-            fields.extend(adapt.0);
-            arrays.extend(adapt.1);
+        fn merge_into<T: ?Sized, B: StatTraceBuilder<T>>(
+            builder: B,
+            arrays: &mut Vec<Arc<dyn Array>>,
+            fields: &mut Vec<Field>,
+        ) {
+            let Some(struct_array) = builder.finalize() else {
+                return;
+            };
+
+            let (struct_fields, struct_arrays, bitmap) = struct_array.into_parts();
+            assert!(bitmap.is_none());
+            arrays.extend(struct_arrays);
+            fields.extend(struct_fields.into_iter().map(|x| x.deref().clone()));
         }
 
-        if let Some(mut gradient) = self.gradient.take() {
-            fields.push(Field::new("gradient", gradient.data_type().clone(), true));
-            arrays.push(gradient.as_box());
+        fn add_field<B: ArrayBuilder>(
+            mut builder: Option<B>,
+            name: &str,
+            arrays: &mut Vec<Arc<dyn Array>>,
+            fields: &mut Vec<Field>,
+        ) {
+            let Some(mut builder) = builder.take() else {
+                return;
+            };
+
+            let array = ArrayBuilder::finish(&mut builder);
+            fields.push(Field::new(name, array.data_type().clone(), true));
+            arrays.push(array);
         }
 
-        if let Some(mut unconstrained) = self.unconstrained.take() {
-            fields.push(Field::new(
-                "unconstrained_draw",
-                unconstrained.data_type().clone(),
-                true,
-            ));
-            arrays.push(unconstrained.as_box());
+        merge_into(hamiltonian, &mut arrays, &mut fields);
+        merge_into(adapt, &mut arrays, &mut fields);
+
+        add_field(gradient, "gradient", &mut arrays, &mut fields);
+        add_field(
+            unconstrained,
+            "unconstrained_draw",
+            &mut arrays,
+            &mut fields,
+        );
+        add_field(
+            divergence_start,
+            "divergence_start",
+            &mut arrays,
+            &mut fields,
+        );
+        add_field(
+            divergence_start_grad,
+            "divergence_start_gradient",
+            &mut arrays,
+            &mut fields,
+        );
+        add_field(divergence_end, "divergence_end", &mut arrays, &mut fields);
+        add_field(
+            divergence_momentum,
+            "divergence_momentum",
+            &mut arrays,
+            &mut fields,
+        );
+        add_field(
+            divergence_msg,
+            "divergence_messagem",
+            &mut arrays,
+            &mut fields,
+        );
+
+        let fields = Fields::from(fields);
+        Some(StructArray::new(fields, arrays, None))
+    }
+
+    fn inspect(&self) -> Option<StructArray> {
+        let Self {
+            depth,
+            maxdepth_reached,
+            index_in_trajectory,
+            logp,
+            energy,
+            chain,
+            draw,
+            energy_error,
+            unconstrained,
+            gradient,
+            hamiltonian,
+            adapt,
+            diverging,
+            divergence_start,
+            divergence_start_grad,
+            divergence_end,
+            divergence_momentum,
+            divergence_msg,
+        } = self;
+
+        let mut fields = vec![
+            Field::new("depth", DataType::UInt64, false),
+            Field::new("maxdepth_reached", DataType::Boolean, false),
+            Field::new("index_in_trajectory", DataType::Int64, false),
+            Field::new("logp", DataType::Float64, false),
+            Field::new("energy", DataType::Float64, false),
+            Field::new("chain", DataType::UInt64, false),
+            Field::new("draw", DataType::UInt64, false),
+            Field::new("diverging", DataType::Boolean, false),
+            Field::new("energy_error", DataType::Float64, false),
+        ];
+
+        let mut arrays: Vec<Arc<_>> = vec![
+            ArrayBuilder::finish_cloned(depth),
+            ArrayBuilder::finish_cloned(maxdepth_reached),
+            ArrayBuilder::finish_cloned(index_in_trajectory),
+            ArrayBuilder::finish_cloned(logp),
+            ArrayBuilder::finish_cloned(energy),
+            ArrayBuilder::finish_cloned(chain),
+            ArrayBuilder::finish_cloned(draw),
+            ArrayBuilder::finish_cloned(diverging),
+            ArrayBuilder::finish_cloned(energy_error),
+        ];
+
+        fn merge_into<T: ?Sized, B: StatTraceBuilder<T>>(
+            builder: &B,
+            arrays: &mut Vec<Arc<dyn Array>>,
+            fields: &mut Vec<Field>,
+        ) {
+            let Some(struct_array) = builder.inspect() else {
+                return;
+            };
+
+            let (struct_fields, struct_arrays, bitmap) = struct_array.into_parts();
+            assert!(bitmap.is_none());
+            arrays.extend(struct_arrays);
+            fields.extend(struct_fields.into_iter().map(|x| x.deref().clone()));
         }
 
-        if let Some(mut div_start) = self.divergence_start.take() {
-            fields.push(Field::new(
-                "divergence_start",
-                div_start.data_type().clone(),
-                true,
-            ));
-            arrays.push(div_start.as_box());
+        fn add_field<B: ArrayBuilder>(
+            builder: &Option<B>,
+            name: &str,
+            arrays: &mut Vec<Arc<dyn Array>>,
+            fields: &mut Vec<Field>,
+        ) {
+            let Some(builder) = builder.as_ref() else {
+                return;
+            };
+
+            let array = ArrayBuilder::finish_cloned(builder);
+            fields.push(Field::new(name, array.data_type().clone(), true));
+            arrays.push(array);
         }
 
-        if let Some(mut div_start_grad) = self.divergence_start_grad.take() {
-            fields.push(Field::new(
-                "divergence_start_gradient",
-                div_start_grad.data_type().clone(),
-                true,
-            ));
-            arrays.push(div_start_grad.as_box());
-        }
+        merge_into(hamiltonian, &mut arrays, &mut fields);
+        merge_into(adapt, &mut arrays, &mut fields);
 
-        if let Some(mut div_end) = self.divergence_end.take() {
-            fields.push(Field::new(
-                "divergence_end",
-                div_end.data_type().clone(),
-                true,
-            ));
-            arrays.push(div_end.as_box());
-        }
+        add_field(gradient, "gradient", &mut arrays, &mut fields);
+        add_field(
+            unconstrained,
+            "unconstrained_draw",
+            &mut arrays,
+            &mut fields,
+        );
+        add_field(
+            divergence_start,
+            "divergence_start",
+            &mut arrays,
+            &mut fields,
+        );
+        add_field(
+            divergence_start_grad,
+            "divergence_start_gradient",
+            &mut arrays,
+            &mut fields,
+        );
+        add_field(divergence_end, "divergence_end", &mut arrays, &mut fields);
+        add_field(
+            divergence_momentum,
+            "divergence_momentum",
+            &mut arrays,
+            &mut fields,
+        );
+        add_field(
+            divergence_msg,
+            "divergence_messagem",
+            &mut arrays,
+            &mut fields,
+        );
 
-        if let Some(mut div_mom) = self.divergence_momentum.take() {
-            fields.push(Field::new(
-                "divergence_momentum",
-                div_mom.data_type().clone(),
-                true,
-            ));
-            arrays.push(div_mom.as_box());
-        }
-
-        if let Some(mut div_msg) = self.divergence_msg.take() {
-            fields.push(Field::new(
-                "divergence_message",
-                div_msg.data_type().clone(),
-                true,
-            ));
-            arrays.push(div_msg.as_box());
-        }
-
-        Some(StructArray::new(DataType::Struct(fields), arrays, None))
+        let fields = Fields::from(fields);
+        Some(StructArray::new(fields, arrays, None))
     }
 }
 
@@ -872,6 +992,7 @@ pub trait AdaptStrategy<M: Math>: AdaptStats<M> {
         rng: &mut R,
     );
 
+    #[allow(clippy::too_many_arguments)]
     fn adapt<R: Rng + ?Sized>(
         &mut self,
         math: &mut M,

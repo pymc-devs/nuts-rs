@@ -1,9 +1,10 @@
-use std::{fmt::Debug, marker::PhantomData};
+use std::{fmt::Debug, marker::PhantomData, ops::Deref};
 
-use arrow2::{
-    array::{MutableArray, MutablePrimitiveArray, StructArray},
-    datatypes::{DataType, Field},
+use arrow::{
+    array::{ArrayBuilder, PrimitiveBuilder, StructArray},
+    datatypes::{DataType, Field, Float64Type, UInt64Type},
 };
+use itertools::Itertools;
 use rand::Rng;
 
 use crate::{
@@ -60,24 +61,30 @@ pub struct DualAverageStats {
     pub n_steps: u64,
 }
 
-#[derive(Clone)]
 pub struct DualAverageStatsBuilder {
-    step_size_bar: MutablePrimitiveArray<f64>,
-    mean_tree_accept: MutablePrimitiveArray<f64>,
-    mean_tree_accept_sym: MutablePrimitiveArray<f64>,
-    n_steps: MutablePrimitiveArray<u64>,
+    step_size_bar: PrimitiveBuilder<Float64Type>,
+    mean_tree_accept: PrimitiveBuilder<Float64Type>,
+    mean_tree_accept_sym: PrimitiveBuilder<Float64Type>,
+    n_steps: PrimitiveBuilder<UInt64Type>,
 }
 
 impl StatTraceBuilder<DualAverageStats> for DualAverageStatsBuilder {
     fn append_value(&mut self, value: DualAverageStats) {
-        self.step_size_bar.push(Some(value.step_size_bar));
-        self.mean_tree_accept.push(Some(value.mean_tree_accept));
+        self.step_size_bar.append_value(value.step_size_bar);
+        self.mean_tree_accept.append_value(value.mean_tree_accept);
         self.mean_tree_accept_sym
-            .push(Some(value.mean_tree_accept_sym));
-        self.n_steps.push(Some(value.n_steps));
+            .append_value(value.mean_tree_accept_sym);
+        self.n_steps.append_value(value.n_steps);
     }
 
-    fn finalize(mut self) -> Option<StructArray> {
+    fn finalize(self) -> Option<StructArray> {
+        let Self {
+            mut step_size_bar,
+            mut mean_tree_accept,
+            mut mean_tree_accept_sym,
+            mut n_steps,
+        } = self;
+
         let fields = vec![
             Field::new("step_size_bar", DataType::Float64, false),
             Field::new("mean_tree_accept", DataType::Float64, false),
@@ -86,13 +93,38 @@ impl StatTraceBuilder<DualAverageStats> for DualAverageStatsBuilder {
         ];
 
         let arrays = vec![
-            self.step_size_bar.as_box(),
-            self.mean_tree_accept.as_box(),
-            self.mean_tree_accept_sym.as_box(),
-            self.n_steps.as_box(),
+            ArrayBuilder::finish(&mut step_size_bar),
+            ArrayBuilder::finish(&mut mean_tree_accept),
+            ArrayBuilder::finish(&mut mean_tree_accept_sym),
+            ArrayBuilder::finish(&mut n_steps),
         ];
 
-        Some(StructArray::new(DataType::Struct(fields), arrays, None))
+        Some(StructArray::new(fields.into(), arrays, None))
+    }
+
+    fn inspect(&self) -> Option<StructArray> {
+        let Self {
+            step_size_bar,
+            mean_tree_accept,
+            mean_tree_accept_sym,
+            n_steps,
+        } = self;
+
+        let fields = vec![
+            Field::new("step_size_bar", DataType::Float64, false),
+            Field::new("mean_tree_accept", DataType::Float64, false),
+            Field::new("mean_tree_accept_sym", DataType::Float64, false),
+            Field::new("n_steps", DataType::UInt64, false),
+        ];
+
+        let arrays = vec![
+            ArrayBuilder::finish_cloned(step_size_bar),
+            ArrayBuilder::finish_cloned(mean_tree_accept),
+            ArrayBuilder::finish_cloned(mean_tree_accept_sym),
+            ArrayBuilder::finish_cloned(n_steps),
+        ];
+
+        Some(StructArray::new(fields.into(), arrays, None))
     }
 }
 
@@ -102,10 +134,10 @@ impl<M: Math, Mass: MassMatrix<M>> SamplerStats<M> for DualAverageStrategy<M, Ma
 
     fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {
         Self::Builder {
-            step_size_bar: MutablePrimitiveArray::new(),
-            mean_tree_accept: MutablePrimitiveArray::new(),
-            mean_tree_accept_sym: MutablePrimitiveArray::new(),
-            n_steps: MutablePrimitiveArray::new(),
+            step_size_bar: PrimitiveBuilder::new(),
+            mean_tree_accept: PrimitiveBuilder::new(),
+            mean_tree_accept_sym: PrimitiveBuilder::new(),
+            n_steps: PrimitiveBuilder::new(),
         }
     }
 
@@ -635,7 +667,7 @@ pub struct CombinedStats<D1, D2> {
 }
 
 #[derive(Clone)]
-pub struct CombinedStatsBuilder<B1: Clone, B2: Clone> {
+pub struct CombinedStatsBuilder<B1, B2> {
     stats1: B1,
     stats2: B2,
 }
@@ -651,21 +683,47 @@ where
     }
 
     fn finalize(self) -> Option<StructArray> {
-        match (self.stats1.finalize(), self.stats2.finalize()) {
+        let Self { stats1, stats2 } = self;
+        match (stats1.finalize(), stats2.finalize()) {
             (None, None) => None,
             (Some(stats1), None) => Some(stats1),
             (None, Some(stats2)) => Some(stats2),
             (Some(stats1), Some(stats2)) => {
-                let mut data1 = stats1.into_data();
-                let data2 = stats2.into_data();
+                let mut data1 = stats1.into_parts();
+                let data2 = stats2.into_parts();
 
                 assert!(data1.2.is_none());
                 assert!(data2.2.is_none());
 
-                data1.0.extend(data2.0);
+                let mut fields = data1.0.into_iter().map(|x| x.deref().clone()).collect_vec();
+
+                fields.extend(data2.0.into_iter().map(|x| x.deref().clone()));
                 data1.1.extend(data2.1);
 
-                Some(StructArray::new(DataType::Struct(data1.0), data1.1, None))
+                Some(StructArray::new(data1.0, data1.1, None))
+            }
+        }
+    }
+
+    fn inspect(&self) -> Option<StructArray> {
+        let Self { stats1, stats2 } = self;
+        match (stats1.inspect(), stats2.inspect()) {
+            (None, None) => None,
+            (Some(stats1), None) => Some(stats1),
+            (None, Some(stats2)) => Some(stats2),
+            (Some(stats1), Some(stats2)) => {
+                let mut data1 = stats1.into_parts();
+                let data2 = stats2.into_parts();
+
+                assert!(data1.2.is_none());
+                assert!(data2.2.is_none());
+
+                let mut fields = data1.0.into_iter().map(|x| x.deref().clone()).collect_vec();
+
+                fields.extend(data2.0.into_iter().map(|x| x.deref().clone()));
+                data1.1.extend(data2.1);
+
+                Some(StructArray::new(data1.0, data1.1, None))
             }
         }
     }

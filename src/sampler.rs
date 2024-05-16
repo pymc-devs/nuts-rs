@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use arrow2::array::Array;
+use arrow::array::Array;
 use itertools::Itertools;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -188,10 +188,10 @@ pub fn sample_sequentially<'math, M: Math + 'math, R: Rng + ?Sized>(
     }))
 }
 
-pub trait DrawStorage: Send + Clone {
+pub trait DrawStorage: Send {
     fn append_value(&mut self, point: &[f64]) -> Result<()>;
-    fn finalize(self) -> Result<Box<dyn Array>>;
-    fn inspect(&mut self) -> Result<Box<dyn Array>>;
+    fn finalize(self) -> Result<Arc<dyn Array>>;
+    fn inspect(&self) -> Result<Arc<dyn Array>>;
 }
 
 pub trait Model: Send + Sync + 'static {
@@ -259,8 +259,8 @@ impl ChainProgress {
 }
 
 pub struct ChainOutput {
-    pub draws: Box<dyn Array>,
-    pub stats: Box<dyn Array>,
+    pub draws: Arc<dyn Array>,
+    pub stats: Arc<dyn Array>,
     pub chain_id: u64,
 }
 
@@ -279,19 +279,15 @@ struct ChainTrace<'model, M: Model + 'model, S: Settings> {
     chain_id: u64,
 }
 
-impl<'model, M: Model + 'model, S: Settings> Clone for ChainTrace<'model, M, S> {
-    fn clone(&self) -> Self {
-        Self {
-            draws_builder: self.draws_builder.clone(),
-            stats_builder: self.stats_builder.clone(),
-            chain_id: self.chain_id,
-        }
-    }
-}
-
 impl<'model, M: Model + 'model, S: Settings> ChainTrace<'model, M, S> {
     fn inspect(&self) -> Result<ChainOutput> {
-        self.clone().finalize()
+        let stats = self.stats_builder.inspect().expect("No sample stats");
+        let draws = self.draws_builder.inspect()?;
+        Ok(ChainOutput {
+            chain_id: self.chain_id,
+            draws,
+            stats: Arc::new(stats) as Arc<_>,
+        })
     }
 
     fn finalize(self) -> Result<ChainOutput> {
@@ -300,7 +296,7 @@ impl<'model, M: Model + 'model, S: Settings> ChainTrace<'model, M, S> {
         Ok(ChainOutput {
             chain_id: self.chain_id,
             draws,
-            stats: stats.boxed(),
+            stats: Arc::new(stats) as Arc<dyn Array>,
         })
     }
 }
@@ -754,13 +750,18 @@ impl Sampler {
 #[cfg(test)]
 pub mod test_logps {
 
+    use std::sync::Arc;
+
     use crate::{
         cpu_math::{CpuLogpFunc, CpuMath},
         nuts::LogpError,
         Settings,
     };
     use anyhow::Result;
-    use arrow2::array::{MutableArray, MutableFixedSizeListArray, MutablePrimitiveArray, TryPush};
+    use arrow::{
+        array::{Array, ArrayBuilder, FixedSizeListBuilder, PrimitiveBuilder},
+        datatypes::Float64Type,
+    };
     use multiversion::multiversion;
     use thiserror::Error;
 
@@ -847,31 +848,31 @@ pub mod test_logps {
         }
     }
 
-    #[derive(Clone)]
     pub struct SimpleDrawStorage {
-        draws: MutableFixedSizeListArray<MutablePrimitiveArray<f64>>,
+        draws: FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>,
     }
 
     impl SimpleDrawStorage {
         pub fn new(size: usize) -> Self {
-            let items = MutablePrimitiveArray::new();
-            let draws = MutableFixedSizeListArray::new(items, size);
+            let items = PrimitiveBuilder::new();
+            let draws = FixedSizeListBuilder::new(items, size as _);
             Self { draws }
         }
     }
 
     impl DrawStorage for SimpleDrawStorage {
         fn append_value(&mut self, point: &[f64]) -> Result<()> {
-            self.draws.try_push(Some(point.iter().map(|x| Some(*x))))?;
+            self.draws.values().append_slice(point);
+            self.draws.append(true);
             Ok(())
         }
 
-        fn finalize(mut self) -> Result<Box<dyn arrow2::array::Array>> {
-            Ok(self.draws.as_box())
+        fn finalize(mut self) -> Result<Arc<dyn Array>> {
+            Ok(ArrayBuilder::finish(&mut self.draws))
         }
 
-        fn inspect(&mut self) -> Result<Box<dyn arrow2::array::Array>> {
-            self.clone().finalize()
+        fn inspect(&self) -> Result<Arc<dyn Array>> {
+            Ok(ArrayBuilder::finish_cloned(&self.draws))
         }
     }
 
@@ -978,7 +979,6 @@ mod tests {
         sampler.pause()?;
         sampler.pause()?;
         let trace = sampler.inspect_trace()?;
-        trace.chains;
         sampler.resume()?;
         let (ok, trace) = sampler.abort();
         ok?;
@@ -997,7 +997,6 @@ mod tests {
             super::SamplerWaitResult::Trace(trace) => {
                 dbg!(start.elapsed());
                 assert!(trace.chains.len() == settings.num_chains);
-                assert!(false);
                 panic!("finished");
             }
             super::SamplerWaitResult::Timeout(sampler) => sampler,

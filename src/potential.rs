@@ -2,8 +2,8 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use arrow2::array::{MutableArray, MutablePrimitiveArray, StructArray};
-use arrow2::datatypes::{DataType, Field};
+use arrow::array::{ArrayBuilder, PrimitiveBuilder, StructArray};
+use arrow::datatypes::{DataType, Field, Float64Type};
 
 use crate::mass_matrix::MassMatrix;
 use crate::math_base::Math;
@@ -38,9 +38,8 @@ pub struct PotentialStats<S: Clone + Debug> {
     mass_matrix_stats: S,
 }
 
-#[derive(Clone)]
 pub struct PotentialStatsBuilder<B> {
-    step_size: MutablePrimitiveArray<f64>,
+    step_size: PrimitiveBuilder<Float64Type>,
     mass_matrix: B,
 }
 
@@ -48,23 +47,59 @@ impl<S: Clone + Debug, B: StatTraceBuilder<S>> StatTraceBuilder<PotentialStats<S
     for PotentialStatsBuilder<B>
 {
     fn append_value(&mut self, value: PotentialStats<S>) {
-        self.step_size.push(Some(value.step_size));
-        self.mass_matrix.append_value(value.mass_matrix_stats)
+        let PotentialStats {
+            step_size,
+            mass_matrix_stats,
+        } = value;
+
+        self.step_size.append_value(step_size);
+        self.mass_matrix.append_value(mass_matrix_stats)
     }
 
-    fn finalize(mut self) -> Option<StructArray> {
+    fn finalize(self) -> Option<StructArray> {
+        let Self {
+            mut step_size,
+            mass_matrix,
+        } = self;
+
         let mut fields = vec![Field::new("step_size", DataType::Float64, false)];
 
-        let mut arrays = vec![self.step_size.as_box()];
-
-        if let Some(mass_matrix) = self.mass_matrix.finalize() {
-            let (m_fields, m_data, m_bitmap) = mass_matrix.into_data();
+        let mut arrays = vec![ArrayBuilder::finish(&mut step_size)];
+        if let Some(mass_matrix) = mass_matrix.finalize() {
+            let (m_fields, m_data, m_bitmap) = mass_matrix.into_parts();
             assert!(m_bitmap.is_none());
-            fields.extend(m_fields);
+            fields.extend(
+                m_fields
+                    .into_iter()
+                    .map(|v| Arc::unwrap_or_clone(v.to_owned())),
+            );
             arrays.extend(m_data);
         }
 
-        Some(StructArray::new(DataType::Struct(fields), arrays, None))
+        Some(StructArray::new(fields.into(), arrays, None))
+    }
+
+    fn inspect(&self) -> Option<StructArray> {
+        let Self {
+            step_size,
+            mass_matrix,
+        } = self;
+
+        let mut fields = vec![Field::new("step_size", DataType::Float64, false)];
+
+        let mut arrays = vec![ArrayBuilder::finish_cloned(step_size)];
+        if let Some(mass_matrix) = mass_matrix.inspect() {
+            let (m_fields, m_data, m_bitmap) = mass_matrix.into_parts();
+            assert!(m_bitmap.is_none());
+            fields.extend(
+                m_fields
+                    .into_iter()
+                    .map(|v| Arc::unwrap_or_clone(v.to_owned())),
+            );
+            arrays.extend(m_data);
+        }
+
+        Some(StructArray::new(fields.into(), arrays, None))
     }
 }
 
@@ -74,7 +109,7 @@ impl<M: Math, Mass: MassMatrix<M>> SamplerStats<M> for EuclideanPotential<M, Mas
 
     fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder {
         Self::Builder {
-            step_size: MutablePrimitiveArray::new(),
+            step_size: PrimitiveBuilder::new(),
             mass_matrix: self.mass_matrix.new_builder(settings, dim),
         }
     }
