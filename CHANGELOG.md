@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2024-05-28
+
+### Miscellaneous Tasks
+
+- Update dependencies (Adrian Seyboldt)
+
+
+### Refactor
+
+- Switch to arrow-rs (Adrian Seyboldt)
+
+
+### Styling
+
+- Some minor clippy fixes (Adrian Seyboldt)
+
+
 ## [0.9.0] - 2024-04-16
 
 ### Documentation
@@ -31,6 +48,8 @@ All notable changes to this project will be documented in this file.
 
 
 ### Miscellaneous Tasks
+
+- Update changelog (Adrian Seyboldt)
 
 - Update changelog (Adrian Seyboldt)
 
