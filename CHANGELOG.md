@@ -11,6 +11,11 @@ All notable changes to this project will be documented in this file.
 - Append missing values for non-diverging draws (Adrian Seyboldt)
 
 
+### Features
+
+- Bump arrow version (Adrian Seyboldt)
+
+
 ### Miscellaneous Tasks
 
 - Update dependencies (Adrian Seyboldt)
