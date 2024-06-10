@@ -494,6 +494,7 @@ pub struct NutsStatsBuilder<H, A> {
     divergence_end: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
     divergence_momentum: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
     divergence_msg: Option<StringBuilder>,
+    n_dim: usize,
 }
 
 impl<HB, AB> NutsStatsBuilder<HB, AB> {
@@ -572,6 +573,7 @@ impl<HB, AB> NutsStatsBuilder<HB, AB> {
             divergence_end: div_end,
             divergence_momentum: div_mom,
             divergence_msg: div_msg,
+            n_dim: dim,
         }
     }
 }
@@ -617,6 +619,7 @@ where
         fn add_slice<V: AsRef<[f64]>>(
             store: &mut Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
             values: Option<V>,
+            n_dim: usize,
         ) {
             let Some(store) = store.as_mut() else {
                 return;
@@ -626,29 +629,34 @@ where
                 store.values().append_slice(values.as_ref());
                 store.append(true);
             } else {
+                store.values().append_nulls(n_dim);
                 store.append(false);
             }
         }
 
-        add_slice(&mut self.gradient, gradient.as_ref());
-        add_slice(&mut self.unconstrained, unconstrained.as_ref());
+        add_slice(&mut self.gradient, gradient.as_ref(), self.n_dim);
+        add_slice(&mut self.unconstrained, unconstrained.as_ref(), self.n_dim);
 
         let div_info = divergence_info.as_ref();
         add_slice(
             &mut self.divergence_start,
             div_info.and_then(|info| info.start_location.as_ref()),
+            self.n_dim,
         );
         add_slice(
             &mut self.divergence_start_grad,
             div_info.and_then(|info| info.start_gradient.as_ref()),
+            self.n_dim,
         );
         add_slice(
             &mut self.divergence_end,
             div_info.and_then(|info| info.end_location.as_ref()),
+            self.n_dim,
         );
         add_slice(
             &mut self.divergence_momentum,
             div_info.and_then(|info| info.start_momentum.as_ref()),
+            self.n_dim,
         );
 
         if let Some(div_msg) = self.divergence_msg.as_mut() {
@@ -683,7 +691,10 @@ where
             divergence_end,
             divergence_momentum,
             divergence_msg,
+            n_dim,
         } = self;
+
+        let _ = n_dim;
 
         let mut fields = vec![
             Field::new("depth", DataType::UInt64, false),
@@ -799,7 +810,10 @@ where
             divergence_end,
             divergence_momentum,
             divergence_msg,
+            n_dim,
         } = self;
+
+        let _ = n_dim;
 
         let mut fields = vec![
             Field::new("depth", DataType::UInt64, false),
