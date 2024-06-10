@@ -2,11 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.10.0] - 2024-05-28
+## [0.11.0] - 2024-06-10
+
+### Bug Fixes
+
+- Expose adaptation settings (Adrian Seyboldt)
+
+- Append missing values for non-diverging draws (Adrian Seyboldt)
+
 
 ### Miscellaneous Tasks
 
 - Update dependencies (Adrian Seyboldt)
+
+- Prepare release (Adrian Seyboldt)
 
 
 ### Refactor
