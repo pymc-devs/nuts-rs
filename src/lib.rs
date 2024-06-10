@@ -94,7 +94,9 @@ mod sampler;
 mod state;
 mod stepsize;
 
+pub use adapt_strategy::DiagAdaptExpSettings;
 pub use adapt_strategy::DualAverageSettings;
+pub use adapt_strategy::GradDiagOptions;
 pub use cpu_math::{CpuLogpFunc, CpuMath};
 pub use math_base::Math;
 pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError, SampleStats};
@@ -102,14 +104,3 @@ pub use sampler::{
     sample_sequentially, ChainOutput, ChainProgress, DiagGradNutsSettings, DrawStorage, Model,
     ProgressCallback, Sampler, SamplerWaitResult, Settings, Trace,
 };
-
-/*
-struct A {}
-
-struct B<'a> { a: &'a A }
-
-struct C {
-    a: Arc<A>,
-    b: B<>,
-}
-*/
