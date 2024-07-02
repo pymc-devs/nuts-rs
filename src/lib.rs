@@ -85,7 +85,9 @@
 
 mod adapt_strategy;
 mod cpu_math;
+mod low_rank_mass_matrix;
 mod mass_matrix;
+mod mass_matrix_adapt;
 mod math;
 mod math_base;
 mod nuts;
@@ -93,10 +95,9 @@ mod potential;
 mod sampler;
 mod state;
 mod stepsize;
+mod stepsize_adapt;
 
-pub use adapt_strategy::DiagAdaptExpSettings;
-pub use adapt_strategy::DualAverageSettings;
-pub use adapt_strategy::GradDiagOptions;
+pub use adapt_strategy::AdaptOptions;
 pub use cpu_math::{CpuLogpFunc, CpuMath};
 pub use math_base::Math;
 pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError, SampleStats};
@@ -104,3 +105,6 @@ pub use sampler::{
     sample_sequentially, ChainOutput, ChainProgress, DiagGradNutsSettings, DrawStorage, Model,
     ProgressCallback, Sampler, SamplerWaitResult, Settings, Trace,
 };
+
+pub use mass_matrix_adapt::DiagAdaptExpSettings;
+pub use stepsize_adapt::DualAverageSettings;

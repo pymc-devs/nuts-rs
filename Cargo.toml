@@ -26,12 +26,12 @@ thiserror = "1.0.43"
 arrow = { version = "52.0.0", default-features = false, features = ["ffi"] }
 rand_chacha = "0.3.1"
 anyhow = "1.0.72"
-faer = "0.19.0"
-pulp = "0.18.8"
-rayon = "1.9.0"
+faer = "0.19.1"
+pulp = "0.18.21"
+rayon = "1.10.0"
 
 [dev-dependencies]
-proptest = "1.2.0"
+proptest = "1.5.0"
 pretty_assertions = "1.4.0"
 criterion = "0.5.1"
 nix = "0.29.0"

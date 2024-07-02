@@ -268,10 +268,10 @@ mod tests {
         let a = pool.new_state(&mut math);
 
         assert_eq!(a.idx_in_trajectory, 0);
-        assert!(a.p_sum.col_as_slice(0).iter().all(|&x| x == 0f64));
-        assert_eq!(a.p_sum.col_as_slice(0).len(), dim);
-        assert_eq!(a.grad.col_as_slice(0).len(), dim);
-        assert_eq!(a.q.col_as_slice(0).len(), dim);
-        assert_eq!(a.p.col_as_slice(0).len(), dim);
+        assert!(a.p_sum.as_slice().iter().all(|&x| x == 0f64));
+        assert_eq!(a.p_sum.as_slice().len(), dim);
+        assert_eq!(a.grad.as_slice().len(), dim);
+        assert_eq!(a.q.as_slice().len(), dim);
+        assert_eq!(a.p.as_slice().len(), dim);
     }
 }
