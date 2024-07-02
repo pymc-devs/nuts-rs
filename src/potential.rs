@@ -245,6 +245,14 @@ impl<M: Math, Mass: MassMatrix<M>> Hamiltonian<M> for EuclideanPotential<M, Mass
     fn copy_state(&mut self, math: &mut M, pool: &mut StatePool<M>, state: &State<M>) -> State<M> {
         pool.copy_state(math, state)
     }
+
+    fn stepsize_mut(&mut self) -> &mut f64 {
+        &mut self.step_size
+    }
+
+    fn stepsize(&self) -> f64 {
+        self.step_size
+    }
 }
 
 impl<M: Math, Mass: MassMatrix<M>> EuclideanPotential<M, Mass> {

@@ -8,7 +8,7 @@ use arrow::{
     datatypes::Float64Type,
 };
 use nuts_rs::{
-    CpuLogpFunc, CpuMath, DiagAdaptExpSettings, DiagGradNutsSettings, DrawStorage, GradDiagOptions,
+    AdaptOptions, CpuLogpFunc, CpuMath, DiagAdaptExpSettings, DiagGradNutsSettings, DrawStorage,
     LogpError, Model, Sampler, SamplerWaitResult, Settings, Trace,
 };
 use rand::prelude::Rng;
@@ -158,7 +158,7 @@ fn sample_debug_stats() -> anyhow::Result<Trace> {
         store_gradient: true,
         store_divergences: true,
         store_unconstrained: true,
-        mass_matrix_adapt: GradDiagOptions {
+        mass_matrix_adapt: AdaptOptions {
             mass_matrix_options: DiagAdaptExpSettings {
                 store_mass_matrix: true,
                 use_grad_based_estimate: true,

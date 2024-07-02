@@ -4,12 +4,26 @@ use crate::LogpError;
 
 pub trait Math {
     type Vector: Debug;
-    type EigMatrix: Debug;
-    type EigVector: Debug;
+    type EigVectors: Debug;
+    type EigValues: Debug;
     type LogpErr: Debug + Send + Sync + LogpError + 'static;
     type Err: Debug + Send + Sync + Error + 'static;
 
     fn new_array(&self) -> Self::Vector;
+
+    fn new_eig_vectors<'a>(
+        &'a mut self,
+        vals: impl ExactSizeIterator<Item = &'a [f64]>,
+    ) -> Self::EigVectors;
+    fn new_eig_values(&mut self, vals: &[f64]) -> Self::EigValues;
+
+    fn scaled_eigval_matmul(
+        &mut self,
+        scale: &Self::Vector,
+        vals: &Self::EigValues,
+        vecs: &Self::EigVectors,
+        out: &mut Self::Vector,
+    );
 
     /// Compute the unnormalized log probability density of the posterior
     ///

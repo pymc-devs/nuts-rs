@@ -142,6 +142,9 @@ where
     fn new_pool(&mut self, math: &mut M, capacity: usize) -> StatePool<M>;
 
     fn copy_state(&mut self, math: &mut M, pool: &mut StatePool<M>, state: &State<M>) -> State<M>;
+
+    fn stepsize_mut(&mut self) -> &mut f64;
+    fn stepsize(&self) -> f64;
 }
 
 /// Information about a draw, exported as part of the sampler stats
@@ -993,7 +996,7 @@ pub trait AdaptStats<M: Math>: SamplerStats<M> {
 pub trait AdaptStrategy<M: Math>: AdaptStats<M> {
     type Potential: Hamiltonian<M>;
     type Collector: Collector<M>;
-    type Options: Copy + Send + Default;
+    type Options: Copy + Send + Debug + Default;
 
     fn new(math: &mut M, options: Self::Options, num_tune: u64) -> Self;
 

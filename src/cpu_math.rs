@@ -1,5 +1,6 @@
 use std::{error::Error, fmt::Debug};
 
+use faer::{Col, Mat};
 use itertools::izip;
 use thiserror::Error;
 
@@ -30,14 +31,14 @@ pub enum CpuMathError {
 }
 
 impl<F: CpuLogpFunc> Math for CpuMath<F> {
-    type Vector = faer::Mat<f64>;
-    type EigVector = faer::Mat<f64>;
-    type EigMatrix = faer::Mat<f64>;
+    type Vector = Col<f64>;
+    type EigVectors = Mat<f64>;
+    type EigValues = Mat<f64>;
     type LogpErr = F::LogpError;
     type Err = CpuMathError;
 
     fn new_array(&self) -> Self::Vector {
-        faer::Mat::zeros(self.dim(), 1)
+        Col::zeros(self.dim())
     }
 
     fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, Self::LogpErr> {
@@ -50,7 +51,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         gradient: &mut Self::Vector,
     ) -> Result<f64, Self::LogpErr> {
         self.logp_func
-            .logp(position.col_as_slice(0), gradient.col_as_slice_mut(0))
+            .logp(position.as_slice(), gradient.as_slice_mut())
     }
 
     fn dim(&self) -> usize {
@@ -66,11 +67,11 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         y: &Self::Vector,
     ) -> (f64, f64) {
         scalar_prods3(
-            positive1.col_as_slice(0),
-            negative1.col_as_slice(0),
-            positive2.col_as_slice(0),
-            x.col_as_slice(0),
-            y.col_as_slice(0),
+            positive1.as_slice(),
+            negative1.as_slice(),
+            positive2.as_slice(),
+            x.as_slice(),
+            y.as_slice(),
         )
     }
 
@@ -82,19 +83,19 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         y: &Self::Vector,
     ) -> (f64, f64) {
         scalar_prods2(
-            positive1.col_as_slice(0),
-            positive2.col_as_slice(0),
-            x.col_as_slice(0),
-            y.col_as_slice(0),
+            positive1.as_slice(),
+            positive2.as_slice(),
+            x.as_slice(),
+            y.as_slice(),
         )
     }
 
     fn read_from_slice(&mut self, dest: &mut Self::Vector, source: &[f64]) {
-        dest.col_as_slice_mut(0).copy_from_slice(source);
+        dest.as_slice_mut().copy_from_slice(source);
     }
 
     fn write_to_slice(&mut self, source: &Self::Vector, dest: &mut [f64]) {
-        dest.copy_from_slice(source.col_as_slice(0))
+        dest.copy_from_slice(source.as_slice())
     }
 
     fn copy_into(&mut self, array: &Self::Vector, dest: &mut Self::Vector) {
@@ -102,16 +103,11 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     }
 
     fn axpy_out(&mut self, x: &Self::Vector, y: &Self::Vector, a: f64, out: &mut Self::Vector) {
-        axpy_out(
-            x.col_as_slice(0),
-            y.col_as_slice(0),
-            a,
-            out.col_as_slice_mut(0),
-        );
+        axpy_out(x.as_slice(), y.as_slice(), a, out.as_slice_mut());
     }
 
     fn axpy(&mut self, x: &Self::Vector, y: &mut Self::Vector, a: f64) {
-        axpy(x.col_as_slice(0), y.col_as_slice_mut(0), a);
+        axpy(x.as_slice(), y.as_slice_mut(), a);
     }
 
     fn fill_array(&mut self, array: &mut Self::Vector, val: f64) {
@@ -125,7 +121,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     fn array_all_finite_and_nonzero(&mut self, array: &Self::Vector) -> bool {
         self.arch.dispatch(|| {
             array
-                .col_as_slice(0)
+                .as_slice()
                 .iter()
                 .all(|&x| x.is_finite() & (x != 0f64))
         })
@@ -137,15 +133,11 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         array2: &Self::Vector,
         dest: &mut Self::Vector,
     ) {
-        multiply(
-            array1.col_as_slice(0),
-            array2.col_as_slice(0),
-            dest.col_as_slice_mut(0),
-        )
+        multiply(array1.as_slice(), array2.as_slice(), dest.as_slice_mut())
     }
 
     fn array_vector_dot(&mut self, array1: &Self::Vector, array2: &Self::Vector) -> f64 {
-        vector_dot(array1.col_as_slice(0), array2.col_as_slice(0))
+        vector_dot(array1.as_slice(), array2.as_slice())
     }
 
     fn array_gaussian<R: rand::Rng + ?Sized>(
@@ -155,9 +147,9 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         stds: &Self::Vector,
     ) {
         let dist = rand_distr::StandardNormal;
-        dest.col_as_slice_mut(0)
+        dest.as_slice_mut()
             .iter_mut()
-            .zip(stds.col_as_slice(0).iter())
+            .zip(stds.as_slice().iter())
             .for_each(|(p, &s)| {
                 let norm: f64 = rng.sample(dist);
                 *p = s * norm;
@@ -173,9 +165,9 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     ) {
         self.arch.dispatch(|| {
             izip!(
-                mean.col_as_slice_mut(0).iter_mut(),
-                variance.col_as_slice_mut(0).iter_mut(),
-                value.col_as_slice(0)
+                mean.as_slice_mut().iter_mut(),
+                variance.as_slice_mut().iter_mut(),
+                value.as_slice()
             )
             .for_each(|(mean, var, x)| {
                 let diff = x - *mean;
@@ -196,10 +188,10 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     ) {
         self.arch.dispatch(|| {
             izip!(
-                variance_out.col_as_slice_mut(0).iter_mut(),
-                inv_std.col_as_slice_mut(0).iter_mut(),
-                draw_var.col_as_slice(0).iter(),
-                grad_var.col_as_slice(0).iter(),
+                variance_out.as_slice_mut().iter_mut(),
+                inv_std.as_slice_mut().iter_mut(),
+                draw_var.as_slice().iter(),
+                grad_var.as_slice().iter(),
             )
             .for_each(|(var_out, inv_std_out, &draw_var, &grad_var)| {
                 let val = (draw_var / grad_var).sqrt();
@@ -227,9 +219,9 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     ) {
         self.arch.dispatch(|| {
             izip!(
-                variance_out.col_as_slice_mut(0).iter_mut(),
-                inv_std.col_as_slice_mut(0).iter_mut(),
-                gradient.col_as_slice(0).iter(),
+                variance_out.as_slice_mut().iter_mut(),
+                inv_std.as_slice_mut().iter_mut(),
+                gradient.as_slice().iter(),
             )
             .for_each(|(var_out, inv_std_out, &grad_var)| {
                 let val = grad_var.abs().clamp(clamp.0, clamp.1).recip();
@@ -251,9 +243,9 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     ) {
         self.arch.dispatch(|| {
             izip!(
-                variance_out.col_as_slice_mut(0).iter_mut(),
-                inv_std.col_as_slice_mut(0).iter_mut(),
-                draw_var.col_as_slice(0).iter(),
+                variance_out.as_slice_mut().iter_mut(),
+                inv_std.as_slice_mut().iter_mut(),
+                draw_var.as_slice().iter(),
             )
             .for_each(|(var_out, inv_std_out, &draw_var)| {
                 let draw_var = draw_var * scale;
@@ -269,6 +261,27 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
                 }
             });
         });
+    }
+
+    fn new_eig_vectors<'a>(
+        &'a mut self,
+        vals: impl ExactSizeIterator<Item = &'a [f64]>,
+    ) -> Self::EigVectors {
+        todo!()
+    }
+
+    fn new_eig_values(&mut self, vals: &[f64]) -> Self::EigValues {
+        todo!()
+    }
+
+    fn scaled_eigval_matmul(
+        &mut self,
+        scale: &Self::Vector,
+        vals: &Self::EigValues,
+        vecs: &Self::EigVectors,
+        out: &mut Self::Vector,
+    ) {
+        todo!()
     }
 }
 

@@ -5,6 +5,7 @@ use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rayon::{ScopeFifo, ThreadPoolBuilder};
 use std::{
+    fmt::Debug,
     sync::{
         mpsc::{
             channel, sync_channel, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError,
@@ -16,14 +17,17 @@ use std::{
 };
 
 use crate::{
-    adapt_strategy::{GradDiagOptions, GradDiagStrategy},
+    adapt_strategy::{AdaptOptions, GlobalStrategy},
+    low_rank_mass_matrix::{LowRankMassMatrix, LowRankMassMatrixStrategy, LowRankSettings},
     mass_matrix::DiagMassMatrix,
+    mass_matrix_adapt::Strategy as DiagMassMatrixStrategy,
     math_base::Math,
     nuts::{
         AdaptStats, Chain, HamiltonianStats, NutsChain, NutsOptions, SampleStats, SamplerStats,
         StatTraceBuilder,
     },
     potential::EuclideanPotential,
+    DiagAdaptExpSettings,
 };
 
 /// All sampler configurations implement this trait
@@ -50,14 +54,18 @@ pub trait Settings: private::Sealed + Clone + Copy + Default + Sync + Send + 'st
 mod private {
     use crate::DiagGradNutsSettings;
 
+    use super::LowRankNutsSettings;
+
     pub trait Sealed {}
 
     impl Sealed for DiagGradNutsSettings {}
+
+    impl Sealed for LowRankNutsSettings {}
 }
 
 /// Settings for the NUTS sampler
-#[derive(Clone, Copy)]
-pub struct DiagGradNutsSettings {
+#[derive(Debug, Clone, Copy)]
+pub struct NutsSettings<A: Debug + Copy + Default> {
     /// The number of tuning steps, where we fit the step size and mass matrix.
     pub num_tune: u64,
     /// The number of draws after tuning
@@ -75,24 +83,27 @@ pub struct DiagGradNutsSettings {
     /// Store detailed information about each divergence in the sampler stats
     pub store_divergences: bool,
     /// Settings for mass matrix adaptation.
-    pub mass_matrix_adapt: GradDiagOptions,
+    pub adapt_options: AdaptOptions<A>,
     pub check_turning: bool,
 
     pub num_chains: usize,
     pub seed: u64,
 }
 
+pub type DiagGradNutsSettings = NutsSettings<DiagAdaptExpSettings>;
+pub type LowRankNutsSettings = NutsSettings<LowRankSettings>;
+
 impl Default for DiagGradNutsSettings {
     fn default() -> Self {
         Self {
-            num_tune: 300,
+            num_tune: 400,
             num_draws: 1000,
             maxdepth: 10,
             max_energy_error: 1000f64,
             store_gradient: false,
             store_unconstrained: false,
             store_divergences: false,
-            mass_matrix_adapt: GradDiagOptions::default(),
+            adapt_options: AdaptOptions::default(),
             check_turning: true,
             seed: 0,
             num_chains: 6,
@@ -100,8 +111,104 @@ impl Default for DiagGradNutsSettings {
     }
 }
 
-type DiagGradNutsChain<M> =
-    NutsChain<M, EuclideanPotential<M, DiagMassMatrix<M>>, SmallRng, GradDiagStrategy<M>>;
+impl Default for LowRankNutsSettings {
+    fn default() -> Self {
+        Self {
+            num_tune: 800,
+            num_draws: 1000,
+            maxdepth: 10,
+            max_energy_error: 1000f64,
+            store_gradient: false,
+            store_unconstrained: false,
+            store_divergences: false,
+            adapt_options: AdaptOptions::default(),
+            check_turning: true,
+            seed: 0,
+            num_chains: 6,
+        }
+    }
+}
+
+type DiagGradNutsChain<M> = NutsChain<
+    M,
+    EuclideanPotential<M, DiagMassMatrix<M>>,
+    SmallRng,
+    GlobalStrategy<M, DiagMassMatrixStrategy<M>>,
+>;
+
+type LowRankNutsChain<M> = NutsChain<
+    M,
+    EuclideanPotential<M, LowRankMassMatrix<M>>,
+    SmallRng,
+    GlobalStrategy<M, LowRankMassMatrixStrategy>,
+>;
+
+impl Settings for LowRankNutsSettings {
+    type Chain<M: Math> = LowRankNutsChain<M>;
+
+    fn new_chain<M: Math, R: Rng + ?Sized>(
+        &self,
+        chain: u64,
+        mut math: M,
+        rng: &mut R,
+    ) -> Self::Chain<M> {
+        use crate::nuts::AdaptStrategy;
+        let num_tune = self.num_tune;
+        let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune);
+        let mass_matrix = LowRankMassMatrix::new(
+            &mut math,
+            self.adapt_options.mass_matrix_options.store_mass_matrix,
+        );
+        let max_energy_error = self.max_energy_error;
+        let potential = EuclideanPotential::new(mass_matrix, max_energy_error, 1f64);
+
+        let options = NutsOptions {
+            maxdepth: self.maxdepth,
+            store_gradient: self.store_gradient,
+            store_divergences: self.store_divergences,
+            store_unconstrained: self.store_unconstrained,
+            check_turning: self.check_turning,
+        };
+
+        let rng = rand::rngs::SmallRng::from_rng(rng).expect("Could not seed rng");
+
+        NutsChain::new(math, potential, strategy, options, rng, chain)
+    }
+
+    fn sample_stats<M: Math>(
+        &self,
+        stats: &<Self::Chain<M> as SamplerStats<M>>::Stats,
+    ) -> SampleStats {
+        let step_size =
+            <Self::Chain<M> as Chain<M>>::Hamiltonian::stat_step_size(&stats.potential_stats);
+        let num_steps =
+            <Self::Chain<M> as Chain<M>>::AdaptStrategy::num_grad_evals(&stats.strategy_stats);
+        SampleStats {
+            chain: stats.chain,
+            draw: stats.draw,
+            diverging: stats.divergence_info.is_some(),
+            tuning: stats.tuning,
+            step_size,
+            num_steps,
+        }
+    }
+
+    fn hint_num_tune(&self) -> usize {
+        self.num_tune as _
+    }
+
+    fn hint_num_draws(&self) -> usize {
+        self.num_draws as _
+    }
+
+    fn num_chains(&self) -> usize {
+        self.num_chains
+    }
+
+    fn seed(&self) -> u64 {
+        self.seed
+    }
+}
 
 impl Settings for DiagGradNutsSettings {
     type Chain<M: Math> = DiagGradNutsChain<M>;
@@ -114,10 +221,10 @@ impl Settings for DiagGradNutsSettings {
     ) -> Self::Chain<M> {
         use crate::nuts::AdaptStrategy;
         let num_tune = self.num_tune;
-        let strategy = GradDiagStrategy::new(&mut math, self.mass_matrix_adapt, num_tune);
+        let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune);
         let mass_matrix = DiagMassMatrix::new(
             &mut math,
-            self.mass_matrix_adapt.mass_matrix_options.store_mass_matrix,
+            self.adapt_options.mass_matrix_options.store_mass_matrix,
         );
         let max_energy_error = self.max_energy_error;
         let potential = EuclideanPotential::new(mass_matrix, max_energy_error, 1f64);
