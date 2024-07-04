@@ -1,7 +1,7 @@
-use std::{error::Error, fmt::Debug};
+use std::{error::Error, fmt::Debug, mem::replace};
 
 use faer::{Col, Mat};
-use itertools::izip;
+use itertools::{izip, Itertools};
 use thiserror::Error;
 
 use crate::{
@@ -33,7 +33,7 @@ pub enum CpuMathError {
 impl<F: CpuLogpFunc> Math for CpuMath<F> {
     type Vector = Col<f64>;
     type EigVectors = Mat<f64>;
-    type EigValues = Mat<f64>;
+    type EigValues = Col<f64>;
     type LogpErr = F::LogpError;
     type Err = CpuMathError;
 
@@ -41,8 +41,27 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         Col::zeros(self.dim())
     }
 
-    fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, Self::LogpErr> {
-        self.logp_func.logp(position, gradient)
+    fn new_eig_vectors<'a>(
+        &'a mut self,
+        vals: impl ExactSizeIterator<Item = &'a [f64]>,
+    ) -> Self::EigVectors {
+        let ndim = self.dim();
+        let nvecs = vals.len();
+
+        let mut vectors: Mat<f64> = Mat::zeros(ndim, nvecs);
+        vectors.col_iter_mut().zip_eq(vals).for_each(|(col, vals)| {
+            col.try_as_slice_mut()
+                .expect("Array is not contiguous")
+                .copy_from_slice(vals)
+        });
+
+        vectors
+    }
+
+    fn new_eig_values(&mut self, vals: &[f64]) -> Self::EigValues {
+        let mut values: Col<f64> = Col::zeros(vals.len());
+        values.as_slice_mut().copy_from_slice(vals);
+        values
     }
 
     fn logp_array(
@@ -52,6 +71,10 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     ) -> Result<f64, Self::LogpErr> {
         self.logp_func
             .logp(position.as_slice(), gradient.as_slice_mut())
+    }
+
+    fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, Self::LogpErr> {
+        self.logp_func.logp(position, gradient)
     }
 
     fn dim(&self) -> usize {
@@ -136,6 +159,22 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         multiply(array1.as_slice(), array2.as_slice(), dest.as_slice_mut())
     }
 
+    fn array_mult_eigs(
+        &mut self,
+        stds: &Self::Vector,
+        rhs: &Self::Vector,
+        dest: &mut Self::Vector,
+        vecs: &Self::EigVectors,
+        vals: &Self::EigValues,
+    ) {
+        let rhs = stds.column_vector_as_diagonal() * rhs;
+        let trafo = vecs.transpose() * (&rhs);
+        let inner_prod = vecs * (vals.column_vector_as_diagonal() * (&trafo) - (&trafo)) + rhs;
+        let scaled = stds.column_vector_as_diagonal() * inner_prod;
+
+        let _ = replace(dest, scaled);
+    }
+
     fn array_vector_dot(&mut self, array1: &Self::Vector, array2: &Self::Vector) -> f64 {
         vector_dot(array1.as_slice(), array2.as_slice())
     }
@@ -154,6 +193,28 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
                 let norm: f64 = rng.sample(dist);
                 *p = s * norm;
             });
+    }
+
+    fn array_gaussian_eigs<R: rand::Rng + ?Sized>(
+        &mut self,
+        rng: &mut R,
+        dest: &mut Self::Vector,
+        scale: &Self::Vector,
+        vals: &Self::EigValues,
+        vecs: &Self::EigVectors,
+    ) {
+        let mut draw: Col<f64> = Col::zeros(self.dim());
+        let dist = rand_distr::StandardNormal;
+        draw.as_slice_mut().iter_mut().for_each(|p| {
+            *p = rng.sample(dist);
+        });
+
+        let trafo = vecs.transpose() * (&draw);
+        let inner_prod = vecs * (vals.column_vector_as_diagonal() * (&trafo) - (&trafo)) + draw;
+
+        let scaled = scale.column_vector_as_diagonal() * inner_prod;
+
+        let _ = replace(dest, scaled);
     }
 
     fn array_update_variance(
@@ -175,6 +236,37 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
                 *var += diff * diff;
             });
         })
+    }
+
+    fn array_update_var_inv_std_draw(
+        &mut self,
+        variance_out: &mut Self::Vector,
+        inv_std: &mut Self::Vector,
+        draw_var: &Self::Vector,
+        scale: f64,
+        fill_invalid: Option<f64>,
+        clamp: (f64, f64),
+    ) {
+        self.arch.dispatch(|| {
+            izip!(
+                variance_out.as_slice_mut().iter_mut(),
+                inv_std.as_slice_mut().iter_mut(),
+                draw_var.as_slice().iter(),
+            )
+            .for_each(|(var_out, inv_std_out, &draw_var)| {
+                let draw_var = draw_var * scale;
+                if (!draw_var.is_finite()) | (draw_var == 0f64) {
+                    if let Some(fill_val) = fill_invalid {
+                        *var_out = fill_val;
+                        *inv_std_out = fill_val.recip().sqrt();
+                    }
+                } else {
+                    let val = draw_var.clamp(clamp.0, clamp.1);
+                    *var_out = val;
+                    *inv_std_out = val.recip().sqrt();
+                }
+            });
+        });
     }
 
     fn array_update_var_inv_std_draw_grad(
@@ -232,56 +324,8 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         });
     }
 
-    fn array_update_var_inv_std_draw(
-        &mut self,
-        variance_out: &mut Self::Vector,
-        inv_std: &mut Self::Vector,
-        draw_var: &Self::Vector,
-        scale: f64,
-        fill_invalid: Option<f64>,
-        clamp: (f64, f64),
-    ) {
-        self.arch.dispatch(|| {
-            izip!(
-                variance_out.as_slice_mut().iter_mut(),
-                inv_std.as_slice_mut().iter_mut(),
-                draw_var.as_slice().iter(),
-            )
-            .for_each(|(var_out, inv_std_out, &draw_var)| {
-                let draw_var = draw_var * scale;
-                if (!draw_var.is_finite()) | (draw_var == 0f64) {
-                    if let Some(fill_val) = fill_invalid {
-                        *var_out = fill_val;
-                        *inv_std_out = fill_val.recip().sqrt();
-                    }
-                } else {
-                    let val = draw_var.clamp(clamp.0, clamp.1);
-                    *var_out = val;
-                    *inv_std_out = val.recip().sqrt();
-                }
-            });
-        });
-    }
-
-    fn new_eig_vectors<'a>(
-        &'a mut self,
-        vals: impl ExactSizeIterator<Item = &'a [f64]>,
-    ) -> Self::EigVectors {
-        todo!()
-    }
-
-    fn new_eig_values(&mut self, vals: &[f64]) -> Self::EigValues {
-        todo!()
-    }
-
-    fn scaled_eigval_matmul(
-        &mut self,
-        scale: &Self::Vector,
-        vals: &Self::EigValues,
-        vecs: &Self::EigVectors,
-        out: &mut Self::Vector,
-    ) {
-        todo!()
+    fn eigs_as_array(&mut self, source: &Self::EigValues) -> Box<[f64]> {
+        source.as_slice().to_vec().into()
     }
 }
 

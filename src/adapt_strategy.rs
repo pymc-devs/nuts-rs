@@ -381,7 +381,10 @@ mod test {
     use super::*;
     use crate::{
         cpu_math::CpuMath,
+        mass_matrix::DiagMassMatrix,
         nuts::{AdaptStrategy, Chain, NutsChain, NutsOptions},
+        potential::EuclideanPotential,
+        DiagAdaptExpSettings,
     };
 
     #[test]

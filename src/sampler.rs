@@ -113,7 +113,7 @@ impl Default for DiagGradNutsSettings {
 
 impl Default for LowRankNutsSettings {
     fn default() -> Self {
-        Self {
+        let mut vals = Self {
             num_tune: 800,
             num_draws: 1000,
             maxdepth: 10,
@@ -125,7 +125,9 @@ impl Default for LowRankNutsSettings {
             check_turning: true,
             seed: 0,
             num_chains: 6,
-        }
+        };
+        vals.adapt_options.mass_matrix_update_freq = 10;
+        vals
     }
 }
 
@@ -155,10 +157,7 @@ impl Settings for LowRankNutsSettings {
         use crate::nuts::AdaptStrategy;
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune);
-        let mass_matrix = LowRankMassMatrix::new(
-            &mut math,
-            self.adapt_options.mass_matrix_options.store_mass_matrix,
-        );
+        let mass_matrix = LowRankMassMatrix::new(&mut math, self.adapt_options.mass_matrix_options);
         let max_energy_error = self.max_energy_error;
         let potential = EuclideanPotential::new(mass_matrix, max_energy_error, 1f64);
 

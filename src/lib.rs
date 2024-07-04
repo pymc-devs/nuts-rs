@@ -102,9 +102,11 @@ pub use cpu_math::{CpuLogpFunc, CpuMath};
 pub use math_base::Math;
 pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError, SampleStats};
 pub use sampler::{
-    sample_sequentially, ChainOutput, ChainProgress, DiagGradNutsSettings, DrawStorage, Model,
-    ProgressCallback, Sampler, SamplerWaitResult, Settings, Trace,
+    sample_sequentially, ChainOutput, ChainProgress, DiagGradNutsSettings, DrawStorage,
+    LowRankNutsSettings, Model, NutsSettings, ProgressCallback, Sampler, SamplerWaitResult,
+    Settings, Trace,
 };
 
+pub use low_rank_mass_matrix::LowRankSettings;
 pub use mass_matrix_adapt::DiagAdaptExpSettings;
 pub use stepsize_adapt::DualAverageSettings;

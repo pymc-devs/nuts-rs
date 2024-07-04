@@ -9,7 +9,7 @@ use arrow::{
 };
 use nuts_rs::{
     AdaptOptions, CpuLogpFunc, CpuMath, DiagAdaptExpSettings, DiagGradNutsSettings, DrawStorage,
-    LogpError, Model, Sampler, SamplerWaitResult, Settings, Trace,
+    LogpError, LowRankNutsSettings, Model, Sampler, SamplerWaitResult, Settings, Trace,
 };
 use rand::prelude::Rng;
 use rand_distr::{Distribution, StandardNormal};
@@ -158,10 +158,11 @@ fn sample_debug_stats() -> anyhow::Result<Trace> {
         store_gradient: true,
         store_divergences: true,
         store_unconstrained: true,
-        mass_matrix_adapt: AdaptOptions {
+        adapt_options: AdaptOptions {
             mass_matrix_options: DiagAdaptExpSettings {
                 store_mass_matrix: true,
                 use_grad_based_estimate: true,
+                ..Default::default()
             },
             ..Default::default()
         },
@@ -180,6 +181,40 @@ fn sample_debug_stats() -> anyhow::Result<Trace> {
     Ok(trace)
 }
 
+fn sample_eigs_debug_stats() -> anyhow::Result<Trace> {
+    let mu = vec![0.5; 10];
+    let model = NormalModel::new(mu.into());
+    let settings = LowRankNutsSettings {
+        seed: 42,
+        num_chains: 1,
+        num_tune: 200,
+        num_draws: 10,
+        store_gradient: true,
+        store_divergences: true,
+        store_unconstrained: true,
+        adapt_options: AdaptOptions {
+            mass_matrix_options: nuts_rs::LowRankSettings {
+                store_mass_matrix: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut sampler = Sampler::new(model, settings, 6, None)?;
+
+    let trace = loop {
+        match sampler.wait_timeout(Duration::from_secs(1)) {
+            SamplerWaitResult::Trace(trace) => break trace,
+            SamplerWaitResult::Timeout(new_sampler) => sampler = new_sampler,
+            SamplerWaitResult::Err(err, _trace) => return Err(err),
+        };
+    };
+
+    Ok(trace)
+}
+
 #[test]
 fn run() -> anyhow::Result<()> {
     let start = Instant::now();
@@ -194,6 +229,15 @@ fn run_debug_stats() -> anyhow::Result<()> {
     let start = Instant::now();
     let trace = sample_debug_stats()?;
     assert!(trace.chains.len() == 6);
+    dbg!(start.elapsed());
+    Ok(())
+}
+
+#[test]
+fn run_debug_stats_eigs() -> anyhow::Result<()> {
+    let start = Instant::now();
+    let trace = sample_eigs_debug_stats()?;
+    assert!(trace.chains.len() == 1);
     dbg!(start.elapsed());
     Ok(())
 }

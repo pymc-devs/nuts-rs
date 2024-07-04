@@ -17,14 +17,6 @@ pub trait Math {
     ) -> Self::EigVectors;
     fn new_eig_values(&mut self, vals: &[f64]) -> Self::EigValues;
 
-    fn scaled_eigval_matmul(
-        &mut self,
-        scale: &Self::Vector,
-        vals: &Self::EigValues,
-        vecs: &Self::EigVectors,
-        out: &mut Self::Vector,
-    );
-
     /// Compute the unnormalized log probability density of the posterior
     ///
     /// This needs to be implemnted by users of the library to define
@@ -62,6 +54,7 @@ pub trait Math {
 
     fn read_from_slice(&mut self, dest: &mut Self::Vector, source: &[f64]);
     fn write_to_slice(&mut self, source: &Self::Vector, dest: &mut [f64]);
+    fn eigs_as_array(&mut self, source: &Self::EigValues) -> Box<[f64]>;
     fn copy_into(&mut self, array: &Self::Vector, dest: &mut Self::Vector);
     fn axpy_out(&mut self, x: &Self::Vector, y: &Self::Vector, a: f64, out: &mut Self::Vector);
     fn axpy(&mut self, x: &Self::Vector, y: &mut Self::Vector, a: f64);
@@ -77,12 +70,28 @@ pub trait Math {
     fn array_all_finite(&mut self, array: &Self::Vector) -> bool;
     fn array_all_finite_and_nonzero(&mut self, array: &Self::Vector) -> bool;
     fn array_mult(&mut self, array1: &Self::Vector, array2: &Self::Vector, dest: &mut Self::Vector);
+    fn array_mult_eigs(
+        &mut self,
+        stds: &Self::Vector,
+        rhs: &Self::Vector,
+        dest: &mut Self::Vector,
+        vecs: &Self::EigVectors,
+        vals: &Self::EigValues,
+    );
     fn array_vector_dot(&mut self, array1: &Self::Vector, array2: &Self::Vector) -> f64;
     fn array_gaussian<R: rand::Rng + ?Sized>(
         &mut self,
         rng: &mut R,
         dest: &mut Self::Vector,
         stds: &Self::Vector,
+    );
+    fn array_gaussian_eigs<R: rand::Rng + ?Sized>(
+        &mut self,
+        rng: &mut R,
+        dest: &mut Self::Vector,
+        scale: &Self::Vector,
+        vals: &Self::EigValues,
+        vecs: &Self::EigVectors,
     );
     fn array_update_variance(
         &mut self,
