@@ -32,6 +32,7 @@ pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
     final_step_size_window: u64,
     tuning: bool,
     has_initial_mass_matrix: bool,
+    last_update: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -42,6 +43,7 @@ pub struct AdaptOptions<S: Debug + Default> {
     pub step_size_window: f64,
     pub mass_matrix_switch_freq: u64,
     pub early_mass_matrix_switch_freq: u64,
+    pub mass_matrix_update_freq: u64,
 }
 
 impl<S: Debug + Default> Default for AdaptOptions<S> {
@@ -53,6 +55,7 @@ impl<S: Debug + Default> Default for AdaptOptions<S> {
             step_size_window: 0.15,
             mass_matrix_switch_freq: 80,
             early_mass_matrix_switch_freq: 10,
+            mass_matrix_update_freq: 1,
         }
     }
 }
@@ -104,6 +107,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
             final_step_size_window: final_second_step_size,
             tuning: true,
             has_initial_mass_matrix: true,
+            last_update: 0,
         }
     }
 
@@ -150,10 +154,24 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
             // the switch frequency.
             let could_switch = self.mass_matrix.background_count() >= switch_freq;
             let is_late = switch_freq + draw > self.final_step_size_window;
+
+            let mut force_update = false;
             if could_switch && (!is_late) {
                 self.mass_matrix.switch(math);
+                force_update = true;
             }
-            let did_change = self.mass_matrix.update_potential(math, potential);
+
+            let did_change = if force_update
+                | (draw - self.last_update >= self.options.mass_matrix_update_freq)
+            {
+                self.mass_matrix.update_potential(math, potential)
+            } else {
+                false
+            };
+
+            if did_change {
+                self.last_update = draw;
+            }
             if is_late {
                 self.step_size.use_mean_sym();
             }
