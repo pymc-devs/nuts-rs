@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.11.0] - 2024-06-10
+## [0.12.0] - 2024-07-05
 
 ### Bug Fixes
 
@@ -15,12 +15,20 @@ All notable changes to this project will be documented in this file.
 
 - Bump arrow version (Adrian Seyboldt)
 
+- First part of low rank mass matrix adaptation (Adrian Seyboldt)
+
+- Add option to specify mass matrix update frequency (Adrian Seyboldt)
+
+- Add low-rank modified mass matrix adaptation (Adrian Seyboldt)
+
 
 ### Miscellaneous Tasks
 
 - Update dependencies (Adrian Seyboldt)
 
 - Prepare release (Adrian Seyboldt)
+
+- Update changelog (Adrian Seyboldt)
 
 
 ### Refactor
@@ -31,6 +39,11 @@ All notable changes to this project will be documented in this file.
 ### Styling
 
 - Some minor clippy fixes (Adrian Seyboldt)
+
+
+### Testing
+
+- Add proptest failure and increase tolerance (Adrian Seyboldt)
 
 
 ## [0.9.0] - 2024-04-16
