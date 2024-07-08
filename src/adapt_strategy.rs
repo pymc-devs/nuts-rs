@@ -21,7 +21,7 @@ use crate::{
 use crate::nuts::{SamplerStats, StatTraceBuilder};
 
 pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
-    step_size: StepSizeStrategy<M, A>,
+    step_size: StepSizeStrategy,
     mass_matrix: A,
     options: AdaptOptions<A::Options>,
     num_tune: u64,
@@ -73,7 +73,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> SamplerStats<M> for GlobalStrategy<
 
     fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder {
         CombinedStatsBuilder {
-            stats1: self.step_size.new_builder(settings, dim),
+            stats1: SamplerStats::<M>::new_builder(&self.step_size, settings, dim),
             stats2: self.mass_matrix.new_builder(settings, dim),
         }
     }
@@ -87,7 +87,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStats<M> for GlobalStrategy<M,
 
 impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy<M, A> {
     type Potential = A::Potential;
-    type Collector = CombinedCollector<M, AcceptanceRateCollector<M>, A::Collector>;
+    type Collector = CombinedCollector<M, AcceptanceRateCollector, A::Collector>;
     type Options = AdaptOptions<A::Options>;
 
     fn new(math: &mut M, options: Self::Options, num_tune: u64) -> Self {
@@ -99,7 +99,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         assert!(early_end < num_tune);
 
         Self {
-            step_size: StepSizeStrategy::new(math, options.dual_average_options, num_tune),
+            step_size: StepSizeStrategy::new(options.dual_average_options),
             mass_matrix: A::new(math, options.mass_matrix_options, num_tune),
             options,
             num_tune,
@@ -121,7 +121,6 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
     ) {
         self.mass_matrix.init(math, options, potential, state, rng);
         self.step_size.init(math, options, potential, state, rng);
-        self.step_size.enable();
     }
 
     fn adapt<R: Rng + ?Sized>(
@@ -134,6 +133,8 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         state: &State<M>,
         rng: &mut R,
     ) {
+        self.step_size.update(&collector.collector1);
+
         if draw >= self.num_tune {
             self.tuning = false;
             return;
@@ -172,44 +173,31 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
             if did_change {
                 self.last_update = draw;
             }
+
             if is_late {
-                self.step_size.use_mean_sym();
+                self.step_size.update_estimator_late();
+            } else {
+                self.step_size.update_estimator_early();
             }
+
             // First time we change the mass matrix
             if did_change & self.has_initial_mass_matrix {
                 self.has_initial_mass_matrix = false;
                 self.step_size.init(math, options, potential, state, rng);
             } else {
-                self.step_size.adapt(
-                    math,
-                    options,
-                    potential,
-                    draw,
-                    &collector.collector1,
-                    state,
-                    rng,
-                );
+                self.step_size.update_stepsize(potential, false)
             }
             return;
         }
 
-        if draw == self.num_tune - 1 {
-            self.step_size.finalize();
-        }
-        self.step_size.adapt(
-            math,
-            options,
-            potential,
-            draw,
-            &collector.collector1,
-            state,
-            rng,
-        );
+        self.step_size.update_estimator_late();
+        let is_last = draw == self.num_tune - 1;
+        self.step_size.update_stepsize(potential, is_last);
     }
 
     fn new_collector(&self, math: &mut M) -> Self::Collector {
         CombinedCollector {
-            collector1: self.step_size.new_collector(math),
+            collector1: self.step_size.new_collector(),
             collector2: self.mass_matrix.new_collector(math),
             _phantom: PhantomData,
         }

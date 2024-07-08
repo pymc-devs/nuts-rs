@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use arrow::{
     array::{ArrayBuilder, PrimitiveBuilder, StructArray},
     datatypes::{DataType, Field, Float64Type, UInt64Type},
@@ -7,40 +5,143 @@ use arrow::{
 use rand::Rng;
 
 use crate::{
-    mass_matrix_adapt::MassMatrixAdaptStrategy,
     nuts::{
-        AdaptStats, AdaptStrategy, Collector, Direction, Hamiltonian, NutsOptions, SamplerStats,
-        StatTraceBuilder,
+        AdaptStats, Collector, Direction, Hamiltonian, NutsOptions, SamplerStats, StatTraceBuilder,
     },
     state::State,
     stepsize::{AcceptanceRateCollector, DualAverage, DualAverageOptions},
     Math, Settings,
 };
 
-pub struct Strategy<F, M> {
+pub struct Strategy {
     step_size_adapt: DualAverage,
     options: DualAverageSettings,
-    enabled: bool,
-    use_mean_sym: bool,
-    finalized: bool,
     last_mean_tree_accept: f64,
     last_sym_mean_tree_accept: f64,
     last_n_steps: u64,
-    _phantom1: PhantomData<F>,
-    _phantom2: PhantomData<M>,
 }
 
-impl<F, M> Strategy<F, M> {
-    pub fn enable(&mut self) {
-        self.enabled = true;
+impl Strategy {
+    pub fn new(options: DualAverageSettings) -> Self {
+        Self {
+            options,
+            step_size_adapt: DualAverage::new(options.params, options.initial_step),
+            last_n_steps: 0,
+            last_sym_mean_tree_accept: 0.0,
+            last_mean_tree_accept: 0.0,
+        }
     }
 
-    pub fn finalize(&mut self) {
-        self.finalized = true;
+    pub fn init<M: Math, R: Rng + ?Sized>(
+        &mut self,
+        math: &mut M,
+        options: &mut NutsOptions,
+        potential: &mut impl Hamiltonian<M>,
+        state: &State<M>,
+        rng: &mut R,
+    ) {
+        let mut pool = potential.new_pool(math, 1);
+
+        let mut state = potential.copy_state(math, &mut pool, state);
+        state
+            .try_mut_inner()
+            .expect("New state should have only one reference")
+            .idx_in_trajectory = 0;
+        potential.randomize_momentum(math, &mut state, rng);
+
+        let mut collector = AcceptanceRateCollector::new();
+
+        collector.register_init(math, &state, options);
+
+        *potential.stepsize_mut() = self.options.initial_step;
+
+        let state_next = potential.leapfrog(
+            math,
+            &mut pool,
+            &state,
+            Direction::Forward,
+            state.energy(),
+            &mut collector,
+        );
+
+        let Ok(_) = state_next else {
+            return;
+        };
+
+        let accept_stat = collector.mean.current();
+        let dir = if accept_stat > self.options.target_accept {
+            Direction::Forward
+        } else {
+            Direction::Backward
+        };
+
+        for _ in 0..100 {
+            let mut collector = AcceptanceRateCollector::new();
+            collector.register_init(math, &state, options);
+            let state_next =
+                potential.leapfrog(math, &mut pool, &state, dir, state.energy(), &mut collector);
+            let Ok(_) = state_next else {
+                *potential.stepsize_mut() = self.options.initial_step;
+                return;
+            };
+            let accept_stat = collector.mean.current();
+            match dir {
+                Direction::Forward => {
+                    if (accept_stat <= self.options.target_accept) | (potential.stepsize() > 1e5) {
+                        self.step_size_adapt =
+                            DualAverage::new(self.options.params, potential.stepsize());
+                        return;
+                    }
+                    *potential.stepsize_mut() *= 2.;
+                }
+                Direction::Backward => {
+                    if (accept_stat >= self.options.target_accept) | (potential.stepsize() < 1e-10)
+                    {
+                        self.step_size_adapt =
+                            DualAverage::new(self.options.params, potential.stepsize());
+                        return;
+                    }
+                    *potential.stepsize_mut() /= 2.;
+                }
+            }
+        }
+        // If we don't find something better, use the specified initial value
+        *potential.stepsize_mut() = self.options.initial_step;
     }
 
-    pub fn use_mean_sym(&mut self) {
-        self.use_mean_sym = true;
+    pub fn update(&mut self, collector: &AcceptanceRateCollector) {
+        let mean_sym = collector.mean_sym.current();
+        let mean = collector.mean.current();
+        let n_steps = collector.mean.count();
+        self.last_mean_tree_accept = mean;
+        self.last_sym_mean_tree_accept = mean_sym;
+        self.last_n_steps = n_steps;
+    }
+
+    pub fn update_estimator_early(&mut self) {
+        self.step_size_adapt
+            .advance(self.last_mean_tree_accept, self.options.target_accept);
+    }
+
+    pub fn update_estimator_late(&mut self) {
+        self.step_size_adapt
+            .advance(self.last_sym_mean_tree_accept, self.options.target_accept);
+    }
+
+    pub fn update_stepsize<M: Math>(
+        &mut self,
+        potential: &mut impl Hamiltonian<M>,
+        use_best_guess: bool,
+    ) {
+        if use_best_guess {
+            *potential.stepsize_mut() = self.step_size_adapt.current_step_size_adapted();
+        } else {
+            *potential.stepsize_mut() = self.step_size_adapt.current_step_size();
+        }
+    }
+
+    pub fn new_collector(&self) -> AcceptanceRateCollector {
+        AcceptanceRateCollector::new()
     }
 }
 
@@ -119,7 +220,7 @@ impl StatTraceBuilder<Stats> for StatsBuilder {
     }
 }
 
-impl<M: Math, Mass: MassMatrixAdaptStrategy<M>> SamplerStats<M> for Strategy<M, Mass> {
+impl<M: Math> SamplerStats<M> for Strategy {
     type Builder = StatsBuilder;
     type Stats = Stats;
 
@@ -142,7 +243,7 @@ impl<M: Math, Mass: MassMatrixAdaptStrategy<M>> SamplerStats<M> for Strategy<M, 
     }
 }
 
-impl<M: Math, Mass: MassMatrixAdaptStrategy<M>> AdaptStats<M> for Strategy<M, Mass> {
+impl<M: Math> AdaptStats<M> for Strategy {
     fn num_grad_evals(stats: &Self::Stats) -> usize {
         stats.n_steps as usize
     }
@@ -162,143 +263,5 @@ impl Default for DualAverageSettings {
             initial_step: 0.1,
             params: DualAverageOptions::default(),
         }
-    }
-}
-
-impl<M: Math, Mass: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for Strategy<M, Mass> {
-    type Potential = Mass::Potential;
-    type Collector = AcceptanceRateCollector<M>;
-    type Options = DualAverageSettings;
-
-    fn new(_math: &mut M, options: Self::Options, _num_tune: u64) -> Self {
-        Self {
-            options,
-            enabled: true,
-            step_size_adapt: DualAverage::new(options.params, options.initial_step),
-            finalized: false,
-            use_mean_sym: false,
-            last_n_steps: 0,
-            last_sym_mean_tree_accept: 0.0,
-            last_mean_tree_accept: 0.0,
-            _phantom1: PhantomData,
-            _phantom2: PhantomData,
-        }
-    }
-
-    fn init<R: Rng + ?Sized>(
-        &mut self,
-        math: &mut M,
-        options: &mut NutsOptions,
-        potential: &mut Self::Potential,
-        state: &State<M>,
-        rng: &mut R,
-    ) {
-        let mut pool = potential.new_pool(math, 1);
-
-        let mut state = potential.copy_state(math, &mut pool, state);
-        state
-            .try_mut_inner()
-            .expect("New state should have only one reference")
-            .idx_in_trajectory = 0;
-        potential.randomize_momentum(math, &mut state, rng);
-
-        let mut collector = AcceptanceRateCollector::new();
-
-        collector.register_init(math, &state, options);
-
-        *potential.stepsize_mut() = self.options.initial_step;
-
-        let state_next = potential.leapfrog(
-            math,
-            &mut pool,
-            &state,
-            Direction::Forward,
-            state.energy(),
-            &mut collector,
-        );
-
-        let Ok(_) = state_next else {
-            return;
-        };
-
-        let accept_stat = collector.mean.current();
-        let dir = if accept_stat > self.options.target_accept {
-            Direction::Forward
-        } else {
-            Direction::Backward
-        };
-
-        for _ in 0..100 {
-            let mut collector = AcceptanceRateCollector::new();
-            collector.register_init(math, &state, options);
-            let state_next =
-                potential.leapfrog(math, &mut pool, &state, dir, state.energy(), &mut collector);
-            let Ok(_) = state_next else {
-                *potential.stepsize_mut() = self.options.initial_step;
-                return;
-            };
-            let accept_stat = collector.mean.current();
-            match dir {
-                Direction::Forward => {
-                    if (accept_stat <= self.options.target_accept) | (potential.stepsize() > 1e5) {
-                        self.step_size_adapt =
-                            DualAverage::new(self.options.params, potential.stepsize());
-                        return;
-                    }
-                    *potential.stepsize_mut() *= 2.;
-                }
-                Direction::Backward => {
-                    if (accept_stat >= self.options.target_accept) | (potential.stepsize() < 1e-10)
-                    {
-                        self.step_size_adapt =
-                            DualAverage::new(self.options.params, potential.stepsize());
-                        return;
-                    }
-                    *potential.stepsize_mut() /= 2.;
-                }
-            }
-        }
-        // If we don't find something better, use the specified initial value
-        *potential.stepsize_mut() = self.options.initial_step;
-    }
-
-    fn adapt<R: Rng + ?Sized>(
-        &mut self,
-        _math: &mut M,
-        _options: &mut NutsOptions,
-        potential: &mut Self::Potential,
-        _draw: u64,
-        collector: &Self::Collector,
-        _state: &State<M>,
-        _rng: &mut R,
-    ) {
-        let mean_sym = collector.mean_sym.current();
-        let mean = collector.mean.current();
-        let n_steps = collector.mean.count();
-        self.last_mean_tree_accept = mean;
-        self.last_sym_mean_tree_accept = mean_sym;
-        self.last_n_steps = n_steps;
-
-        let current = if self.use_mean_sym { mean_sym } else { mean };
-        if self.finalized {
-            self.step_size_adapt
-                .advance(current, self.options.target_accept);
-            *potential.stepsize_mut() = self.step_size_adapt.current_step_size_adapted();
-            return;
-        }
-        if !self.enabled {
-            return;
-        }
-        self.step_size_adapt
-            .advance(current, self.options.target_accept);
-        *potential.stepsize_mut() = self.step_size_adapt.current_step_size()
-    }
-
-    fn new_collector(&self, _math: &mut M) -> Self::Collector {
-        AcceptanceRateCollector::new()
-    }
-
-    fn is_tuning(&self) -> bool {
-        self.enabled
     }
 }

@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use crate::{
     math_base::Math,
     nuts::{Collector, NutsOptions},
@@ -103,25 +101,23 @@ impl RunningMean {
     }
 }
 
-pub struct AcceptanceRateCollector<M: Math> {
+pub struct AcceptanceRateCollector {
     initial_energy: f64,
     pub(crate) mean: RunningMean,
     pub(crate) mean_sym: RunningMean,
-    phantom: PhantomData<M>,
 }
 
-impl<M: Math> AcceptanceRateCollector<M> {
-    pub(crate) fn new() -> AcceptanceRateCollector<M> {
+impl AcceptanceRateCollector {
+    pub(crate) fn new() -> AcceptanceRateCollector {
         AcceptanceRateCollector {
             initial_energy: 0.,
             mean: RunningMean::new(),
             mean_sym: RunningMean::new(),
-            phantom: PhantomData,
         }
     }
 }
 
-impl<M: Math> Collector<M> for AcceptanceRateCollector<M> {
+impl<M: Math> Collector<M> for AcceptanceRateCollector {
     fn register_leapfrog(
         &mut self,
         _math: &mut M,
