@@ -23,10 +23,10 @@ rand_distr = "0.4.3"
 multiversion = "0.7.2"
 itertools = "0.13.0"
 thiserror = "1.0.43"
-arrow = { version = "52.0.0", default-features = false, features = ["ffi"] }
+arrow = { version = "53.0.0", default-features = false, features = ["ffi"] }
 rand_chacha = "0.3.1"
 anyhow = "1.0.72"
-faer = "0.19.1"
+faer = { version = "0.19.4", default-features = false, features = ["std"] }
 pulp = "0.18.21"
 rayon = "1.10.0"
 
@@ -36,7 +36,7 @@ pretty_assertions = "1.4.0"
 criterion = "0.5.1"
 nix = "0.29.0"
 approx = "0.5.1"
-ndarray = "0.15.6"
+ndarray = "0.16.1"
 
 [[bench]]
 name = "sample"
