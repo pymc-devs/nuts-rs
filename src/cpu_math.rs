@@ -14,12 +14,27 @@ use crate::{
 pub struct CpuMath<F: CpuLogpFunc> {
     logp_func: F,
     arch: pulp::Arch,
+    parallel: faer::Parallelism<'static>,
 }
 
 impl<F: CpuLogpFunc> CpuMath<F> {
     pub fn new(logp_func: F) -> Self {
         let arch = pulp::Arch::new();
-        Self { logp_func, arch }
+        let parallel = faer::Parallelism::None;
+        Self {
+            logp_func,
+            arch,
+            parallel,
+        }
+    }
+
+    pub fn with_parallel(logp_func: F, parallel: faer::Parallelism<'static>) -> Self {
+        let arch = pulp::Arch::new();
+        Self {
+            logp_func,
+            arch,
+            parallel,
+        }
     }
 }
 
