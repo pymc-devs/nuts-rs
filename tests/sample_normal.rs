@@ -8,8 +8,9 @@ use arrow::{
     datatypes::Float64Type,
 };
 use nuts_rs::{
-    AdaptOptions, CpuLogpFunc, CpuMath, DiagAdaptExpSettings, DiagGradNutsSettings, DrawStorage,
-    LogpError, LowRankNutsSettings, Model, Sampler, SamplerWaitResult, Settings, Trace,
+    CpuLogpFunc, CpuMath, DiagAdaptExpSettings, DiagGradNutsSettings, DrawStorage,
+    EuclideanAdaptOptions, LogpError, LowRankNutsSettings, Model, Sampler, SamplerWaitResult,
+    Settings, Trace,
 };
 use rand::prelude::Rng;
 use rand_distr::{Distribution, StandardNormal};
@@ -31,6 +32,7 @@ impl LogpError for NormalLogpError {
 
 impl<'a> CpuLogpFunc for NormalLogp<'a> {
     type LogpError = NormalLogpError;
+    type TransformParams = ();
 
     fn dim(&self) -> usize {
         self.dim
@@ -51,6 +53,50 @@ impl<'a> CpuLogpFunc for NormalLogp<'a> {
                 *grad = -diff;
             });
         Ok(logp)
+    }
+
+    fn inv_transform_normalize(
+        &mut self,
+        params: &Self::TransformParams,
+        untransformed_position: &[f64],
+        untransofrmed_gradient: &[f64],
+        transformed_position: &mut [f64],
+        transformed_gradient: &mut [f64],
+    ) -> Result<f64, Self::LogpError> {
+        todo!()
+    }
+
+    fn transformed_logp(
+        &mut self,
+        params: &Self::TransformParams,
+        untransformed_position: &[f64],
+        untransformed_gradient: &mut [f64],
+        transformed_position: &mut [f64],
+        transformed_gradient: &mut [f64],
+    ) -> Result<(f64, f64), Self::LogpError> {
+        todo!()
+    }
+
+    fn update_transformation<'b, R: rand::Rng + ?Sized>(
+        &'b mut self,
+        rng: &mut R,
+        untransformed_positions: impl Iterator<Item = &'b [f64]>,
+        untransformed_gradients: impl Iterator<Item = &'b [f64]>,
+        params: &'b mut Self::TransformParams,
+    ) -> Result<(), Self::LogpError> {
+        todo!()
+    }
+
+    fn new_transformation(
+        &mut self,
+        untransformed_position: &[f64],
+        untransfogmed_gradient: &[f64],
+    ) -> Result<Self::TransformParams, Self::LogpError> {
+        todo!()
+    }
+
+    fn transformation_id(&self, params: &Self::TransformParams) -> i64 {
+        todo!()
     }
 }
 
@@ -93,11 +139,13 @@ impl NormalModel {
 }
 
 impl Model for NormalModel {
-    type Math<'model> = CpuMath<NormalLogp<'model>>
+    type Math<'model>
+        = CpuMath<NormalLogp<'model>>
     where
         Self: 'model;
 
-    type DrawStorage<'model, S: Settings> = Storage
+    type DrawStorage<'model, S: Settings>
+        = Storage
     where
         Self: 'model;
 
@@ -158,7 +206,7 @@ fn sample_debug_stats() -> anyhow::Result<Trace> {
         store_gradient: true,
         store_divergences: true,
         store_unconstrained: true,
-        adapt_options: AdaptOptions {
+        adapt_options: EuclideanAdaptOptions {
             mass_matrix_options: DiagAdaptExpSettings {
                 store_mass_matrix: true,
                 use_grad_based_estimate: true,
@@ -192,7 +240,7 @@ fn sample_eigs_debug_stats() -> anyhow::Result<Trace> {
         store_gradient: true,
         store_divergences: true,
         store_unconstrained: true,
-        adapt_options: AdaptOptions {
+        adapt_options: EuclideanAdaptOptions {
             mass_matrix_options: nuts_rs::LowRankSettings {
                 store_mass_matrix: false,
                 ..Default::default()

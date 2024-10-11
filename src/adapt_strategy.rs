@@ -5,25 +5,26 @@ use itertools::Itertools;
 use rand::Rng;
 
 use crate::{
+    chain::AdaptStrategy,
+    hamiltonian::{DivergenceInfo, Hamiltonian, Point},
     mass_matrix_adapt::MassMatrixAdaptStrategy,
     math_base::Math,
-    nuts::{AdaptStats, AdaptStrategy, Collector, NutsOptions},
+    nuts::{Collector, NutsOptions},
     sampler::Settings,
+    sampler_stats::{SamplerStats, StatTraceBuilder},
     state::State,
     stepsize::AcceptanceRateCollector,
     stepsize_adapt::{
         DualAverageSettings, Stats as StepSizeStats, StatsBuilder as StepSizeStatsBuilder,
         Strategy as StepSizeStrategy,
     },
-    DivergenceInfo,
+    NutsError,
 };
-
-use crate::nuts::{SamplerStats, StatTraceBuilder};
 
 pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
     step_size: StepSizeStrategy,
     mass_matrix: A,
-    options: AdaptOptions<A::Options>,
+    options: EuclideanAdaptOptions<A::Options>,
     num_tune: u64,
     // The number of draws in the the early window
     early_end: u64,
@@ -36,7 +37,7 @@ pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct AdaptOptions<S: Debug + Default> {
+pub struct EuclideanAdaptOptions<S: Debug + Default> {
     pub dual_average_options: DualAverageSettings,
     pub mass_matrix_options: S,
     pub early_window: f64,
@@ -46,7 +47,7 @@ pub struct AdaptOptions<S: Debug + Default> {
     pub mass_matrix_update_freq: u64,
 }
 
-impl<S: Debug + Default> Default for AdaptOptions<S> {
+impl<S: Debug + Default> Default for EuclideanAdaptOptions<S> {
     fn default() -> Self {
         Self {
             dual_average_options: DualAverageSettings::default(),
@@ -79,16 +80,15 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> SamplerStats<M> for GlobalStrategy<
     }
 }
 
-impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStats<M> for GlobalStrategy<M, A> {
-    fn num_grad_evals(stats: &Self::Stats) -> usize {
-        stats.stats1.n_steps as usize
-    }
-}
-
 impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy<M, A> {
-    type Potential = A::Potential;
-    type Collector = CombinedCollector<M, AcceptanceRateCollector, A::Collector>;
-    type Options = AdaptOptions<A::Options>;
+    type Hamiltonian = A::Hamiltonian;
+    type Collector = CombinedCollector<
+        M,
+        <Self::Hamiltonian as Hamiltonian<M>>::Point,
+        AcceptanceRateCollector,
+        A::Collector,
+    >;
+    type Options = EuclideanAdaptOptions<A::Options>;
 
     fn new(math: &mut M, options: Self::Options, num_tune: u64) -> Self {
         let num_tune_f = num_tune as f64;
@@ -115,29 +115,32 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         &mut self,
         math: &mut M,
         options: &mut NutsOptions,
-        potential: &mut Self::Potential,
-        state: &State<M>,
+        hamiltonian: &mut Self::Hamiltonian,
+        state: &State<M, <Self::Hamiltonian as Hamiltonian<M>>::Point>,
         rng: &mut R,
-    ) {
-        self.mass_matrix.init(math, options, potential, state, rng);
-        self.step_size.init(math, options, potential, state, rng);
+    ) -> Result<(), NutsError> {
+        self.mass_matrix
+            .init(math, options, hamiltonian, state, rng)?;
+        self.step_size
+            .init(math, options, hamiltonian, state, rng)?;
+        Ok(())
     }
 
     fn adapt<R: Rng + ?Sized>(
         &mut self,
         math: &mut M,
         options: &mut NutsOptions,
-        potential: &mut Self::Potential,
+        hamiltonian: &mut Self::Hamiltonian,
         draw: u64,
         collector: &Self::Collector,
-        state: &State<M>,
+        state: &State<M, <Self::Hamiltonian as Hamiltonian<M>>::Point>,
         rng: &mut R,
-    ) {
+    ) -> Result<(), NutsError> {
         self.step_size.update(&collector.collector1);
 
         if draw >= self.num_tune {
             self.tuning = false;
-            return;
+            return Ok(());
         }
 
         if draw < self.final_step_size_window {
@@ -165,7 +168,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
             let did_change = if force_update
                 | (draw - self.last_update >= self.options.mass_matrix_update_freq)
             {
-                self.mass_matrix.update_potential(math, potential)
+                self.mass_matrix.update_potential(math, hamiltonian)
             } else {
                 false
             };
@@ -183,24 +186,25 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
             // First time we change the mass matrix
             if did_change & self.has_initial_mass_matrix {
                 self.has_initial_mass_matrix = false;
-                self.step_size.init(math, options, potential, state, rng);
+                self.step_size
+                    .init(math, options, hamiltonian, state, rng)?;
             } else {
-                self.step_size.update_stepsize(potential, false)
+                self.step_size.update_stepsize(hamiltonian, false)
             }
-            return;
+            return Ok(());
         }
 
         self.step_size.update_estimator_late();
         let is_last = draw == self.num_tune - 1;
-        self.step_size.update_stepsize(potential, is_last);
+        self.step_size.update_stepsize(hamiltonian, is_last);
+        Ok(())
     }
 
     fn new_collector(&self, math: &mut M) -> Self::Collector {
-        CombinedCollector {
-            collector1: self.step_size.new_collector(),
-            collector2: self.mass_matrix.new_collector(math),
-            _phantom: PhantomData,
-        }
+        Self::Collector::new(
+            self.step_size.new_collector(),
+            self.mass_matrix.new_collector(math),
+        )
     }
 
     fn is_tuning(&self) -> bool {
@@ -277,22 +281,48 @@ where
     }
 }
 
-pub struct CombinedCollector<M: Math, C1: Collector<M>, C2: Collector<M>> {
-    collector1: C1,
-    collector2: C2,
+pub struct CombinedCollector<M, P, C1, C2>
+where
+    M: Math,
+    P: Point<M>,
+    C1: Collector<M, P>,
+    C2: Collector<M, P>,
+{
+    pub collector1: C1,
+    pub collector2: C2,
     _phantom: PhantomData<M>,
+    _phantom2: PhantomData<P>,
 }
 
-impl<M: Math, C1, C2> Collector<M> for CombinedCollector<M, C1, C2>
+impl<M, P, C1, C2> CombinedCollector<M, P, C1, C2>
 where
-    C1: Collector<M>,
-    C2: Collector<M>,
+    M: Math,
+    P: Point<M>,
+    C1: Collector<M, P>,
+    C2: Collector<M, P>,
+{
+    pub fn new(collector1: C1, collector2: C2) -> Self {
+        CombinedCollector {
+            collector1,
+            collector2,
+            _phantom: PhantomData,
+            _phantom2: PhantomData,
+        }
+    }
+}
+
+impl<M, P, C1, C2> Collector<M, P> for CombinedCollector<M, P, C1, C2>
+where
+    M: Math,
+    P: Point<M>,
+    C1: Collector<M, P>,
+    C2: Collector<M, P>,
 {
     fn register_leapfrog(
         &mut self,
         math: &mut M,
-        start: &State<M>,
-        end: &State<M>,
+        start: &State<M, P>,
+        end: &State<M, P>,
         divergence_info: Option<&DivergenceInfo>,
     ) {
         self.collector1
@@ -301,7 +331,7 @@ where
             .register_leapfrog(math, start, end, divergence_info);
     }
 
-    fn register_draw(&mut self, math: &mut M, state: &State<M>, info: &crate::nuts::SampleInfo) {
+    fn register_draw(&mut self, math: &mut M, state: &State<M, P>, info: &crate::nuts::SampleInfo) {
         self.collector1.register_draw(math, state, info);
         self.collector2.register_draw(math, state, info);
     }
@@ -309,7 +339,7 @@ where
     fn register_init(
         &mut self,
         math: &mut M,
-        state: &State<M>,
+        state: &State<M, P>,
         options: &crate::nuts::NutsOptions,
     ) {
         self.collector1.register_init(math, state, options);
@@ -319,7 +349,7 @@ where
 
 #[cfg(test)]
 pub mod test_logps {
-    use crate::{cpu_math::CpuLogpFunc, nuts::LogpError};
+    use crate::{cpu_math::CpuLogpFunc, math_base::LogpError};
     use thiserror::Error;
 
     #[derive(Clone, Debug)]
@@ -344,6 +374,7 @@ pub mod test_logps {
 
     impl CpuLogpFunc for NormalLogp {
         type LogpError = NormalLogpError;
+        type TransformParams = ();
 
         fn dim(&self) -> usize {
             self.dim
@@ -360,6 +391,50 @@ pub mod test_logps {
             }
             Ok(logp)
         }
+
+        fn inv_transform_normalize(
+            &mut self,
+            _params: &Self::TransformParams,
+            _untransformed_position: &[f64],
+            _untransofrmed_gradient: &[f64],
+            _transformed_position: &mut [f64],
+            _transformed_gradient: &mut [f64],
+        ) -> Result<f64, Self::LogpError> {
+            unimplemented!()
+        }
+
+        fn transformed_logp(
+            &mut self,
+            _params: &Self::TransformParams,
+            _untransformed_position: &[f64],
+            _untransformed_gradient: &mut [f64],
+            _transformed_position: &mut [f64],
+            _transformed_gradient: &mut [f64],
+        ) -> Result<(f64, f64), Self::LogpError> {
+            unimplemented!()
+        }
+
+        fn update_transformation<'a, R: rand::Rng + ?Sized>(
+            &'a mut self,
+            _rng: &mut R,
+            _untransformed_positions: impl Iterator<Item = &'a [f64]>,
+            _untransformed_gradients: impl Iterator<Item = &'a [f64]>,
+            _params: &'a mut Self::TransformParams,
+        ) -> Result<(), Self::LogpError> {
+            unimplemented!()
+        }
+
+        fn new_transformation(
+            &mut self,
+            _untransformed_position: &[f64],
+            _untransfogmed_gradient: &[f64],
+        ) -> Result<Self::TransformParams, Self::LogpError> {
+            unimplemented!()
+        }
+
+        fn transformation_id(&self, _params: &Self::TransformParams) -> i64 {
+            unimplemented!()
+        }
     }
 }
 
@@ -368,11 +443,8 @@ mod test {
     use super::test_logps::NormalLogp;
     use super::*;
     use crate::{
-        cpu_math::CpuMath,
-        mass_matrix::DiagMassMatrix,
-        nuts::{AdaptStrategy, Chain, NutsChain, NutsOptions},
-        potential::EuclideanPotential,
-        DiagAdaptExpSettings,
+        chain::NutsChain, cpu_math::CpuMath, euclidean_hamiltonian::EuclideanHamiltonian,
+        mass_matrix::DiagMassMatrix, Chain, DiagAdaptExpSettings,
     };
 
     #[test]
@@ -383,14 +455,14 @@ mod test {
         let func = NormalLogp::new(ndim, 3.);
         let mut math = CpuMath::new(func);
         let num_tune = 100;
-        let options = AdaptOptions::<DiagAdaptExpSettings>::default();
+        let options = EuclideanAdaptOptions::<DiagAdaptExpSettings>::default();
         let strategy = GlobalStrategy::<_, Strategy<_>>::new(&mut math, options, num_tune);
 
         let mass_matrix = DiagMassMatrix::new(&mut math, true);
         let max_energy_error = 1000f64;
         let step_size = 0.1f64;
 
-        let potential = EuclideanPotential::new(mass_matrix, max_energy_error, step_size);
+        let hamiltonian = EuclideanHamiltonian::new(mass_matrix, max_energy_error, step_size);
         let options = NutsOptions {
             maxdepth: 10u64,
             store_gradient: true,
@@ -405,7 +477,7 @@ mod test {
         };
         let chain = 0u64;
 
-        let mut sampler = NutsChain::new(math, potential, strategy, options, rng, chain);
+        let mut sampler = NutsChain::new(math, hamiltonian, strategy, options, rng, chain);
         sampler.set_position(&vec![1.5f64; ndim]).unwrap();
         for _ in 0..200 {
             sampler.draw().unwrap();

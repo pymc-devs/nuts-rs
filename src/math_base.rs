@@ -1,15 +1,27 @@
 use std::{error::Error, fmt::Debug};
 
-use crate::LogpError;
+/// Errors that happen when we evaluate the logp and gradient function
+pub trait LogpError: std::error::Error + Send {
+    /// Unrecoverable errors during logp computation stop sampling,
+    /// recoverable errors are seen as divergences.
+    fn is_recoverable(&self) -> bool;
+}
 
 pub trait Math {
     type Vector: Debug;
     type EigVectors: Debug;
     type EigValues: Debug;
-    type LogpErr: Debug + Send + Sync + LogpError + 'static;
+    type LogpErr: Debug + Send + Sync + LogpError + Sized + 'static;
     type Err: Debug + Send + Sync + Error + 'static;
+    type TransformParams;
 
-    fn new_array(&self) -> Self::Vector;
+    fn new_array(&mut self) -> Self::Vector;
+
+    fn copy_array(&mut self, array: &Self::Vector) -> Self::Vector {
+        let mut copy = self.new_array();
+        self.copy_into(array, &mut copy);
+        copy
+    }
 
     fn new_eig_vectors<'a>(
         &'a mut self,
@@ -127,4 +139,38 @@ pub trait Math {
         fill_invalid: f64,
         clamp: (f64, f64),
     );
+
+    fn inv_transform_normalize(
+        &mut self,
+        params: &Self::TransformParams,
+        untransformed_position: &Self::Vector,
+        untransofrmed_gradient: &Self::Vector,
+        transformed_position: &mut Self::Vector,
+        transformed_gradient: &mut Self::Vector,
+    ) -> Result<f64, Self::LogpErr>;
+
+    fn transformed_logp(
+        &mut self,
+        params: &Self::TransformParams,
+        untransformed_position: &Self::Vector,
+        untransformed_gradient: &mut Self::Vector,
+        transformed_position: &mut Self::Vector,
+        transformed_gradient: &mut Self::Vector,
+    ) -> Result<(f64, f64), Self::LogpErr>;
+
+    fn update_transformation<'a, R: rand::Rng + ?Sized>(
+        &'a mut self,
+        rng: &mut R,
+        untransformed_positions: impl Iterator<Item = &'a Self::Vector>,
+        untransformed_gradients: impl Iterator<Item = &'a Self::Vector>,
+        params: &'a mut Self::TransformParams,
+    ) -> Result<(), Self::LogpErr>;
+
+    fn new_transformation(
+        &mut self,
+        untransformed_position: &Self::Vector,
+        untransfogmed_gradient: &Self::Vector,
+    ) -> Result<Self::TransformParams, Self::LogpErr>;
+
+    fn transformation_id(&self, params: &Self::TransformParams) -> i64;
 }
