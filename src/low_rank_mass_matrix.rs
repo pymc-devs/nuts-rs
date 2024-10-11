@@ -8,12 +8,14 @@ use faer::{Col, Mat, Scale};
 use itertools::Itertools;
 
 use crate::{
+    chain::AdaptStrategy,
+    euclidean_hamiltonian::{EuclideanHamiltonian, EuclideanPoint},
+    hamiltonian::Point,
     mass_matrix::{DrawGradCollector, MassMatrix},
     mass_matrix_adapt::MassMatrixAdaptStrategy,
-    nuts::{AdaptStats, AdaptStrategy, SamplerStats, StatTraceBuilder},
-    potential::EuclideanPotential,
+    sampler_stats::{SamplerStats, StatTraceBuilder},
     state::State,
-    Math,
+    Math, NutsError,
 };
 
 #[derive(Debug)]
@@ -300,33 +302,39 @@ impl<M: Math> SamplerStats<M> for LowRankMassMatrix<M> {
 }
 
 impl<M: Math> MassMatrix<M> for LowRankMassMatrix<M> {
-    fn update_velocity(&self, math: &mut M, state: &mut crate::state::InnerState<M>) {
+    fn update_velocity(&self, math: &mut M, state: &mut EuclideanPoint<M>) {
         let Some(inner) = self.inner.as_ref() else {
-            math.array_mult(&self.variance, &state.p, &mut state.v);
+            math.array_mult(&self.variance, &state.momentum, &mut state.velocity);
             return;
         };
 
-        math.array_mult_eigs(&self.stds, &state.p, &mut state.v, &inner.vecs, &inner.vals);
+        math.array_mult_eigs(
+            &self.stds,
+            &state.momentum,
+            &mut state.velocity,
+            &inner.vecs,
+            &inner.vals,
+        );
     }
 
-    fn update_kinetic_energy(&self, math: &mut M, state: &mut crate::state::InnerState<M>) {
-        state.kinetic_energy = 0.5 * math.array_vector_dot(&state.p, &state.v);
+    fn update_kinetic_energy(&self, math: &mut M, state: &mut EuclideanPoint<M>) {
+        state.kinetic_energy = 0.5 * math.array_vector_dot(&state.momentum, &state.velocity);
     }
 
     fn randomize_momentum<R: rand::Rng + ?Sized>(
         &self,
         math: &mut M,
-        state: &mut crate::state::InnerState<M>,
+        state: &mut EuclideanPoint<M>,
         rng: &mut R,
     ) {
         let Some(inner) = self.inner.as_ref() else {
-            math.array_gaussian(rng, &mut state.p, &self.inv_stds);
+            math.array_gaussian(rng, &mut state.momentum, &self.inv_stds);
             return;
         };
 
         math.array_gaussian_eigs(
             rng,
-            &mut state.p,
+            &mut state.momentum,
             &self.inv_stds,
             &inner.vals_sqrt_inv,
             &inner.vecs,
@@ -384,12 +392,12 @@ impl LowRankMassMatrixStrategy {
         }
     }
 
-    pub fn add_draw<M: Math>(&mut self, math: &mut M, state: &State<M>) {
+    pub fn add_draw<M: Math>(&mut self, math: &mut M, state: &State<M, EuclideanPoint<M>>) {
         assert!(math.dim() == self.ndim);
         let mut draw = vec![0f64; self.ndim];
-        math.write_to_slice(&state.q, &mut draw);
+        state.write_position(math, &mut draw);
         let mut grad = vec![0f64; self.ndim];
-        math.write_to_slice(&state.grad, &mut grad);
+        state.write_gradient(math, &mut grad);
 
         self.draws.push_back(draw);
         self.grads.push_back(grad);
@@ -548,15 +556,8 @@ fn spd_mean(cov_draws: Mat<f64>, cov_grads: Mat<f64>) -> Mat<f64> {
     (&grads_inv_sqrt) * m_sqrt * grads_inv_sqrt
 }
 
-impl<M: Math> AdaptStats<M> for LowRankMassMatrixStrategy {
-    fn num_grad_evals(_stats: &Self::Stats) -> usize {
-        unimplemented!()
-    }
-}
-
 impl<M: Math> SamplerStats<M> for LowRankMassMatrixStrategy {
     type Stats = Stats;
-
     type Builder = Builder;
 
     fn new_builder(&self, _settings: &impl crate::Settings, _dim: usize) -> Self::Builder {
@@ -569,10 +570,8 @@ impl<M: Math> SamplerStats<M> for LowRankMassMatrixStrategy {
 }
 
 impl<M: Math> AdaptStrategy<M> for LowRankMassMatrixStrategy {
-    type Potential = EuclideanPotential<M, LowRankMassMatrix<M>>;
-
+    type Hamiltonian = EuclideanHamiltonian<M, LowRankMassMatrix<M>>;
     type Collector = DrawGradCollector<M>;
-
     type Options = LowRankSettings;
 
     fn new(math: &mut M, options: Self::Options, _num_tune: u64) -> Self {
@@ -583,26 +582,28 @@ impl<M: Math> AdaptStrategy<M> for LowRankMassMatrixStrategy {
         &mut self,
         math: &mut M,
         _options: &mut crate::nuts::NutsOptions,
-        potential: &mut Self::Potential,
-        state: &State<M>,
+        potential: &mut Self::Hamiltonian,
+        state: &State<M, EuclideanPoint<M>>,
         _rng: &mut R,
-    ) {
+    ) -> Result<(), NutsError> {
         self.add_draw(math, state);
         potential
             .mass_matrix
-            .update_from_grad(math, &state.grad, 1f64, (1e-20, 1e20))
+            .update_from_grad(math, state.point().gradient(), 1f64, (1e-20, 1e20));
+        Ok(())
     }
 
     fn adapt<R: rand::Rng + ?Sized>(
         &mut self,
         _math: &mut M,
         _options: &mut crate::nuts::NutsOptions,
-        _potential: &mut Self::Potential,
+        _potential: &mut Self::Hamiltonian,
         _draw: u64,
         _collector: &Self::Collector,
-        _state: &State<M>,
+        _state: &State<M, EuclideanPoint<M>>,
         _rng: &mut R,
-    ) {
+    ) -> Result<(), NutsError> {
+        Ok(())
     }
 
     fn new_collector(&self, math: &mut M) -> Self::Collector {
@@ -646,7 +647,7 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for LowRankMassMatrixStrategy {
         self.draws.len().checked_sub(self.background_split).unwrap() as u64
     }
 
-    fn update_potential(&self, math: &mut M, potential: &mut Self::Potential) -> bool {
+    fn update_potential(&self, math: &mut M, potential: &mut Self::Hamiltonian) -> bool {
         if <LowRankMassMatrixStrategy as MassMatrixAdaptStrategy<M>>::current_count(self) < 3 {
             return false;
         }
@@ -662,7 +663,7 @@ mod test {
 
     use faer::{assert_matrix_eq, Col, Mat};
     use rand::{rngs::SmallRng, Rng, SeedableRng};
-    use rand_distr::{num_traits::ToBytes, StandardNormal};
+    use rand_distr::StandardNormal;
 
     use super::{estimate_mass_matrix, spd_mean};
 

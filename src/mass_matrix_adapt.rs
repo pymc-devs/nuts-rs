@@ -3,11 +3,14 @@ use std::marker::PhantomData;
 use rand::Rng;
 
 use crate::{
+    chain::AdaptStrategy,
+    euclidean_hamiltonian::{EuclideanHamiltonian, EuclideanPoint},
+    hamiltonian::Point,
     mass_matrix::{DiagMassMatrix, DrawGradCollector, MassMatrix, RunningVariance},
-    nuts::{AdaptStats, AdaptStrategy, NutsOptions, SamplerStats},
-    potential::EuclideanPotential,
+    nuts::NutsOptions,
+    sampler_stats::SamplerStats,
     state::State,
-    Math, Settings,
+    Math, NutsError, Settings,
 };
 const LOWER_LIMIT: f64 = 1e-20f64;
 const UPPER_LIMIT: f64 = 1e20f64;
@@ -52,7 +55,7 @@ pub trait MassMatrixAdaptStrategy<M: Math>: AdaptStrategy<M> {
     fn background_count(&self) -> u64;
 
     /// Give the opportunity to update the potential and return if it was changed
-    fn update_potential(&self, math: &mut M, potential: &mut Self::Potential) -> bool;
+    fn update_potential(&self, math: &mut M, potential: &mut Self::Hamiltonian) -> bool;
 }
 
 impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
@@ -88,7 +91,7 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
     fn update_potential(
         &self,
         math: &mut M,
-        potential: &mut EuclideanPotential<M, Self::MassMatrix>,
+        potential: &mut EuclideanHamiltonian<M, Self::MassMatrix>,
     ) -> bool {
         if self.current_count() < 3 {
             return false;
@@ -133,15 +136,8 @@ impl<M: Math> SamplerStats<M> for Strategy<M> {
     fn current_stats(&self, _math: &mut M) -> Self::Stats {}
 }
 
-impl<M: Math> AdaptStats<M> for Strategy<M> {
-    // This is never called
-    fn num_grad_evals(_stats: &Self::Stats) -> usize {
-        unimplemented!()
-    }
-}
-
 impl<M: Math> AdaptStrategy<M> for Strategy<M> {
-    type Potential = EuclideanPotential<M, DiagMassMatrix<M>>;
+    type Hamiltonian = EuclideanHamiltonian<M, DiagMassMatrix<M>>;
     type Collector = DrawGradCollector<M>;
     type Options = DiagAdaptExpSettings;
 
@@ -160,34 +156,40 @@ impl<M: Math> AdaptStrategy<M> for Strategy<M> {
         &mut self,
         math: &mut M,
         _options: &mut NutsOptions,
-        potential: &mut Self::Potential,
-        state: &State<M>,
+        potential: &mut Self::Hamiltonian,
+        state: &State<M, EuclideanPoint<M>>,
         _rng: &mut R,
-    ) {
-        self.exp_variance_draw.add_sample(math, &state.q);
-        self.exp_variance_draw_bg.add_sample(math, &state.q);
-        self.exp_variance_grad.add_sample(math, &state.grad);
-        self.exp_variance_grad_bg.add_sample(math, &state.grad);
+    ) -> Result<(), NutsError> {
+        self.exp_variance_draw
+            .add_sample(math, state.point().position());
+        self.exp_variance_draw_bg
+            .add_sample(math, state.point().position());
+        self.exp_variance_grad
+            .add_sample(math, state.point().gradient());
+        self.exp_variance_grad_bg
+            .add_sample(math, state.point().gradient());
 
         potential.mass_matrix.update_diag_grad(
             math,
-            &state.grad,
+            state.point().gradient(),
             1f64,
             (INIT_LOWER_LIMIT, INIT_UPPER_LIMIT),
         );
+        Ok(())
     }
 
     fn adapt<R: Rng + ?Sized>(
         &mut self,
         _math: &mut M,
         _options: &mut NutsOptions,
-        _potential: &mut Self::Potential,
+        _potential: &mut Self::Hamiltonian,
         _draw: u64,
         _collector: &Self::Collector,
-        _state: &State<M>,
+        _state: &State<M, EuclideanPoint<M>>,
         _rng: &mut R,
-    ) {
+    ) -> Result<(), NutsError> {
         // Must be controlled from a different meta strategy
+        Ok(())
     }
 
     fn new_collector(&self, math: &mut M) -> Self::Collector {

@@ -84,23 +84,30 @@
 //! somewhat.
 
 mod adapt_strategy;
+mod chain;
 mod cpu_math;
+mod euclidean_hamiltonian;
+mod hamiltonian;
 mod low_rank_mass_matrix;
 mod mass_matrix;
 mod mass_matrix_adapt;
 mod math;
 mod math_base;
 mod nuts;
-mod potential;
 mod sampler;
+mod sampler_stats;
 mod state;
 mod stepsize;
 mod stepsize_adapt;
+mod transform_adapt_strategy;
+mod transformed_hamiltonian;
 
-pub use adapt_strategy::AdaptOptions;
+pub use adapt_strategy::EuclideanAdaptOptions;
+pub use chain::Chain;
 pub use cpu_math::{CpuLogpFunc, CpuMath};
-pub use math_base::Math;
-pub use nuts::{Chain, DivergenceInfo, LogpError, NutsError, SampleStats};
+pub use hamiltonian::DivergenceInfo;
+pub use math_base::{LogpError, Math};
+pub use nuts::{NutsError, SampleStats};
 pub use sampler::{
     sample_sequentially, ChainOutput, ChainProgress, DiagGradNutsSettings, DrawStorage,
     LowRankNutsSettings, Model, NutsSettings, ProgressCallback, Sampler, SamplerWaitResult,

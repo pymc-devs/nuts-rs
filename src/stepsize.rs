@@ -1,8 +1,8 @@
 use crate::{
+    hamiltonian::{DivergenceInfo, Point},
     math_base::Math,
     nuts::{Collector, NutsOptions},
     state::State,
-    DivergenceInfo,
 };
 
 /// Settings for step size adaptation
@@ -117,12 +117,12 @@ impl AcceptanceRateCollector {
     }
 }
 
-impl<M: Math> Collector<M> for AcceptanceRateCollector {
+impl<M: Math, P: Point<M>> Collector<M, P> for AcceptanceRateCollector {
     fn register_leapfrog(
         &mut self,
         _math: &mut M,
-        _start: &State<M>,
-        end: &State<M>,
+        _start: &State<M, P>,
+        end: &State<M, P>,
         divergence_info: Option<&DivergenceInfo>,
     ) {
         match divergence_info {
@@ -142,7 +142,7 @@ impl<M: Math> Collector<M> for AcceptanceRateCollector {
         };
     }
 
-    fn register_init(&mut self, _math: &mut M, state: &State<M>, _options: &NutsOptions) {
+    fn register_init(&mut self, _math: &mut M, state: &State<M, P>, _options: &NutsOptions) {
         self.initial_energy = state.energy();
         self.mean.reset();
         self.mean_sym.reset();

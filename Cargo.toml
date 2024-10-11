@@ -23,7 +23,7 @@ rand_distr = "0.4.3"
 multiversion = "0.7.2"
 itertools = "0.13.0"
 thiserror = "1.0.43"
-arrow = { version = "53.0.0", default-features = false, features = ["ffi"] }
+arrow = { version = "53.1.0", default-features = false, features = ["ffi"] }
 rand_chacha = "0.3.1"
 anyhow = "1.0.72"
 faer = { version = "0.19.4", default-features = false, features = ["std"] }

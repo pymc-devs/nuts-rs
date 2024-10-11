@@ -17,17 +17,18 @@ use std::{
 };
 
 use crate::{
-    adapt_strategy::{AdaptOptions, GlobalStrategy},
+    adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy},
+    chain::{AdaptStrategy, Chain, NutsChain},
+    euclidean_hamiltonian::EuclideanHamiltonian,
     low_rank_mass_matrix::{LowRankMassMatrix, LowRankMassMatrixStrategy, LowRankSettings},
     mass_matrix::DiagMassMatrix,
     mass_matrix_adapt::Strategy as DiagMassMatrixStrategy,
     math_base::Math,
-    nuts::{
-        AdaptStats, Chain, HamiltonianStats, NutsChain, NutsOptions, SampleStats, SamplerStats,
-        StatTraceBuilder,
-    },
-    potential::EuclideanPotential,
-    DiagAdaptExpSettings,
+    nuts::NutsOptions,
+    sampler_stats::{SamplerStats, StatTraceBuilder},
+    transform_adapt_strategy::{TransformAdaptation, TransformedSettings},
+    transformed_hamiltonian::TransformedHamiltonian,
+    DiagAdaptExpSettings, SampleStats,
 };
 
 /// All sampler configurations implement this trait
@@ -54,13 +55,15 @@ pub trait Settings: private::Sealed + Clone + Copy + Default + Sync + Send + 'st
 mod private {
     use crate::DiagGradNutsSettings;
 
-    use super::LowRankNutsSettings;
+    use super::{LowRankNutsSettings, TransformedNutsSettings};
 
     pub trait Sealed {}
 
     impl Sealed for DiagGradNutsSettings {}
 
     impl Sealed for LowRankNutsSettings {}
+
+    impl Sealed for TransformedNutsSettings {}
 }
 
 /// Settings for the NUTS sampler
@@ -83,15 +86,16 @@ pub struct NutsSettings<A: Debug + Copy + Default> {
     /// Store detailed information about each divergence in the sampler stats
     pub store_divergences: bool,
     /// Settings for mass matrix adaptation.
-    pub adapt_options: AdaptOptions<A>,
+    pub adapt_options: A,
     pub check_turning: bool,
 
     pub num_chains: usize,
     pub seed: u64,
 }
 
-pub type DiagGradNutsSettings = NutsSettings<DiagAdaptExpSettings>;
-pub type LowRankNutsSettings = NutsSettings<LowRankSettings>;
+pub type DiagGradNutsSettings = NutsSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
+pub type LowRankNutsSettings = NutsSettings<EuclideanAdaptOptions<LowRankSettings>>;
+pub type TransformedNutsSettings = NutsSettings<TransformedSettings>;
 
 impl Default for DiagGradNutsSettings {
     fn default() -> Self {
@@ -103,7 +107,7 @@ impl Default for DiagGradNutsSettings {
             store_gradient: false,
             store_unconstrained: false,
             store_divergences: false,
-            adapt_options: AdaptOptions::default(),
+            adapt_options: EuclideanAdaptOptions::default(),
             check_turning: true,
             seed: 0,
             num_chains: 6,
@@ -121,7 +125,7 @@ impl Default for LowRankNutsSettings {
             store_gradient: false,
             store_unconstrained: false,
             store_divergences: false,
-            adapt_options: AdaptOptions::default(),
+            adapt_options: EuclideanAdaptOptions::default(),
             check_turning: true,
             seed: 0,
             num_chains: 6,
@@ -131,19 +135,29 @@ impl Default for LowRankNutsSettings {
     }
 }
 
-type DiagGradNutsChain<M> = NutsChain<
-    M,
-    EuclideanPotential<M, DiagMassMatrix<M>>,
-    SmallRng,
-    GlobalStrategy<M, DiagMassMatrixStrategy<M>>,
->;
+impl Default for TransformedNutsSettings {
+    fn default() -> Self {
+        Self {
+            num_tune: 4000,
+            num_draws: 1000,
+            maxdepth: 8,
+            max_energy_error: 1000f64,
+            store_gradient: false,
+            store_unconstrained: false,
+            store_divergences: false,
+            adapt_options: Default::default(),
+            check_turning: true,
+            seed: 0,
+            num_chains: 6,
+        }
+    }
+}
 
-type LowRankNutsChain<M> = NutsChain<
-    M,
-    EuclideanPotential<M, LowRankMassMatrix<M>>,
-    SmallRng,
-    GlobalStrategy<M, LowRankMassMatrixStrategy>,
->;
+type DiagGradNutsChain<M> = NutsChain<M, SmallRng, GlobalStrategy<M, DiagMassMatrixStrategy<M>>>;
+
+type LowRankNutsChain<M> = NutsChain<M, SmallRng, GlobalStrategy<M, LowRankMassMatrixStrategy>>;
+
+type TransformingNutsChain<M> = NutsChain<M, SmallRng, TransformAdaptation>;
 
 impl Settings for LowRankNutsSettings {
     type Chain<M: Math> = LowRankNutsChain<M>;
@@ -154,12 +168,11 @@ impl Settings for LowRankNutsSettings {
         mut math: M,
         rng: &mut R,
     ) -> Self::Chain<M> {
-        use crate::nuts::AdaptStrategy;
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune);
         let mass_matrix = LowRankMassMatrix::new(&mut math, self.adapt_options.mass_matrix_options);
         let max_energy_error = self.max_energy_error;
-        let potential = EuclideanPotential::new(mass_matrix, max_energy_error, 1f64);
+        let potential = EuclideanHamiltonian::new(mass_matrix, max_energy_error, 1f64);
 
         let options = NutsOptions {
             maxdepth: self.maxdepth,
@@ -178,10 +191,8 @@ impl Settings for LowRankNutsSettings {
         &self,
         stats: &<Self::Chain<M> as SamplerStats<M>>::Stats,
     ) -> SampleStats {
-        let step_size =
-            <Self::Chain<M> as Chain<M>>::Hamiltonian::stat_step_size(&stats.potential_stats);
-        let num_steps =
-            <Self::Chain<M> as Chain<M>>::AdaptStrategy::num_grad_evals(&stats.strategy_stats);
+        let step_size = stats.potential_stats.step_size;
+        let num_steps = stats.strategy_stats.stats1.n_steps;
         SampleStats {
             chain: stats.chain,
             draw: stats.draw,
@@ -218,7 +229,6 @@ impl Settings for DiagGradNutsSettings {
         mut math: M,
         rng: &mut R,
     ) -> Self::Chain<M> {
-        use crate::nuts::AdaptStrategy;
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune);
         let mass_matrix = DiagMassMatrix::new(
@@ -226,7 +236,7 @@ impl Settings for DiagGradNutsSettings {
             self.adapt_options.mass_matrix_options.store_mass_matrix,
         );
         let max_energy_error = self.max_energy_error;
-        let potential = EuclideanPotential::new(mass_matrix, max_energy_error, 1f64);
+        let potential = EuclideanHamiltonian::new(mass_matrix, max_energy_error, 1f64);
 
         let options = NutsOptions {
             maxdepth: self.maxdepth,
@@ -245,10 +255,69 @@ impl Settings for DiagGradNutsSettings {
         &self,
         stats: &<Self::Chain<M> as SamplerStats<M>>::Stats,
     ) -> SampleStats {
-        let step_size =
-            <Self::Chain<M> as Chain<M>>::Hamiltonian::stat_step_size(&stats.potential_stats);
-        let num_steps =
-            <Self::Chain<M> as Chain<M>>::AdaptStrategy::num_grad_evals(&stats.strategy_stats);
+        let step_size = stats.potential_stats.step_size;
+        let num_steps = stats.strategy_stats.stats1.n_steps;
+        SampleStats {
+            chain: stats.chain,
+            draw: stats.draw,
+            diverging: stats.divergence_info.is_some(),
+            tuning: stats.tuning,
+            step_size,
+            num_steps,
+        }
+    }
+
+    fn hint_num_tune(&self) -> usize {
+        self.num_tune as _
+    }
+
+    fn hint_num_draws(&self) -> usize {
+        self.num_draws as _
+    }
+
+    fn num_chains(&self) -> usize {
+        self.num_chains
+    }
+
+    fn seed(&self) -> u64 {
+        self.seed
+    }
+}
+
+impl Settings for TransformedNutsSettings {
+    type Chain<M: Math> = TransformingNutsChain<M>;
+
+    fn new_chain<M: Math, R: Rng + ?Sized>(
+        &self,
+        chain: u64,
+        mut math: M,
+        rng: &mut R,
+    ) -> Self::Chain<M> {
+        let num_tune = self.num_tune;
+        let max_energy_error = self.max_energy_error;
+
+        let strategy = TransformAdaptation::new(&mut math, self.adapt_options, num_tune);
+        let hamiltonian = TransformedHamiltonian::new(&mut math, max_energy_error);
+
+        let options = NutsOptions {
+            maxdepth: self.maxdepth,
+            store_gradient: self.store_gradient,
+            store_divergences: self.store_divergences,
+            store_unconstrained: self.store_unconstrained,
+            check_turning: self.check_turning,
+        };
+
+        let rng = rand::rngs::SmallRng::from_rng(rng).expect("Could not seed rng");
+        NutsChain::new(math, hamiltonian, strategy, options, rng, chain)
+    }
+
+    fn sample_stats<M: Math>(
+        &self,
+        stats: &<Self::Chain<M> as SamplerStats<M>>::Stats,
+    ) -> SampleStats {
+        // TODO
+        let step_size = 0.;
+        let num_steps = 0;
         SampleStats {
             chain: stats.chain,
             draw: stats.draw,
@@ -290,7 +359,6 @@ pub fn sample_sequentially<'math, M: Math + 'math, R: Rng + ?Sized>(
         sampler
             .draw()
             .map(|(point, info)| (point, settings.sample_stats::<M>(&info)))
-            .map_err(|e| e.into())
     }))
 }
 
@@ -357,8 +425,8 @@ impl ChainProgress {
         self.finished_draws += 1;
         self.tuning = stats.tuning;
 
-        self.latest_num_steps = stats.num_steps;
-        self.total_num_steps += stats.num_steps;
+        self.latest_num_steps = stats.num_steps as usize;
+        self.total_num_steps += stats.num_steps as usize;
         self.step_size = stats.step_size;
         self.runtime += draw_duration;
     }
@@ -375,13 +443,9 @@ enum ChainCommand {
     Pause,
 }
 
-type Builder<'model, M, S> = <<S as Settings>::Chain<<M as Model>::Math<'model>> as SamplerStats<
-    <M as Model>::Math<'model>,
->>::Builder;
-
 struct ChainTrace<'model, M: Model + 'model, S: Settings> {
     draws_builder: M::DrawStorage<'model, S>,
-    stats_builder: Builder<'model, M, S>,
+    stats_builder: <S::Chain<M::Math<'model>> as SamplerStats<M::Math<'model>>>::Builder,
     chain_id: u64,
 }
 
@@ -417,7 +481,7 @@ where
     progress: Arc<Mutex<ChainProgress>>,
 }
 
-impl<'scope, M: Model + 'scope, S: Settings> ChainProcess<'scope, M, S> {
+impl<'scope, M: Model, S: Settings> ChainProcess<'scope, M, S> {
     fn finalize_many(chains: Vec<Self>) -> Vec<Result<Option<ChainOutput>>> {
         chains
             .into_iter()
@@ -521,7 +585,6 @@ impl<'scope, M: Model + 'scope, S: Settings> ChainProcess<'scope, M, S> {
                 }
 
                 if let Some(error) = error {
-                    let error: anyhow::Error = error.into();
                     return Err(error.context("All initialization points failed"));
                 }
 
@@ -860,7 +923,7 @@ pub mod test_logps {
 
     use crate::{
         cpu_math::{CpuLogpFunc, CpuMath},
-        nuts::LogpError,
+        math_base::LogpError,
         Settings,
     };
     use anyhow::Result;
@@ -889,6 +952,7 @@ pub mod test_logps {
 
     impl<'a> CpuLogpFunc for &'a NormalLogp {
         type LogpError = NormalLogpError;
+        type TransformParams = ();
 
         fn dim(&self) -> usize {
             self.dim
@@ -951,6 +1015,50 @@ pub mod test_logps {
             let logp = logp_inner(self.mu, position, gradient);
 
             Ok(logp)
+        }
+
+        fn inv_transform_normalize(
+            &mut self,
+            _params: &Self::TransformParams,
+            _untransformed_position: &[f64],
+            _untransofrmed_gradient: &[f64],
+            _transformed_position: &mut [f64],
+            _transformed_gradient: &mut [f64],
+        ) -> std::result::Result<f64, Self::LogpError> {
+            unimplemented!()
+        }
+
+        fn transformed_logp(
+            &mut self,
+            _params: &Self::TransformParams,
+            _untransformed_position: &[f64],
+            _untransformed_gradient: &mut [f64],
+            _transformed_position: &mut [f64],
+            _transformed_gradient: &mut [f64],
+        ) -> std::result::Result<(f64, f64), Self::LogpError> {
+            unimplemented!()
+        }
+
+        fn update_transformation<'b, R: rand::Rng + ?Sized>(
+            &'b mut self,
+            _rng: &mut R,
+            _untransformed_positions: impl Iterator<Item = &'b [f64]>,
+            _untransformed_gradients: impl Iterator<Item = &'b [f64]>,
+            _params: &'b mut Self::TransformParams,
+        ) -> std::result::Result<(), Self::LogpError> {
+            unimplemented!()
+        }
+
+        fn new_transformation(
+            &mut self,
+            _untransformed_position: &[f64],
+            _untransfogmed_gradient: &[f64],
+        ) -> std::result::Result<Self::TransformParams, Self::LogpError> {
+            unimplemented!()
+        }
+
+        fn transformation_id(&self, _params: &Self::TransformParams) -> i64 {
+            unimplemented!()
         }
     }
 

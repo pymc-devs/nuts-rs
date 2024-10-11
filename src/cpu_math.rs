@@ -6,8 +6,7 @@ use thiserror::Error;
 
 use crate::{
     math::{axpy, axpy_out, multiply, scalar_prods2, scalar_prods3, vector_dot},
-    math_base::Math,
-    LogpError,
+    math_base::{LogpError, Math},
 };
 
 #[derive(Debug)]
@@ -51,8 +50,9 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     type EigValues = Col<f64>;
     type LogpErr = F::LogpError;
     type Err = CpuMathError;
+    type TransformParams = F::TransformParams;
 
-    fn new_array(&self) -> Self::Vector {
+    fn new_array(&mut self) -> Self::Vector {
         Col::zeros(self.dim())
     }
 
@@ -342,11 +342,110 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     fn eigs_as_array(&mut self, source: &Self::EigValues) -> Box<[f64]> {
         source.as_slice().to_vec().into()
     }
+
+    fn inv_transform_normalize(
+        &mut self,
+        params: &Self::TransformParams,
+        untransformed_position: &Self::Vector,
+        untransofrmed_gradient: &Self::Vector,
+        transformed_position: &mut Self::Vector,
+        transformed_gradient: &mut Self::Vector,
+    ) -> Result<f64, Self::LogpErr> {
+        self.logp_func.inv_transform_normalize(
+            params,
+            untransformed_position.as_slice(),
+            untransofrmed_gradient.as_slice(),
+            transformed_position.as_slice_mut(),
+            transformed_gradient.as_slice_mut(),
+        )
+    }
+
+    fn transformed_logp(
+        &mut self,
+        params: &Self::TransformParams,
+        untransformed_position: &Self::Vector,
+        untransformed_gradient: &mut Self::Vector,
+        transformed_position: &mut Self::Vector,
+        transformed_gradient: &mut Self::Vector,
+    ) -> Result<(f64, f64), Self::LogpErr> {
+        self.logp_func.transformed_logp(
+            params,
+            untransformed_position.as_slice(),
+            untransformed_gradient.as_slice_mut(),
+            transformed_position.as_slice_mut(),
+            transformed_gradient.as_slice_mut(),
+        )
+    }
+
+    fn update_transformation<'a, R: rand::Rng + ?Sized>(
+        &'a mut self,
+        rng: &mut R,
+        untransformed_positions: impl Iterator<Item = &'a Self::Vector>,
+        untransformed_gradients: impl Iterator<Item = &'a Self::Vector>,
+        params: &'a mut Self::TransformParams,
+    ) -> Result<(), Self::LogpErr> {
+        self.logp_func.update_transformation(
+            rng,
+            untransformed_positions.map(|x| x.as_slice()),
+            untransformed_gradients.map(|x| x.as_slice()),
+            params,
+        )
+    }
+
+    fn new_transformation(
+        &mut self,
+        untransformed_position: &Self::Vector,
+        untransfogmed_gradient: &Self::Vector,
+    ) -> Result<Self::TransformParams, Self::LogpErr> {
+        self.logp_func.new_transformation(
+            untransformed_position.as_slice(),
+            untransfogmed_gradient.as_slice(),
+        )
+    }
+
+    fn transformation_id(&self, params: &Self::TransformParams) -> i64 {
+        self.logp_func.transformation_id(params)
+    }
 }
 
 pub trait CpuLogpFunc {
     type LogpError: Debug + Send + Sync + Error + LogpError + 'static;
+    type TransformParams;
 
     fn dim(&self) -> usize;
     fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, Self::LogpError>;
+
+    fn inv_transform_normalize(
+        &mut self,
+        params: &Self::TransformParams,
+        untransformed_position: &[f64],
+        untransofrmed_gradient: &[f64],
+        transformed_position: &mut [f64],
+        transformed_gradient: &mut [f64],
+    ) -> Result<f64, Self::LogpError>;
+
+    fn transformed_logp(
+        &mut self,
+        params: &Self::TransformParams,
+        untransformed_position: &[f64],
+        untransformed_gradient: &mut [f64],
+        transformed_position: &mut [f64],
+        transformed_gradient: &mut [f64],
+    ) -> Result<(f64, f64), Self::LogpError>;
+
+    fn update_transformation<'a, R: rand::Rng + ?Sized>(
+        &'a mut self,
+        rng: &mut R,
+        untransformed_positions: impl Iterator<Item = &'a [f64]>,
+        untransformed_gradients: impl Iterator<Item = &'a [f64]>,
+        params: &'a mut Self::TransformParams,
+    ) -> Result<(), Self::LogpError>;
+
+    fn new_transformation(
+        &mut self,
+        untransformed_position: &[f64],
+        untransfogmed_gradient: &[f64],
+    ) -> Result<Self::TransformParams, Self::LogpError>;
+
+    fn transformation_id(&self, params: &Self::TransformParams) -> i64;
 }

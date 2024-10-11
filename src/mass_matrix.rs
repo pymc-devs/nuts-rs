@@ -4,28 +4,29 @@ use arrow::{
 };
 
 use crate::{
+    euclidean_hamiltonian::EuclideanPoint,
+    hamiltonian::Point,
     math_base::Math,
     nuts::Collector,
-    nuts::SamplerStats,
-    nuts::StatTraceBuilder,
     sampler::Settings,
-    state::{InnerState, State},
+    sampler_stats::{SamplerStats, StatTraceBuilder},
+    state::State,
 };
 
 pub trait MassMatrix<M: Math>: SamplerStats<M> {
-    fn update_velocity(&self, math: &mut M, state: &mut InnerState<M>);
-    fn update_kinetic_energy(&self, math: &mut M, state: &mut InnerState<M>);
+    fn update_velocity(&self, math: &mut M, state: &mut EuclideanPoint<M>);
+    fn update_kinetic_energy(&self, math: &mut M, state: &mut EuclideanPoint<M>);
     fn randomize_momentum<R: rand::Rng + ?Sized>(
         &self,
         math: &mut M,
-        state: &mut InnerState<M>,
+        point: &mut EuclideanPoint<M>,
         rng: &mut R,
     );
 }
 
 pub struct NullCollector {}
 
-impl<M: Math> Collector<M> for NullCollector {}
+impl<M: Math, P: Point<M>> Collector<M, P> for NullCollector {}
 
 #[derive(Debug)]
 pub struct DiagMassMatrix<M: Math> {
@@ -178,21 +179,21 @@ impl<M: Math> DiagMassMatrix<M> {
 }
 
 impl<M: Math> MassMatrix<M> for DiagMassMatrix<M> {
-    fn update_velocity(&self, math: &mut M, state: &mut InnerState<M>) {
-        math.array_mult(&self.variance, &state.p, &mut state.v);
+    fn update_velocity(&self, math: &mut M, point: &mut EuclideanPoint<M>) {
+        math.array_mult(&self.variance, &point.momentum, &mut point.velocity);
     }
 
-    fn update_kinetic_energy(&self, math: &mut M, state: &mut InnerState<M>) {
-        state.kinetic_energy = 0.5 * math.array_vector_dot(&state.p, &state.v);
+    fn update_kinetic_energy(&self, math: &mut M, point: &mut EuclideanPoint<M>) {
+        point.kinetic_energy = 0.5 * math.array_vector_dot(&point.momentum, &point.velocity);
     }
 
     fn randomize_momentum<R: rand::Rng + ?Sized>(
         &self,
         math: &mut M,
-        state: &mut InnerState<M>,
+        point: &mut EuclideanPoint<M>,
         rng: &mut R,
     ) {
-        math.array_gaussian(rng, &mut state.p, &self.inv_stds);
+        math.array_gaussian(rng, &mut point.momentum, &self.inv_stds);
     }
 }
 
@@ -253,10 +254,15 @@ impl<M: Math> DrawGradCollector<M> {
     }
 }
 
-impl<M: Math> Collector<M> for DrawGradCollector<M> {
-    fn register_draw(&mut self, math: &mut M, state: &State<M>, info: &crate::nuts::SampleInfo) {
-        math.copy_into(&state.q, &mut self.draw);
-        math.copy_into(&state.grad, &mut self.grad);
+impl<M: Math> Collector<M, EuclideanPoint<M>> for DrawGradCollector<M> {
+    fn register_draw(
+        &mut self,
+        math: &mut M,
+        state: &State<M, EuclideanPoint<M>>,
+        info: &crate::nuts::SampleInfo,
+    ) {
+        math.copy_into(state.point().position(), &mut self.draw);
+        math.copy_into(state.point().gradient(), &mut self.grad);
         let idx = state.index_in_trajectory();
         if info.divergence_info.is_some() {
             self.is_good = idx.abs() > 4;
