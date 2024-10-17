@@ -360,7 +360,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         )
     }
 
-    fn transformed_logp(
+    fn init_from_untransformed_position(
         &mut self,
         params: &Self::TransformParams,
         untransformed_position: &Self::Vector,
@@ -368,7 +368,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         transformed_position: &mut Self::Vector,
         transformed_gradient: &mut Self::Vector,
     ) -> Result<(f64, f64), Self::LogpErr> {
-        self.logp_func.transformed_logp(
+        self.logp_func.init_from_untransformed_position(
             params,
             untransformed_position.as_slice(),
             untransformed_gradient.as_slice_mut(),
@@ -377,11 +377,28 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         )
     }
 
+    fn init_from_transformed_position(
+        &mut self,
+        params: &Self::TransformParams,
+        untransformed_position: &mut Self::Vector,
+        untransformed_gradient: &mut Self::Vector,
+        transformed_position: &Self::Vector,
+        transformed_gradient: &mut Self::Vector,
+    ) -> Result<(f64, f64), Self::LogpErr> {
+        self.logp_func.init_from_transformed_position(
+            params,
+            untransformed_position.as_slice_mut(),
+            untransformed_gradient.as_slice_mut(),
+            transformed_position.as_slice(),
+            transformed_gradient.as_slice_mut(),
+        )
+    }
+
     fn update_transformation<'a, R: rand::Rng + ?Sized>(
         &'a mut self,
         rng: &mut R,
-        untransformed_positions: impl Iterator<Item = &'a Self::Vector>,
-        untransformed_gradients: impl Iterator<Item = &'a Self::Vector>,
+        untransformed_positions: impl ExactSizeIterator<Item = &'a Self::Vector>,
+        untransformed_gradients: impl ExactSizeIterator<Item = &'a Self::Vector>,
         params: &'a mut Self::TransformParams,
     ) -> Result<(), Self::LogpErr> {
         self.logp_func.update_transformation(
@@ -392,18 +409,22 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         )
     }
 
-    fn new_transformation(
+    fn new_transformation<R: rand::Rng + ?Sized>(
         &mut self,
+        rng: &mut R,
         untransformed_position: &Self::Vector,
         untransfogmed_gradient: &Self::Vector,
+        chain: u64,
     ) -> Result<Self::TransformParams, Self::LogpErr> {
         self.logp_func.new_transformation(
+            rng,
             untransformed_position.as_slice(),
             untransfogmed_gradient.as_slice(),
+            chain,
         )
     }
 
-    fn transformation_id(&self, params: &Self::TransformParams) -> i64 {
+    fn transformation_id(&self, params: &Self::TransformParams) -> Result<i64, Self::LogpErr> {
         self.logp_func.transformation_id(params)
     }
 }
@@ -417,35 +438,58 @@ pub trait CpuLogpFunc {
 
     fn inv_transform_normalize(
         &mut self,
-        params: &Self::TransformParams,
-        untransformed_position: &[f64],
-        untransofrmed_gradient: &[f64],
-        transformed_position: &mut [f64],
-        transformed_gradient: &mut [f64],
-    ) -> Result<f64, Self::LogpError>;
+        _params: &Self::TransformParams,
+        _untransformed_position: &[f64],
+        _untransformed_gradient: &[f64],
+        _transformed_position: &mut [f64],
+        _transformed_gradient: &mut [f64],
+    ) -> Result<f64, Self::LogpError> {
+        unimplemented!()
+    }
 
-    fn transformed_logp(
+    fn init_from_untransformed_position(
         &mut self,
-        params: &Self::TransformParams,
-        untransformed_position: &[f64],
-        untransformed_gradient: &mut [f64],
-        transformed_position: &mut [f64],
-        transformed_gradient: &mut [f64],
-    ) -> Result<(f64, f64), Self::LogpError>;
+        _params: &Self::TransformParams,
+        _untransformed_position: &[f64],
+        _untransformed_gradient: &mut [f64],
+        _transformed_position: &mut [f64],
+        _transformed_gradient: &mut [f64],
+    ) -> Result<(f64, f64), Self::LogpError> {
+        unimplemented!()
+    }
+
+    fn init_from_transformed_position(
+        &mut self,
+        _params: &Self::TransformParams,
+        _untransformed_position: &mut [f64],
+        _untransformed_gradient: &mut [f64],
+        _transformed_position: &[f64],
+        _transformed_gradient: &mut [f64],
+    ) -> Result<(f64, f64), Self::LogpError> {
+        unimplemented!()
+    }
 
     fn update_transformation<'a, R: rand::Rng + ?Sized>(
         &'a mut self,
-        rng: &mut R,
-        untransformed_positions: impl Iterator<Item = &'a [f64]>,
-        untransformed_gradients: impl Iterator<Item = &'a [f64]>,
-        params: &'a mut Self::TransformParams,
-    ) -> Result<(), Self::LogpError>;
+        _rng: &mut R,
+        _untransformed_positions: impl ExactSizeIterator<Item = &'a [f64]>,
+        _untransformed_gradients: impl ExactSizeIterator<Item = &'a [f64]>,
+        _params: &'a mut Self::TransformParams,
+    ) -> Result<(), Self::LogpError> {
+        unimplemented!()
+    }
 
-    fn new_transformation(
+    fn new_transformation<R: rand::Rng + ?Sized>(
         &mut self,
-        untransformed_position: &[f64],
-        untransfogmed_gradient: &[f64],
-    ) -> Result<Self::TransformParams, Self::LogpError>;
+        _rng: &mut R,
+        _untransformed_position: &[f64],
+        _untransformed_gradient: &[f64],
+        _chain: u64,
+    ) -> Result<Self::TransformParams, Self::LogpError> {
+        unimplemented!()
+    }
 
-    fn transformation_id(&self, params: &Self::TransformParams) -> i64;
+    fn transformation_id(&self, _params: &Self::TransformParams) -> Result<i64, Self::LogpError> {
+        unimplemented!()
+    }
 }

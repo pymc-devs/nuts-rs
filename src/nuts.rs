@@ -14,7 +14,7 @@ use crate::hamiltonian::{Direction, DivergenceInfo, Hamiltonian, LeapfrogResult,
 use crate::math::logaddexp;
 use crate::sampler::Settings;
 use crate::sampler_stats::StatTraceBuilder;
-use crate::state::{State, StatePool};
+use crate::state::State;
 
 use crate::math_base::Math;
 
@@ -82,7 +82,6 @@ struct NutsTree<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> {
     draw: State<M, H::Point>,
     log_size: f64,
     depth: u64,
-    initial_energy: f64,
 
     /// A tree is the main tree if it contains the initial point
     /// of the trajectory.
@@ -105,14 +104,12 @@ enum ExtendResult<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> {
 
 impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
     fn new(state: State<M, H::Point>) -> NutsTree<M, H, C> {
-        let initial_energy = state.energy();
         NutsTree {
             right: state.clone(),
             left: state.clone(),
             draw: state,
             depth: 0,
             log_size: 0.,
-            initial_energy,
             is_main: true,
             _phantom2: PhantomData,
         }
@@ -123,7 +120,6 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
     fn extend<R>(
         mut self,
         math: &mut M,
-        pool: &mut StatePool<M, H::Point>,
         rng: &mut R,
         hamiltonian: &mut H,
         direction: Direction,
@@ -134,7 +130,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         H: Hamiltonian<M>,
         R: rand::Rng + ?Sized,
     {
-        let mut other = match self.single_step(math, pool, hamiltonian, direction, collector) {
+        let mut other = match self.single_step(math, hamiltonian, direction, collector) {
             Ok(Ok(tree)) => tree,
             Ok(Err(info)) => return ExtendResult::Diverging(self, info),
             Err(err) => return ExtendResult::Err(err),
@@ -142,8 +138,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
 
         while other.depth < self.depth {
             use ExtendResult::*;
-            other = match other.extend(math, pool, rng, hamiltonian, direction, collector, options)
-            {
+            other = match other.extend(math, rng, hamiltonian, direction, collector, options) {
                 Ok(tree) => tree,
                 Turning(_) => {
                     return Turning(self);
@@ -226,7 +221,6 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
     fn single_step(
         &self,
         math: &mut M,
-        pool: &mut StatePool<M, H::Point>,
         hamiltonian: &mut H,
         direction: Direction,
         collector: &mut C,
@@ -235,20 +229,20 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
             Direction::Forward => &self.right,
             Direction::Backward => &self.left,
         };
-        let end = match hamiltonian.leapfrog(math, pool, start, direction, collector) {
+        let end = match hamiltonian.leapfrog(math, start, direction, collector) {
             LeapfrogResult::Divergence(info) => return Ok(Err(info)),
             LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
             LeapfrogResult::Ok(end) => end,
         };
 
-        let log_size = self.initial_energy - end.energy();
+        // TODO sign?
+        let log_size = -end.point().energy_error();
         Ok(Ok(NutsTree {
             right: end.clone(),
             left: end.clone(),
             draw: end,
             depth: 0,
             log_size,
-            initial_energy: self.initial_energy,
             is_main: false,
             _phantom2: PhantomData,
         }))
@@ -259,7 +253,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
             depth: self.depth,
             divergence_info,
             reached_maxdepth: maxdepth,
-            initial_energy: self.initial_energy,
+            initial_energy: self.draw.point().initial_energy(),
             draw_energy: self.draw.energy(),
         }
     }
@@ -275,7 +269,6 @@ pub struct NutsOptions {
 
 pub(crate) fn draw<M, H, R, C>(
     math: &mut M,
-    pool: &mut StatePool<M, H::Point>,
     init: &mut State<M, H::Point>,
     rng: &mut R,
     hamiltonian: &mut H,
@@ -294,7 +287,7 @@ where
     let mut tree = NutsTree::new(init.clone());
     while tree.depth < options.maxdepth {
         let direction: Direction = rng.gen();
-        tree = match tree.extend(math, pool, rng, hamiltonian, direction, collector, options) {
+        tree = match tree.extend(math, rng, hamiltonian, direction, collector, options) {
             ExtendResult::Ok(tree) => tree,
             ExtendResult::Turning(tree) => {
                 let info = tree.info(false, None);

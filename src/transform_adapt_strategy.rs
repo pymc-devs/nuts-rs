@@ -13,11 +13,11 @@ use crate::{DualAverageSettings, Math, NutsError, Settings};
 
 #[derive(Clone, Copy, Debug)]
 pub struct TransformedSettings {
-    step_size_window: f64,
-    transform_update_freq: u64,
-    use_orbit_for_training: bool,
-    dual_average_options: DualAverageSettings,
-    transform_train_max_energy_error: f64,
+    pub step_size_window: f64,
+    pub transform_update_freq: u64,
+    pub use_orbit_for_training: bool,
+    pub dual_average_options: DualAverageSettings,
+    pub transform_train_max_energy_error: f64,
 }
 
 impl Default for TransformedSettings {
@@ -25,7 +25,7 @@ impl Default for TransformedSettings {
         Self {
             step_size_window: 0.1f64,
             transform_update_freq: 50,
-            use_orbit_for_training: false,
+            use_orbit_for_training: true,
             transform_train_max_energy_error: 50f64,
             dual_average_options: Default::default(),
         }
@@ -38,6 +38,7 @@ pub struct TransformAdaptation {
     num_tune: u64,
     final_window_size: u64,
     tuning: bool,
+    chain: u64,
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -103,11 +104,10 @@ impl<M: Math, P: Point<M>> Collector<M, P> for DrawCollector<M> {
         if self.collect_orbit {
             let point = end.point();
             let energy_error = point.energy_error();
-            if energy_error.abs() > self.max_energy_error {
-                return;
+            if energy_error.abs() < self.max_energy_error {
+                self.draws.push(math.copy_array(point.position()));
+                self.grads.push(math.copy_array(point.gradient()));
             }
-            self.draws.push(math.copy_array(point.position()));
-            self.grads.push(math.copy_array(point.gradient()));
         }
     }
 
@@ -115,11 +115,10 @@ impl<M: Math, P: Point<M>> Collector<M, P> for DrawCollector<M> {
         if !self.collect_orbit {
             let point = state.point();
             let energy_error = point.energy_error();
-            if energy_error.abs() > self.max_energy_error {
-                return;
+            if energy_error.abs() < self.max_energy_error {
+                self.draws.push(math.copy_array(point.position()));
+                self.grads.push(math.copy_array(point.gradient()));
             }
-            self.draws.push(math.copy_array(point.position()));
-            self.grads.push(math.copy_array(point.gradient()));
         }
     }
 }
@@ -136,15 +135,17 @@ impl<M: Math> AdaptStrategy<M> for TransformAdaptation {
 
     type Options = TransformedSettings;
 
-    fn new(_math: &mut M, options: Self::Options, num_tune: u64) -> Self {
+    fn new(_math: &mut M, options: Self::Options, num_tune: u64, chain: u64) -> Self {
         let step_size = StepSizeStrategy::new(options.dual_average_options);
-        let final_window_size = ((num_tune as f64) * options.step_size_window).floor() as u64;
+        let final_window_size =
+            ((num_tune as f64) * (1f64 - options.step_size_window)).floor() as u64;
         Self {
             step_size,
             options,
             num_tune,
             final_window_size,
-            tuning: false,
+            tuning: true,
+            chain,
         }
     }
 
@@ -153,12 +154,12 @@ impl<M: Math> AdaptStrategy<M> for TransformAdaptation {
         math: &mut M,
         options: &mut NutsOptions,
         hamiltonian: &mut Self::Hamiltonian,
-        state: &State<M, <Self::Hamiltonian as Hamiltonian<M>>::Point>,
+        position: &[f64],
         rng: &mut R,
     ) -> Result<(), NutsError> {
+        hamiltonian.init_transformation(rng, math, position, self.chain)?;
         self.step_size
-            .init(math, options, hamiltonian, state, rng)?;
-        hamiltonian.init_transformation(math, state.point())?;
+            .init(math, options, hamiltonian, position, rng)?;
         Ok(())
     }
 
@@ -180,7 +181,16 @@ impl<M: Math> AdaptStrategy<M> for TransformAdaptation {
         }
 
         if draw < self.final_window_size {
-            if (draw + 1) % self.options.transform_update_freq == 0 {
+            if draw < 100 {
+                if (draw > 0) & (draw % 10 == 0) {
+                    hamiltonian.update_params(
+                        math,
+                        rng,
+                        collector.collector2.draws.iter(),
+                        collector.collector2.grads.iter(),
+                    )?;
+                }
+            } else if (draw > 0) & (draw % self.options.transform_update_freq == 0) {
                 hamiltonian.update_params(
                     math,
                     rng,
@@ -188,6 +198,8 @@ impl<M: Math> AdaptStrategy<M> for TransformAdaptation {
                     collector.collector2.grads.iter(),
                 )?;
             }
+            self.step_size.update_estimator_early();
+            self.step_size.update_stepsize(hamiltonian, false);
             return Ok(());
         }
 

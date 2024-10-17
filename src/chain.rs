@@ -6,7 +6,7 @@ use crate::{
     hamiltonian::{Hamiltonian, Point},
     nuts::{draw, Collector, NutsOptions, NutsSampleStats, NutsStatsBuilder},
     sampler_stats::SamplerStats,
-    state::{State, StatePool},
+    state::State,
     Math, NutsError, Settings,
 };
 
@@ -35,7 +35,6 @@ where
     R: rand::Rng,
     A: AdaptStrategy<M>,
 {
-    pool: StatePool<M, <A::Hamiltonian as Hamiltonian<M>>::Point>,
     hamiltonian: A::Hamiltonian,
     collector: A::Collector,
     options: NutsOptions,
@@ -56,18 +55,15 @@ where
 {
     pub fn new(
         mut math: M,
-        hamiltonian: A::Hamiltonian,
+        mut hamiltonian: A::Hamiltonian,
         strategy: A,
         options: NutsOptions,
         rng: R,
         chain: u64,
     ) -> Self {
-        let pool_size: usize = options.maxdepth.checked_mul(2).unwrap().try_into().unwrap();
-        let pool = hamiltonian.new_pool(&mut math, pool_size);
-        let init = pool.new_state(&mut math);
+        let init = hamiltonian.pool().new_state(&mut math);
         let collector = strategy.new_collector(&mut math);
         NutsChain {
-            pool,
             hamiltonian,
             collector,
             options,
@@ -87,14 +83,14 @@ pub trait AdaptStrategy<M: Math>: SamplerStats<M> {
     type Collector: Collector<M, <Self::Hamiltonian as Hamiltonian<M>>::Point>;
     type Options: Copy + Send + Debug + Default;
 
-    fn new(math: &mut M, options: Self::Options, num_tune: u64) -> Self;
+    fn new(math: &mut M, options: Self::Options, num_tune: u64, chain: u64) -> Self;
 
     fn init<R: Rng + ?Sized>(
         &mut self,
         math: &mut M,
         options: &mut NutsOptions,
         hamiltonian: &mut Self::Hamiltonian,
-        state: &State<M, <Self::Hamiltonian as Hamiltonian<M>>::Point>,
+        position: &[f64],
         rng: &mut R,
     ) -> Result<(), NutsError>;
 
@@ -151,24 +147,20 @@ where
     type AdaptStrategy = A;
 
     fn set_position(&mut self, position: &[f64]) -> Result<()> {
-        let state = self
-            .hamiltonian
-            .init_state(&mut self.math, &mut self.pool, position)?;
-        self.init = state;
         self.strategy.init(
             &mut self.math,
             &mut self.options,
             &mut self.hamiltonian,
-            &self.init,
+            position,
             &mut self.rng,
         )?;
+        self.init = self.hamiltonian.init_state(&mut self.math, position)?;
         Ok(())
     }
 
     fn draw(&mut self) -> Result<(Box<[f64]>, Self::Stats)> {
         let (state, info) = draw(
             &mut self.math,
-            &mut self.pool,
             &mut self.init,
             &mut self.rng,
             &mut self.hamiltonian,

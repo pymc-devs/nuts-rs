@@ -54,7 +54,12 @@ pub trait Point<M: Math>: Sized {
     fn index_in_trajectory(&self) -> i64;
     fn energy(&self) -> f64;
     fn logp(&self) -> f64;
-    fn energy_error(&self) -> f64;
+
+    fn energy_error(&self) -> f64 {
+        self.energy() - self.initial_energy()
+    }
+
+    fn initial_energy(&self) -> f64;
 
     fn new(math: &mut M) -> Self;
     fn copy_into(&self, math: &mut M, other: &mut Self);
@@ -73,7 +78,6 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
     fn leapfrog<C: Collector<M, Self::Point>>(
         &mut self,
         math: &mut M,
-        pool: &mut StatePool<M, Self::Point>,
         start: &State<M, Self::Point>,
         dir: Direction,
         collector: &mut C,
@@ -93,7 +97,6 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
     fn init_state(
         &mut self,
         math: &mut M,
-        pool: &mut StatePool<M, Self::Point>,
         init: &[f64],
     ) -> Result<State<M, Self::Point>, NutsError>;
 
@@ -105,16 +108,9 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
         rng: &mut R,
     ) -> Result<(), NutsError>;
 
-    fn new_pool(&self, math: &mut M, pool_size: usize) -> StatePool<M, Self::Point> {
-        StatePool::new(math, pool_size)
-    }
+    fn pool(&mut self) -> &mut StatePool<M, Self::Point>;
 
-    fn copy_state(
-        &self,
-        math: &mut M,
-        pool: &mut StatePool<M, Self::Point>,
-        state: &State<M, Self::Point>,
-    ) -> State<M, Self::Point>;
+    fn copy_state(&mut self, math: &mut M, state: &State<M, Self::Point>) -> State<M, Self::Point>;
 
     fn step_size(&self) -> f64;
     fn step_size_mut(&mut self) -> &mut f64;
