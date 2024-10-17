@@ -103,6 +103,7 @@ impl<'a> CpuLogpFunc for NormalLogp<'a> {
         _rng: &mut R,
         _untransformed_position: &[f64],
         _untransfogmed_gradient: &[f64],
+        _chain: u64,
     ) -> Result<Self::TransformParams, Self::LogpError> {
         todo!()
     }

@@ -3,13 +3,11 @@ use std::marker::PhantomData;
 use rand::Rng;
 
 use crate::{
-    chain::AdaptStrategy,
-    euclidean_hamiltonian::{EuclideanHamiltonian, EuclideanPoint},
-    hamiltonian::{Hamiltonian, Point},
+    euclidean_hamiltonian::EuclideanPoint,
+    hamiltonian::Point,
     mass_matrix::{DiagMassMatrix, DrawGradCollector, MassMatrix, RunningVariance},
-    nuts::NutsOptions,
+    nuts::{Collector, NutsOptions},
     sampler_stats::SamplerStats,
-    state::State,
     Math, NutsError, Settings,
 };
 const LOWER_LIMIT: f64 = 1e-20f64;
@@ -43,8 +41,10 @@ pub struct Strategy<M: Math> {
     _phantom: PhantomData<M>,
 }
 
-pub trait MassMatrixAdaptStrategy<M: Math>: AdaptStrategy<M> {
+pub trait MassMatrixAdaptStrategy<M: Math>: SamplerStats<M> {
     type MassMatrix: MassMatrix<M>;
+    type Collector: Collector<M, EuclideanPoint<M>>;
+    type Options: std::fmt::Debug + Default + Clone + Send + Sync + Copy;
 
     fn update_estimators(&mut self, math: &mut M, collector: &Self::Collector);
 
@@ -55,11 +55,26 @@ pub trait MassMatrixAdaptStrategy<M: Math>: AdaptStrategy<M> {
     fn background_count(&self) -> u64;
 
     /// Give the opportunity to update the potential and return if it was changed
-    fn update_potential(&self, math: &mut M, potential: &mut Self::Hamiltonian) -> bool;
+    fn adapt(&self, math: &mut M, mass_matrix: &mut Self::MassMatrix) -> bool;
+
+    fn new(math: &mut M, options: Self::Options, _num_tune: u64, _chain: u64) -> Self;
+
+    fn init<R: Rng + ?Sized>(
+        &mut self,
+        math: &mut M,
+        _options: &mut NutsOptions,
+        mass_matrix: &mut Self::MassMatrix,
+        point: &impl Point<M>,
+        _rng: &mut R,
+    ) -> Result<(), NutsError>;
+
+    fn new_collector(&self, math: &mut M) -> Self::Collector;
 }
 
 impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
     type MassMatrix = DiagMassMatrix<M>;
+    type Collector = DrawGradCollector<M>;
+    type Options = DiagAdaptExpSettings;
 
     fn update_estimators(&mut self, math: &mut M, collector: &DrawGradCollector<M>) {
         if collector.is_good {
@@ -88,11 +103,7 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
     }
 
     /// Give the opportunity to update the potential and return if it was changed
-    fn update_potential(
-        &self,
-        math: &mut M,
-        potential: &mut EuclideanHamiltonian<M, Self::MassMatrix>,
-    ) -> bool {
+    fn adapt(&self, math: &mut M, mass_matrix: &mut DiagMassMatrix<M>) -> bool {
         if self.current_count() < 3 {
             return false;
         }
@@ -102,7 +113,7 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
         assert!(draw_scale == grad_scale);
 
         if self._settings.use_grad_based_estimate {
-            potential.mass_matrix.update_diag_draw_grad(
+            mass_matrix.update_diag_draw_grad(
                 math,
                 draw_var,
                 grad_var,
@@ -111,35 +122,11 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
             );
         } else {
             let scale = (self.exp_variance_draw.count() as f64).recip();
-            potential.mass_matrix.update_diag_draw(
-                math,
-                draw_var,
-                scale,
-                None,
-                (LOWER_LIMIT, UPPER_LIMIT),
-            );
+            mass_matrix.update_diag_draw(math, draw_var, scale, None, (LOWER_LIMIT, UPPER_LIMIT));
         }
 
         true
     }
-}
-
-pub type Stats = ();
-pub type StatsBuilder = ();
-
-impl<M: Math> SamplerStats<M> for Strategy<M> {
-    type Builder = Stats;
-    type Stats = StatsBuilder;
-
-    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {}
-
-    fn current_stats(&self, _math: &mut M) -> Self::Stats {}
-}
-
-impl<M: Math> AdaptStrategy<M> for Strategy<M> {
-    type Hamiltonian = EuclideanHamiltonian<M, DiagMassMatrix<M>>;
-    type Collector = DrawGradCollector<M>;
-    type Options = DiagAdaptExpSettings;
 
     fn new(math: &mut M, options: Self::Options, _num_tune: u64, _chain: u64) -> Self {
         Self {
@@ -156,49 +143,37 @@ impl<M: Math> AdaptStrategy<M> for Strategy<M> {
         &mut self,
         math: &mut M,
         _options: &mut NutsOptions,
-        hamiltonian: &mut Self::Hamiltonian,
-        position: &[f64],
+        mass_matrix: &mut Self::MassMatrix,
+        point: &impl Point<M>,
         _rng: &mut R,
     ) -> Result<(), NutsError> {
-        let state = hamiltonian.init_state(math, position)?;
+        self.exp_variance_draw.add_sample(math, point.position());
+        self.exp_variance_draw_bg.add_sample(math, point.position());
+        self.exp_variance_grad.add_sample(math, point.gradient());
+        self.exp_variance_grad_bg.add_sample(math, point.gradient());
 
-        self.exp_variance_draw
-            .add_sample(math, state.point().position());
-        self.exp_variance_draw_bg
-            .add_sample(math, state.point().position());
-        self.exp_variance_grad
-            .add_sample(math, state.point().gradient());
-        self.exp_variance_grad_bg
-            .add_sample(math, state.point().gradient());
-
-        hamiltonian.mass_matrix.update_diag_grad(
+        mass_matrix.update_diag_grad(
             math,
-            state.point().gradient(),
+            point.gradient(),
             1f64,
             (INIT_LOWER_LIMIT, INIT_UPPER_LIMIT),
         );
         Ok(())
     }
 
-    fn adapt<R: Rng + ?Sized>(
-        &mut self,
-        _math: &mut M,
-        _options: &mut NutsOptions,
-        _potential: &mut Self::Hamiltonian,
-        _draw: u64,
-        _collector: &Self::Collector,
-        _state: &State<M, EuclideanPoint<M>>,
-        _rng: &mut R,
-    ) -> Result<(), NutsError> {
-        // Must be controlled from a different meta strategy
-        Ok(())
-    }
-
     fn new_collector(&self, math: &mut M) -> Self::Collector {
         DrawGradCollector::new(math)
     }
+}
 
-    fn is_tuning(&self) -> bool {
-        unreachable!()
-    }
+pub type Stats = ();
+pub type StatsBuilder = ();
+
+impl<M: Math> SamplerStats<M> for Strategy<M> {
+    type Builder = Stats;
+    type Stats = StatsBuilder;
+
+    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {}
+
+    fn current_stats(&self, _math: &mut M) -> Self::Stats {}
 }

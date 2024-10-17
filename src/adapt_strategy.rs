@@ -6,6 +6,7 @@ use rand::Rng;
 
 use crate::{
     chain::AdaptStrategy,
+    euclidean_hamiltonian::EuclideanHamiltonian,
     hamiltonian::{DivergenceInfo, Hamiltonian, Point},
     mass_matrix_adapt::MassMatrixAdaptStrategy,
     math_base::Math,
@@ -81,7 +82,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> SamplerStats<M> for GlobalStrategy<
 }
 
 impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy<M, A> {
-    type Hamiltonian = A::Hamiltonian;
+    type Hamiltonian = EuclideanHamiltonian<M, A::MassMatrix>;
     type Collector = CombinedCollector<
         M,
         <Self::Hamiltonian as Hamiltonian<M>>::Point,
@@ -119,8 +120,14 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         position: &[f64],
         rng: &mut R,
     ) -> Result<(), NutsError> {
-        self.mass_matrix
-            .init(math, options, hamiltonian, position, rng)?;
+        let state = hamiltonian.init_state(math, position)?;
+        self.mass_matrix.init(
+            math,
+            options,
+            &mut hamiltonian.mass_matrix,
+            state.point(),
+            rng,
+        )?;
         self.step_size
             .init(math, options, hamiltonian, position, rng)?;
         Ok(())
@@ -168,7 +175,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
             let did_change = if force_update
                 | (draw - self.last_update >= self.options.mass_matrix_update_freq)
             {
-                self.mass_matrix.update_potential(math, hamiltonian)
+                self.mass_matrix.adapt(math, &mut hamiltonian.mass_matrix)
             } else {
                 false
             };
@@ -221,8 +228,8 @@ pub struct CombinedStats<D1, D2> {
 
 #[derive(Clone)]
 pub struct CombinedStatsBuilder<B1, B2> {
-    stats1: B1,
-    stats2: B2,
+    pub stats1: B1,
+    pub stats2: B2,
 }
 
 impl<S1, S2, B1, B2> StatTraceBuilder<CombinedStats<S1, S2>> for CombinedStatsBuilder<B1, B2>
@@ -441,6 +448,7 @@ pub mod test_logps {
             _rng: &mut R,
             _untransformed_position: &[f64],
             _untransfogmed_gradient: &[f64],
+            _chain: u64,
         ) -> Result<Self::TransformParams, Self::LogpError> {
             unimplemented!()
         }
@@ -472,7 +480,7 @@ mod test {
         let mut math = CpuMath::new(func);
         let num_tune = 100;
         let options = EuclideanAdaptOptions::<DiagAdaptExpSettings>::default();
-        let strategy = GlobalStrategy::<_, Strategy<_>>::new(&mut math, options, num_tune);
+        let strategy = GlobalStrategy::<_, Strategy<_>>::new(&mut math, options, num_tune, 0u64);
 
         let mass_matrix = DiagMassMatrix::new(&mut math, true);
         let max_energy_error = 1000f64;

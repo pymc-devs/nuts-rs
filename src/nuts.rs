@@ -235,7 +235,6 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
             LeapfrogResult::Ok(end) => end,
         };
 
-        // TODO sign?
         let log_size = -end.point().energy_error();
         Ok(Ok(NutsTree {
             right: end.clone(),
