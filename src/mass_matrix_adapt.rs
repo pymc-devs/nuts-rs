@@ -5,7 +5,7 @@ use rand::Rng;
 use crate::{
     chain::AdaptStrategy,
     euclidean_hamiltonian::{EuclideanHamiltonian, EuclideanPoint},
-    hamiltonian::Point,
+    hamiltonian::{Hamiltonian, Point},
     mass_matrix::{DiagMassMatrix, DrawGradCollector, MassMatrix, RunningVariance},
     nuts::NutsOptions,
     sampler_stats::SamplerStats,
@@ -141,7 +141,7 @@ impl<M: Math> AdaptStrategy<M> for Strategy<M> {
     type Collector = DrawGradCollector<M>;
     type Options = DiagAdaptExpSettings;
 
-    fn new(math: &mut M, options: Self::Options, _num_tune: u64) -> Self {
+    fn new(math: &mut M, options: Self::Options, _num_tune: u64, _chain: u64) -> Self {
         Self {
             exp_variance_draw: RunningVariance::new(math),
             exp_variance_grad: RunningVariance::new(math),
@@ -156,10 +156,12 @@ impl<M: Math> AdaptStrategy<M> for Strategy<M> {
         &mut self,
         math: &mut M,
         _options: &mut NutsOptions,
-        potential: &mut Self::Hamiltonian,
-        state: &State<M, EuclideanPoint<M>>,
+        hamiltonian: &mut Self::Hamiltonian,
+        position: &[f64],
         _rng: &mut R,
     ) -> Result<(), NutsError> {
+        let state = hamiltonian.init_state(math, position)?;
+
         self.exp_variance_draw
             .add_sample(math, state.point().position());
         self.exp_variance_draw_bg
@@ -169,7 +171,7 @@ impl<M: Math> AdaptStrategy<M> for Strategy<M> {
         self.exp_variance_grad_bg
             .add_sample(math, state.point().gradient());
 
-        potential.mass_matrix.update_diag_grad(
+        hamiltonian.mass_matrix.update_diag_grad(
             math,
             state.point().gradient(),
             1f64,

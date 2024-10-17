@@ -169,10 +169,10 @@ impl Settings for LowRankNutsSettings {
         rng: &mut R,
     ) -> Self::Chain<M> {
         let num_tune = self.num_tune;
-        let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune);
+        let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
         let mass_matrix = LowRankMassMatrix::new(&mut math, self.adapt_options.mass_matrix_options);
         let max_energy_error = self.max_energy_error;
-        let potential = EuclideanHamiltonian::new(mass_matrix, max_energy_error, 1f64);
+        let potential = EuclideanHamiltonian::new(&mut math, mass_matrix, max_energy_error, 1f64);
 
         let options = NutsOptions {
             maxdepth: self.maxdepth,
@@ -230,13 +230,13 @@ impl Settings for DiagGradNutsSettings {
         rng: &mut R,
     ) -> Self::Chain<M> {
         let num_tune = self.num_tune;
-        let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune);
+        let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
         let mass_matrix = DiagMassMatrix::new(
             &mut math,
             self.adapt_options.mass_matrix_options.store_mass_matrix,
         );
         let max_energy_error = self.max_energy_error;
-        let potential = EuclideanHamiltonian::new(mass_matrix, max_energy_error, 1f64);
+        let potential = EuclideanHamiltonian::new(&mut math, mass_matrix, max_energy_error, 1f64);
 
         let options = NutsOptions {
             maxdepth: self.maxdepth,
@@ -296,7 +296,7 @@ impl Settings for TransformedNutsSettings {
         let num_tune = self.num_tune;
         let max_energy_error = self.max_energy_error;
 
-        let strategy = TransformAdaptation::new(&mut math, self.adapt_options, num_tune);
+        let strategy = TransformAdaptation::new(&mut math, self.adapt_options, num_tune, chain);
         let hamiltonian = TransformedHamiltonian::new(&mut math, max_energy_error);
 
         let options = NutsOptions {
@@ -1028,12 +1028,23 @@ pub mod test_logps {
             unimplemented!()
         }
 
-        fn transformed_logp(
+        fn init_from_untransformed_position(
             &mut self,
             _params: &Self::TransformParams,
             _untransformed_position: &[f64],
             _untransformed_gradient: &mut [f64],
             _transformed_position: &mut [f64],
+            _transformed_gradient: &mut [f64],
+        ) -> std::result::Result<(f64, f64), Self::LogpError> {
+            unimplemented!()
+        }
+
+        fn init_from_transformed_position(
+            &mut self,
+            _params: &Self::TransformParams,
+            _untransformed_position: &mut [f64],
+            _untransformed_gradient: &mut [f64],
+            _transformed_position: &[f64],
             _transformed_gradient: &mut [f64],
         ) -> std::result::Result<(f64, f64), Self::LogpError> {
             unimplemented!()
@@ -1049,15 +1060,19 @@ pub mod test_logps {
             unimplemented!()
         }
 
-        fn new_transformation(
+        fn new_transformation<R: rand::Rng + ?Sized>(
             &mut self,
+            _rng: &mut R,
             _untransformed_position: &[f64],
             _untransfogmed_gradient: &[f64],
         ) -> std::result::Result<Self::TransformParams, Self::LogpError> {
             unimplemented!()
         }
 
-        fn transformation_id(&self, _params: &Self::TransformParams) -> i64 {
+        fn transformation_id(
+            &self,
+            _params: &Self::TransformParams,
+        ) -> std::result::Result<i64, Self::LogpError> {
             unimplemented!()
         }
     }

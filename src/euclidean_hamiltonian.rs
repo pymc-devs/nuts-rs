@@ -18,15 +18,23 @@ pub struct EuclideanHamiltonian<M: Math, Mass: MassMatrix<M>> {
     pub(crate) mass_matrix: Mass,
     max_energy_error: f64,
     step_size: f64,
+    pool: StatePool<M, EuclideanPoint<M>>,
     _phantom: PhantomData<M>,
 }
 
 impl<M: Math, Mass: MassMatrix<M>> EuclideanHamiltonian<M, Mass> {
-    pub(crate) fn new(mass_matrix: Mass, max_energy_error: f64, step_size: f64) -> Self {
+    pub(crate) fn new(
+        math: &mut M,
+        mass_matrix: Mass,
+        max_energy_error: f64,
+        step_size: f64,
+    ) -> Self {
+        let pool = StatePool::new(math, 10);
         EuclideanHamiltonian {
             mass_matrix,
             max_energy_error,
             step_size,
+            pool,
             _phantom: PhantomData,
         }
     }
@@ -127,8 +135,8 @@ impl<M: Math> Point<M> for EuclideanPoint<M> {
         self.potential_energy + self.kinetic_energy
     }
 
-    fn energy_error(&self) -> f64 {
-        self.energy() - self.initial_energy
+    fn initial_energy(&self) -> f64 {
+        self.initial_energy
     }
 
     fn new(math: &mut M) -> Self {
@@ -275,13 +283,14 @@ impl<M: Math, Mass: MassMatrix<M>> Hamiltonian<M> for EuclideanHamiltonian<M, Ma
     fn leapfrog<C: Collector<M, Self::Point>>(
         &mut self,
         math: &mut M,
-        pool: &mut StatePool<M, Self::Point>,
         start: &State<M, Self::Point>,
         dir: Direction,
         collector: &mut C,
     ) -> LeapfrogResult<M, Self::Point> {
-        let mut out = pool.new_state(math);
+        let mut out = self.pool().new_state(math);
         let out_point = out.try_point_mut().expect("New point has other references");
+
+        out_point.initial_energy = start.point().initial_energy();
 
         let sign = match dir {
             Direction::Forward => 1,
@@ -323,7 +332,7 @@ impl<M: Math, Mass: MassMatrix<M>> Hamiltonian<M> for EuclideanHamiltonian<M, Ma
 
         start.point().set_psum(math, out_point, dir);
 
-        let energy_error = { out_point.energy() - start.point().initial_energy };
+        let energy_error = out_point.energy_error();
         if (energy_error > self.max_energy_error) | !energy_error.is_finite() {
             let divergence_info = DivergenceInfo {
                 logp_function_error: None,
@@ -347,10 +356,9 @@ impl<M: Math, Mass: MassMatrix<M>> Hamiltonian<M> for EuclideanHamiltonian<M, Ma
     fn init_state(
         &mut self,
         math: &mut M,
-        pool: &mut StatePool<M, Self::Point>,
         init: &[f64],
     ) -> Result<State<M, Self::Point>, NutsError> {
-        let mut state = pool.new_state(math);
+        let mut state = self.pool().new_state(math);
         let point = state.try_point_mut().expect("State already in use");
         math.read_from_slice(&mut point.position, init);
         math.fill_array(&mut point.p_sum, 0.);
@@ -390,13 +398,8 @@ impl<M: Math, Mass: MassMatrix<M>> Hamiltonian<M> for EuclideanHamiltonian<M, Ma
         state1.point().is_turning(math, state2.point())
     }
 
-    fn copy_state(
-        &self,
-        math: &mut M,
-        pool: &mut StatePool<M, Self::Point>,
-        state: &State<M, Self::Point>,
-    ) -> State<M, Self::Point> {
-        let mut new_state = pool.new_state(math);
+    fn copy_state(&mut self, math: &mut M, state: &State<M, Self::Point>) -> State<M, Self::Point> {
+        let mut new_state = self.pool().new_state(math);
         state.point().copy_into(
             math,
             new_state
@@ -404,6 +407,10 @@ impl<M: Math, Mass: MassMatrix<M>> Hamiltonian<M> for EuclideanHamiltonian<M, Ma
                 .expect("New point should not have other references"),
         );
         new_state
+    }
+
+    fn pool(&mut self) -> &mut StatePool<M, Self::Point> {
+        &mut self.pool
     }
 
     fn step_size(&self) -> f64 {

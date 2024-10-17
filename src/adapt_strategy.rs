@@ -90,7 +90,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
     >;
     type Options = EuclideanAdaptOptions<A::Options>;
 
-    fn new(math: &mut M, options: Self::Options, num_tune: u64) -> Self {
+    fn new(math: &mut M, options: Self::Options, num_tune: u64, chain: u64) -> Self {
         let num_tune_f = num_tune as f64;
         let step_size_window = (options.step_size_window * num_tune_f) as u64;
         let early_end = (options.early_window * num_tune_f) as u64;
@@ -100,7 +100,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
 
         Self {
             step_size: StepSizeStrategy::new(options.dual_average_options),
-            mass_matrix: A::new(math, options.mass_matrix_options, num_tune),
+            mass_matrix: A::new(math, options.mass_matrix_options, num_tune, chain),
             options,
             num_tune,
             early_end,
@@ -116,13 +116,13 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         math: &mut M,
         options: &mut NutsOptions,
         hamiltonian: &mut Self::Hamiltonian,
-        state: &State<M, <Self::Hamiltonian as Hamiltonian<M>>::Point>,
+        position: &[f64],
         rng: &mut R,
     ) -> Result<(), NutsError> {
         self.mass_matrix
-            .init(math, options, hamiltonian, state, rng)?;
+            .init(math, options, hamiltonian, position, rng)?;
         self.step_size
-            .init(math, options, hamiltonian, state, rng)?;
+            .init(math, options, hamiltonian, position, rng)?;
         Ok(())
     }
 
@@ -186,8 +186,9 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
             // First time we change the mass matrix
             if did_change & self.has_initial_mass_matrix {
                 self.has_initial_mass_matrix = false;
+                let position = math.box_array(state.point().position());
                 self.step_size
-                    .init(math, options, hamiltonian, state, rng)?;
+                    .init(math, options, hamiltonian, &position, rng)?;
             } else {
                 self.step_size.update_stepsize(hamiltonian, false)
             }
@@ -403,7 +404,18 @@ pub mod test_logps {
             unimplemented!()
         }
 
-        fn transformed_logp(
+        fn init_from_transformed_position(
+            &mut self,
+            _params: &Self::TransformParams,
+            _untransformed_position: &mut [f64],
+            _untransformed_gradient: &mut [f64],
+            _transformed_position: &[f64],
+            _transformed_gradient: &mut [f64],
+        ) -> Result<(f64, f64), Self::LogpError> {
+            unimplemented!()
+        }
+
+        fn init_from_untransformed_position(
             &mut self,
             _params: &Self::TransformParams,
             _untransformed_position: &[f64],
@@ -424,15 +436,19 @@ pub mod test_logps {
             unimplemented!()
         }
 
-        fn new_transformation(
+        fn new_transformation<R: rand::Rng + ?Sized>(
             &mut self,
+            _rng: &mut R,
             _untransformed_position: &[f64],
             _untransfogmed_gradient: &[f64],
         ) -> Result<Self::TransformParams, Self::LogpError> {
             unimplemented!()
         }
 
-        fn transformation_id(&self, _params: &Self::TransformParams) -> i64 {
+        fn transformation_id(
+            &self,
+            _params: &Self::TransformParams,
+        ) -> Result<i64, Self::LogpError> {
             unimplemented!()
         }
     }
@@ -462,7 +478,8 @@ mod test {
         let max_energy_error = 1000f64;
         let step_size = 0.1f64;
 
-        let hamiltonian = EuclideanHamiltonian::new(mass_matrix, max_energy_error, step_size);
+        let hamiltonian =
+            EuclideanHamiltonian::new(&mut math, mass_matrix, max_energy_error, step_size);
         let options = NutsOptions {
             maxdepth: 10u64,
             store_gradient: true,

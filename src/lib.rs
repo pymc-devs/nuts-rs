@@ -30,6 +30,7 @@
 //!
 //! impl CpuLogpFunc for PosteriorDensity {
 //!     type LogpError = PosteriorLogpError;
+//!     type TransformParams = ();
 //!
 //!     // We define a 10 dimensional normal distribution
 //!     fn dim(&self) -> usize { 10 }
@@ -111,9 +112,10 @@ pub use nuts::{NutsError, SampleStats};
 pub use sampler::{
     sample_sequentially, ChainOutput, ChainProgress, DiagGradNutsSettings, DrawStorage,
     LowRankNutsSettings, Model, NutsSettings, ProgressCallback, Sampler, SamplerWaitResult,
-    Settings, Trace,
+    Settings, Trace, TransformedNutsSettings,
 };
 
 pub use low_rank_mass_matrix::LowRankSettings;
 pub use mass_matrix_adapt::DiagAdaptExpSettings;
 pub use stepsize_adapt::DualAverageSettings;
+pub use transform_adapt_strategy::TransformedSettings;

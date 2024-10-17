@@ -57,45 +57,57 @@ impl<'a> CpuLogpFunc for NormalLogp<'a> {
 
     fn inv_transform_normalize(
         &mut self,
-        params: &Self::TransformParams,
-        untransformed_position: &[f64],
-        untransofrmed_gradient: &[f64],
-        transformed_position: &mut [f64],
-        transformed_gradient: &mut [f64],
+        _params: &Self::TransformParams,
+        _untransformed_position: &[f64],
+        _untransofrmed_gradient: &[f64],
+        _transformed_position: &mut [f64],
+        _transformed_gradient: &mut [f64],
     ) -> Result<f64, Self::LogpError> {
         todo!()
     }
 
-    fn transformed_logp(
+    fn init_from_transformed_position(
         &mut self,
-        params: &Self::TransformParams,
-        untransformed_position: &[f64],
-        untransformed_gradient: &mut [f64],
-        transformed_position: &mut [f64],
-        transformed_gradient: &mut [f64],
+        _params: &Self::TransformParams,
+        _untransformed_position: &mut [f64],
+        _untransformed_gradient: &mut [f64],
+        _transformed_position: &[f64],
+        _transformed_gradient: &mut [f64],
+    ) -> Result<(f64, f64), Self::LogpError> {
+        todo!()
+    }
+
+    fn init_from_untransformed_position(
+        &mut self,
+        _params: &Self::TransformParams,
+        _untransformed_position: &[f64],
+        _untransformed_gradient: &mut [f64],
+        _transformed_position: &mut [f64],
+        _transformed_gradient: &mut [f64],
     ) -> Result<(f64, f64), Self::LogpError> {
         todo!()
     }
 
     fn update_transformation<'b, R: rand::Rng + ?Sized>(
         &'b mut self,
-        rng: &mut R,
-        untransformed_positions: impl Iterator<Item = &'b [f64]>,
-        untransformed_gradients: impl Iterator<Item = &'b [f64]>,
-        params: &'b mut Self::TransformParams,
+        _rng: &mut R,
+        _untransformed_positions: impl Iterator<Item = &'b [f64]>,
+        _untransformed_gradients: impl Iterator<Item = &'b [f64]>,
+        _params: &'b mut Self::TransformParams,
     ) -> Result<(), Self::LogpError> {
         todo!()
     }
 
-    fn new_transformation(
+    fn new_transformation<R: rand::Rng + ?Sized>(
         &mut self,
-        untransformed_position: &[f64],
-        untransfogmed_gradient: &[f64],
+        _rng: &mut R,
+        _untransformed_position: &[f64],
+        _untransfogmed_gradient: &[f64],
     ) -> Result<Self::TransformParams, Self::LogpError> {
         todo!()
     }
 
-    fn transformation_id(&self, params: &Self::TransformParams) -> i64 {
+    fn transformation_id(&self, _params: &Self::TransformParams) -> Result<i64, Self::LogpError> {
         todo!()
     }
 }

@@ -8,7 +8,6 @@ use crate::{
     hamiltonian::{Direction, Hamiltonian, LeapfrogResult, Point},
     nuts::{Collector, NutsOptions},
     sampler_stats::{SamplerStats, StatTraceBuilder},
-    state::State,
     stepsize::{AcceptanceRateCollector, DualAverage, DualAverageOptions},
     Math, NutsError, Settings,
 };
@@ -37,12 +36,10 @@ impl Strategy {
         math: &mut M,
         options: &mut NutsOptions,
         hamiltonian: &mut impl Hamiltonian<M, Point = P>,
-        state: &State<M, P>,
+        position: &[f64],
         rng: &mut R,
     ) -> Result<(), NutsError> {
-        let mut pool = hamiltonian.new_pool(math, 1);
-
-        let mut state = hamiltonian.copy_state(math, &mut pool, state);
+        let mut state = hamiltonian.init_state(math, position)?;
         hamiltonian.initialize_trajectory(math, &mut state, rng)?;
 
         let mut collector = AcceptanceRateCollector::new();
@@ -51,8 +48,7 @@ impl Strategy {
 
         *hamiltonian.step_size_mut() = self.options.initial_step;
 
-        let state_next =
-            hamiltonian.leapfrog(math, &mut pool, &state, Direction::Forward, &mut collector);
+        let state_next = hamiltonian.leapfrog(math, &state, Direction::Forward, &mut collector);
 
         let LeapfrogResult::Ok(_) = state_next else {
             return Ok(());
@@ -68,7 +64,7 @@ impl Strategy {
         for _ in 0..100 {
             let mut collector = AcceptanceRateCollector::new();
             collector.register_init(math, &state, options);
-            let state_next = hamiltonian.leapfrog(math, &mut pool, &state, dir, &mut collector);
+            let state_next = hamiltonian.leapfrog(math, &state, dir, &mut collector);
             let LeapfrogResult::Ok(_) = state_next else {
                 *hamiltonian.step_size_mut() = self.options.initial_step;
                 return Ok(());

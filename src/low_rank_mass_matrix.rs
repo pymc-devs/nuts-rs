@@ -10,7 +10,7 @@ use itertools::Itertools;
 use crate::{
     chain::AdaptStrategy,
     euclidean_hamiltonian::{EuclideanHamiltonian, EuclideanPoint},
-    hamiltonian::Point,
+    hamiltonian::{Hamiltonian, Point},
     mass_matrix::{DrawGradCollector, MassMatrix},
     mass_matrix_adapt::MassMatrixAdaptStrategy,
     sampler_stats::{SamplerStats, StatTraceBuilder},
@@ -574,7 +574,7 @@ impl<M: Math> AdaptStrategy<M> for LowRankMassMatrixStrategy {
     type Collector = DrawGradCollector<M>;
     type Options = LowRankSettings;
 
-    fn new(math: &mut M, options: Self::Options, _num_tune: u64) -> Self {
+    fn new(math: &mut M, options: Self::Options, _num_tune: u64, _chain: u64) -> Self {
         Self::new(math.dim(), options)
     }
 
@@ -582,14 +582,18 @@ impl<M: Math> AdaptStrategy<M> for LowRankMassMatrixStrategy {
         &mut self,
         math: &mut M,
         _options: &mut crate::nuts::NutsOptions,
-        potential: &mut Self::Hamiltonian,
-        state: &State<M, EuclideanPoint<M>>,
+        hamiltonian: &mut Self::Hamiltonian,
+        position: &[f64],
         _rng: &mut R,
     ) -> Result<(), NutsError> {
-        self.add_draw(math, state);
-        potential
-            .mass_matrix
-            .update_from_grad(math, state.point().gradient(), 1f64, (1e-20, 1e20));
+        let state = hamiltonian.init_state(math, position)?;
+        self.add_draw(math, &state);
+        hamiltonian.mass_matrix.update_from_grad(
+            math,
+            state.point().gradient(),
+            1f64,
+            (1e-20, 1e20),
+        );
         Ok(())
     }
 
