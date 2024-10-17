@@ -7,7 +7,9 @@ use crate::nuts::{Collector, NutsOptions, SampleInfo};
 use crate::sampler_stats::{SamplerStats, StatTraceBuilder};
 use crate::state::State;
 use crate::stepsize::AcceptanceRateCollector;
-use crate::stepsize_adapt::Strategy as StepSizeStrategy;
+use crate::stepsize_adapt::{
+    Stats as StepSizeStats, StatsBuilder as StepSizeStatsBuilder, Strategy as StepSizeStrategy,
+};
 use crate::transformed_hamiltonian::TransformedHamiltonian;
 use crate::{DualAverageSettings, Math, NutsError, Settings};
 
@@ -41,24 +43,29 @@ pub struct TransformAdaptation {
     chain: u64,
 }
 
-#[derive(Clone, Copy, Default, Debug)]
-pub struct Stats {}
+#[derive(Clone, Debug)]
+pub struct Stats {
+    pub step_size: StepSizeStats,
+}
 
-pub struct Builder {}
+pub struct Builder {
+    step_size: StepSizeStatsBuilder,
+}
 
 impl StatTraceBuilder<Stats> for Builder {
     fn append_value(&mut self, value: Stats) {
-        let Stats {} = value;
+        let Stats { step_size } = value;
+        self.step_size.append_value(step_size);
     }
 
     fn finalize(self) -> Option<StructArray> {
-        let Self {} = self;
-        None
+        let Self { step_size } = self;
+        step_size.finalize()
     }
 
     fn inspect(&self) -> Option<StructArray> {
-        let Self {} = self;
-        None
+        let Self { step_size } = self;
+        step_size.inspect()
     }
 }
 
@@ -66,12 +73,14 @@ impl<M: Math> SamplerStats<M> for TransformAdaptation {
     type Stats = Stats;
     type Builder = Builder;
 
-    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {
-        Builder {}
+    fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder {
+        let step_size = SamplerStats::<M>::new_builder(&self.step_size, settings, dim);
+        Builder { step_size }
     }
 
-    fn current_stats(&self, _math: &mut M) -> Self::Stats {
-        Stats {}
+    fn current_stats(&self, math: &mut M) -> Self::Stats {
+        let step_size = self.step_size.current_stats(math);
+        Stats { step_size }
     }
 }
 

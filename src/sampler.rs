@@ -315,9 +315,8 @@ impl Settings for TransformedNutsSettings {
         &self,
         stats: &<Self::Chain<M> as SamplerStats<M>>::Stats,
     ) -> SampleStats {
-        // TODO
-        let step_size = 0.;
-        let num_steps = 0;
+        let step_size = stats.potential_stats.step_size;
+        let num_steps = stats.strategy_stats.step_size.n_steps;
         SampleStats {
             chain: stats.chain,
             draw: stats.draw,
@@ -1065,6 +1064,7 @@ pub mod test_logps {
             _rng: &mut R,
             _untransformed_position: &[f64],
             _untransfogmed_gradient: &[f64],
+            _chain: u64,
         ) -> std::result::Result<Self::TransformParams, Self::LogpError> {
             unimplemented!()
         }

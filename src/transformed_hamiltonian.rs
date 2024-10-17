@@ -1,6 +1,9 @@
 use std::{marker::PhantomData, sync::Arc};
 
-use arrow::array::StructArray;
+use arrow::{
+    array::{ArrayBuilder, Float64Builder, StructArray},
+    datatypes::{DataType, Field},
+};
 
 use crate::{
     hamiltonian::{Direction, Hamiltonian, LeapfrogResult, Point},
@@ -243,37 +246,55 @@ impl<M: Math> TransformedHamiltonian<M> {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Stats {}
+pub struct Stats {
+    pub step_size: f64,
+}
 
-pub struct Builder {}
+pub struct Builder {
+    step_size: Float64Builder,
+}
 
 impl StatTraceBuilder<Stats> for Builder {
     fn append_value(&mut self, value: Stats) {
-        let Stats {} = value;
+        let Stats { step_size } = value;
+        self.step_size.append_value(step_size);
     }
 
     fn finalize(self) -> Option<StructArray> {
-        let Self {} = self;
-        None
+        let Self { mut step_size } = self;
+
+        let fields = vec![Field::new("step_size", DataType::Float64, false)];
+        let arrays = vec![ArrayBuilder::finish(&mut step_size)];
+
+        Some(StructArray::new(fields.into(), arrays, None))
     }
 
     fn inspect(&self) -> Option<StructArray> {
-        let Self {} = self;
-        None
+        let Self { step_size } = self;
+
+        let fields = vec![Field::new("step_size", DataType::Float64, false)];
+        let arrays = vec![ArrayBuilder::finish_cloned(step_size)];
+
+        Some(StructArray::new(fields.into(), arrays, None))
     }
 }
 
 impl<M: Math> SamplerStats<M> for TransformedHamiltonian<M> {
     type Stats = Stats;
-
     type Builder = Builder;
 
-    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {
-        Builder {}
+    fn new_builder(&self, settings: &impl Settings, _dim: usize) -> Self::Builder {
+        Builder {
+            step_size: Float64Builder::with_capacity(
+                settings.hint_num_draws() + settings.hint_num_tune(),
+            ),
+        }
     }
 
     fn current_stats(&self, _math: &mut M) -> Self::Stats {
-        Stats {}
+        Stats {
+            step_size: self.step_size,
+        }
     }
 }
 

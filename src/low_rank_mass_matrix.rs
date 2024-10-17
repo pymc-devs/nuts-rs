@@ -8,13 +8,11 @@ use faer::{Col, Mat, Scale};
 use itertools::Itertools;
 
 use crate::{
-    chain::AdaptStrategy,
-    euclidean_hamiltonian::{EuclideanHamiltonian, EuclideanPoint},
-    hamiltonian::{Hamiltonian, Point},
+    euclidean_hamiltonian::EuclideanPoint,
+    hamiltonian::Point,
     mass_matrix::{DrawGradCollector, MassMatrix},
     mass_matrix_adapt::MassMatrixAdaptStrategy,
     sampler_stats::{SamplerStats, StatTraceBuilder},
-    state::State,
     Math, NutsError,
 };
 
@@ -392,12 +390,12 @@ impl LowRankMassMatrixStrategy {
         }
     }
 
-    pub fn add_draw<M: Math>(&mut self, math: &mut M, state: &State<M, EuclideanPoint<M>>) {
+    pub fn add_draw<M: Math>(&mut self, math: &mut M, point: &impl Point<M>) {
         assert!(math.dim() == self.ndim);
         let mut draw = vec![0f64; self.ndim];
-        state.write_position(math, &mut draw);
+        math.write_to_slice(point.position(), &mut draw);
         let mut grad = vec![0f64; self.ndim];
-        state.write_gradient(math, &mut grad);
+        math.write_to_slice(point.gradient(), &mut grad);
 
         self.draws.push_back(draw);
         self.grads.push_back(grad);
@@ -569,8 +567,8 @@ impl<M: Math> SamplerStats<M> for LowRankMassMatrixStrategy {
     }
 }
 
-impl<M: Math> AdaptStrategy<M> for LowRankMassMatrixStrategy {
-    type Hamiltonian = EuclideanHamiltonian<M, LowRankMassMatrix<M>>;
+impl<M: Math> MassMatrixAdaptStrategy<M> for LowRankMassMatrixStrategy {
+    type MassMatrix = LowRankMassMatrix<M>;
     type Collector = DrawGradCollector<M>;
     type Options = LowRankSettings;
 
@@ -582,45 +580,18 @@ impl<M: Math> AdaptStrategy<M> for LowRankMassMatrixStrategy {
         &mut self,
         math: &mut M,
         _options: &mut crate::nuts::NutsOptions,
-        hamiltonian: &mut Self::Hamiltonian,
-        position: &[f64],
+        mass_matrix: &mut Self::MassMatrix,
+        point: &impl Point<M>,
         _rng: &mut R,
     ) -> Result<(), NutsError> {
-        let state = hamiltonian.init_state(math, position)?;
-        self.add_draw(math, &state);
-        hamiltonian.mass_matrix.update_from_grad(
-            math,
-            state.point().gradient(),
-            1f64,
-            (1e-20, 1e20),
-        );
-        Ok(())
-    }
-
-    fn adapt<R: rand::Rng + ?Sized>(
-        &mut self,
-        _math: &mut M,
-        _options: &mut crate::nuts::NutsOptions,
-        _potential: &mut Self::Hamiltonian,
-        _draw: u64,
-        _collector: &Self::Collector,
-        _state: &State<M, EuclideanPoint<M>>,
-        _rng: &mut R,
-    ) -> Result<(), NutsError> {
+        self.add_draw(math, point);
+        mass_matrix.update_from_grad(math, point.gradient(), 1f64, (1e-20, 1e20));
         Ok(())
     }
 
     fn new_collector(&self, math: &mut M) -> Self::Collector {
         DrawGradCollector::new(math)
     }
-
-    fn is_tuning(&self) -> bool {
-        unreachable!()
-    }
-}
-
-impl<M: Math> MassMatrixAdaptStrategy<M> for LowRankMassMatrixStrategy {
-    type MassMatrix = LowRankMassMatrix<M>;
 
     fn update_estimators(&mut self, math: &mut M, collector: &Self::Collector) {
         if collector.is_good {
@@ -651,11 +622,11 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for LowRankMassMatrixStrategy {
         self.draws.len().checked_sub(self.background_split).unwrap() as u64
     }
 
-    fn update_potential(&self, math: &mut M, potential: &mut Self::Hamiltonian) -> bool {
+    fn adapt(&self, math: &mut M, mass_matrix: &mut Self::MassMatrix) -> bool {
         if <LowRankMassMatrixStrategy as MassMatrixAdaptStrategy<M>>::current_count(self) < 3 {
             return false;
         }
-        self.update(math, &mut potential.mass_matrix);
+        self.update(math, mass_matrix);
 
         true
     }
