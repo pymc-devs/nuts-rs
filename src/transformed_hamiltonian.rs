@@ -219,10 +219,10 @@ impl<M: Math> TransformedHamiltonian<M> {
         math.read_from_slice(&mut position_array, position);
         let _ = math
             .logp_array(&position_array, &mut gradient_array)
-            .map_err(|_| NutsError::BadInitGrad())?;
+            .map_err(|e| NutsError::BadInitGrad(Box::new(e)))?;
         let params = math
             .new_transformation(rng, &position_array, &gradient_array, chain)
-            .map_err(|_| NutsError::BadInitGrad())?;
+            .map_err(|e| NutsError::BadInitGrad(Box::new(e)))?;
         self.params = Some(params);
         Ok(())
     }
@@ -240,7 +240,7 @@ impl<M: Math> TransformedHamiltonian<M> {
             grads,
             self.params.as_mut().expect("Transformation was empty"),
         )
-        .map_err(|_| NutsError::BadInitGrad())?;
+        .map_err(|e| NutsError::BadInitGrad(Box::new(e)))?;
         Ok(())
     }
 }
@@ -407,7 +407,9 @@ impl<M: Math> Hamiltonian<M> for TransformedHamiltonian<M> {
             .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
 
         if !point.is_valid(math) {
-            Err(NutsError::BadInitGrad())
+            Err(NutsError::BadInitGrad(
+                anyhow::anyhow!("Invalid initial point").into(),
+            ))
         } else {
             Ok(state)
         }
