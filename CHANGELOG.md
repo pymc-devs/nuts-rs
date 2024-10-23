@@ -2,13 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.12.0] - 2024-07-05
+## [0.13.0] - 2024-10-23
 
 ### Bug Fixes
 
 - Expose adaptation settings (Adrian Seyboldt)
 
 - Append missing values for non-diverging draws (Adrian Seyboldt)
+
+- Fix bug where step size stats were not updated after tuning (Adrian Seyboldt)
 
 
 ### Features
@@ -21,6 +23,14 @@ All notable changes to this project will be documented in this file.
 
 - Add low-rank modified mass matrix adaptation (Adrian Seyboldt)
 
+- Make cpu_math parallelization configurable (Adrian Seyboldt)
+
+- Add transforming adaptation (Adrian Seyboldt)
+
+- Improve error info for BadInitGrad (Adrian Seyboldt)
+
+- Do not report invalid gradients for transform adapt (Adrian Seyboldt)
+
 
 ### Miscellaneous Tasks
 
@@ -30,10 +40,18 @@ All notable changes to this project will be documented in this file.
 
 - Update changelog (Adrian Seyboldt)
 
+- Prepare release (Adrian Seyboldt)
+
+- Prepare release (Adrian Seyboldt)
+
+- Update dependencies (Adrian Seyboldt)
+
 
 ### Refactor
 
 - Switch to arrow-rs (Adrian Seyboldt)
+
+- Refactor mass matrix adaptation traits (Adrian Seyboldt)
 
 
 ### Styling
