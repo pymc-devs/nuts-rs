@@ -114,6 +114,12 @@ impl<M: Math, P: Point<M>> Collector<M, P> for DrawCollector<M> {
             let point = end.point();
             let energy_error = point.energy_error();
             if energy_error.abs() < self.max_energy_error {
+                if !math.array_all_finite(point.position()) {
+                    return;
+                }
+                if !math.array_all_finite(point.gradient()) {
+                    return;
+                }
                 self.draws.push(math.copy_array(point.position()));
                 self.grads.push(math.copy_array(point.gradient()));
             }
@@ -125,6 +131,12 @@ impl<M: Math, P: Point<M>> Collector<M, P> for DrawCollector<M> {
             let point = state.point();
             let energy_error = point.energy_error();
             if energy_error.abs() < self.max_energy_error {
+                if !math.array_all_finite(point.position()) {
+                    return;
+                }
+                if !math.array_all_finite(point.gradient()) {
+                    return;
+                }
                 self.draws.push(math.copy_array(point.position()));
                 self.grads.push(math.copy_array(point.gradient()));
             }
