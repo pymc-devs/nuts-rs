@@ -21,14 +21,14 @@ use crate::math_base::Math;
 #[non_exhaustive]
 #[derive(Error, Debug)]
 pub enum NutsError {
-    #[error("Logp function returned error: {0}")]
+    #[error("Logp function returned error: {0:?}")]
     LogpFailure(Box<dyn std::error::Error + Send + Sync>),
 
     #[error("Could not serialize sample stats")]
     SerializeFailure(),
 
-    #[error("Could not initialize state because of bad initial gradient.")]
-    BadInitGrad(),
+    #[error("Could not initialize state because of bad initial gradient: {0:?}")]
+    BadInitGrad(Box<dyn std::error::Error + Send + Sync>),
 }
 
 pub type Result<T> = std::result::Result<T, NutsError>;

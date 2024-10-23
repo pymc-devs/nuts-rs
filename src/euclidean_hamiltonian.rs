@@ -367,7 +367,9 @@ impl<M: Math, Mass: MassMatrix<M>> Hamiltonian<M> for EuclideanHamiltonian<M, Ma
             .update_potential_gradient(math)
             .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
         if !math.array_all_finite_and_nonzero(&point.gradient) {
-            Err(NutsError::BadInitGrad())
+            Err(NutsError::BadInitGrad(
+                anyhow::anyhow!("Invalid initial point").into(),
+            ))
         } else {
             Ok(state)
         }
