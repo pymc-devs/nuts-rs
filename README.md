@@ -34,6 +34,9 @@ impl LogpError for PosteriorLogpError {
 impl CpuLogpFunc for PosteriorDensity {
     type LogpError = PosteriorLogpError;
 
+    // Only used for transforming adaptation.
+    type TransformParams = ();
+
     // We define a 10 dimensional normal distribution
     fn dim(&self) -> usize { 10 }
 
