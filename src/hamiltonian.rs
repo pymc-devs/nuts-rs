@@ -48,7 +48,7 @@ pub enum LeapfrogResult<M: Math, P: Point<M>> {
     Err(M::LogpErr),
 }
 
-pub trait Point<M: Math>: Sized {
+pub trait Point<M: Math>: Sized + SamplerStats<M> {
     fn position(&self) -> &M::Vector;
     fn gradient(&self) -> &M::Vector;
     fn index_in_trajectory(&self) -> i64;

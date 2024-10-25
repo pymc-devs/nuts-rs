@@ -44,7 +44,13 @@ where
     draw_count: u64,
     strategy: A,
     math: M,
-    stats: Option<NutsSampleStats<<A::Hamiltonian as SamplerStats<M>>::Stats, A::Stats>>,
+    stats: Option<
+        NutsSampleStats<
+            <<A::Hamiltonian as Hamiltonian<M>>::Point as SamplerStats<M>>::Stats,
+            <A::Hamiltonian as SamplerStats<M>>::Stats,
+            A::Stats,
+        >,
+    >,
 }
 
 impl<M, R, A> NutsChain<M, R, A>
@@ -117,17 +123,22 @@ where
     A: AdaptStrategy<M>,
 {
     type Builder = NutsStatsBuilder<
+        <<A::Hamiltonian as Hamiltonian<M>>::Point as SamplerStats<M>>::Builder,
         <A::Hamiltonian as SamplerStats<M>>::Builder,
         <A as SamplerStats<M>>::Builder,
     >;
-    type Stats =
-        NutsSampleStats<<A::Hamiltonian as SamplerStats<M>>::Stats, <A as SamplerStats<M>>::Stats>;
+    type Stats = NutsSampleStats<
+        <<A::Hamiltonian as Hamiltonian<M>>::Point as SamplerStats<M>>::Stats,
+        <A::Hamiltonian as SamplerStats<M>>::Stats,
+        <A as SamplerStats<M>>::Stats,
+    >;
 
     fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder {
         NutsStatsBuilder::new_with_capacity(
             settings,
             &self.hamiltonian,
             &self.strategy,
+            self.init.point(),
             dim,
             &self.options,
         )
@@ -182,6 +193,7 @@ where
             draw: self.draw_count,
             potential_stats: self.hamiltonian.current_stats(&mut self.math),
             strategy_stats: self.strategy.current_stats(&mut self.math),
+            point_stats: state.point().current_stats(&mut self.math),
             gradient: if self.options.store_gradient {
                 let mut gradient: Box<[f64]> = vec![0f64; self.math.dim()].into();
                 state.write_gradient(&mut self.math, &mut gradient);

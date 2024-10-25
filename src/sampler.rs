@@ -949,7 +949,7 @@ pub mod test_logps {
         }
     }
 
-    impl<'a> CpuLogpFunc for &'a NormalLogp {
+    impl CpuLogpFunc for &NormalLogp {
         type LogpError = NormalLogpError;
         type TransformParams = ();
 
@@ -981,7 +981,7 @@ pub mod test_logps {
                 for (p, g) in pos.chunks_exact(4).zip(grad.chunks_exact_mut(4)) {
                     let p = f64x4::from_slice(p);
                     let val = mu_splat - p;
-                    logp = logp - val * val * f64x4::splat(0.5);
+                    logp = val * val * f64x4::splat(0.5);
                     g.copy_from_slice(&val.to_array());
                 }
 

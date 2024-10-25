@@ -52,6 +52,40 @@ pub struct EuclideanPoint<M: Math> {
     pub initial_energy: f64,
 }
 
+#[derive(Clone, Debug)]
+pub struct PointStats {}
+
+pub struct PointStatsBuilder {}
+
+impl StatTraceBuilder<PointStats> for PointStatsBuilder {
+    fn append_value(&mut self, value: PointStats) {
+        let PointStats {} = value;
+    }
+
+    fn finalize(self) -> Option<StructArray> {
+        let Self {} = self;
+        None
+    }
+
+    fn inspect(&self) -> Option<StructArray> {
+        let Self {} = self;
+        None
+    }
+}
+
+impl<M: Math> SamplerStats<M> for EuclideanPoint<M> {
+    type Stats = PointStats;
+    type Builder = PointStatsBuilder;
+
+    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {
+        Self::Builder {}
+    }
+
+    fn current_stats(&self, _math: &mut M) -> Self::Stats {
+        PointStats {}
+    }
+}
+
 impl<M: Math> EuclideanPoint<M> {
     fn is_turning(&self, math: &mut M, other: &Self) -> bool {
         let (start, end) = if self.index_in_trajectory() < other.index_in_trajectory() {

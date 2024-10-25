@@ -310,7 +310,11 @@ where
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct NutsSampleStats<HStats: Send + Debug + Clone, AdaptStats: Send + Debug + Clone> {
+pub struct NutsSampleStats<
+    PointStats: Send + Debug + Clone,
+    HStats: Send + Debug + Clone,
+    AdaptStats: Send + Debug + Clone,
+> {
     pub depth: u64,
     pub maxdepth_reached: bool,
     pub idx_in_trajectory: i64,
@@ -324,6 +328,7 @@ pub struct NutsSampleStats<HStats: Send + Debug + Clone, AdaptStats: Send + Debu
     pub unconstrained: Option<Box<[f64]>>,
     pub potential_stats: HStats,
     pub strategy_stats: AdaptStats,
+    pub point_stats: PointStats,
     pub tuning: bool,
 }
 
@@ -338,7 +343,7 @@ pub struct SampleStats {
     pub num_steps: u64,
 }
 
-pub struct NutsStatsBuilder<H, A> {
+pub struct NutsStatsBuilder<P, H, A> {
     depth: PrimitiveBuilder<UInt64Type>,
     maxdepth_reached: BooleanBuilder,
     index_in_trajectory: PrimitiveBuilder<Int64Type>,
@@ -351,6 +356,7 @@ pub struct NutsStatsBuilder<H, A> {
     gradient: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
     hamiltonian: H,
     adapt: A,
+    point: P,
     diverging: BooleanBuilder,
     divergence_start: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
     divergence_start_grad: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
@@ -360,15 +366,17 @@ pub struct NutsStatsBuilder<H, A> {
     n_dim: usize,
 }
 
-impl<HB, AB> NutsStatsBuilder<HB, AB> {
+impl<PB, HB, AB> NutsStatsBuilder<PB, HB, AB> {
     pub fn new_with_capacity<
         M: Math,
-        H: Hamiltonian<M, Builder = HB>,
+        P: Point<M, Builder = PB>,
+        H: Hamiltonian<M, Builder = HB, Point = P>,
         A: AdaptStrategy<M, Builder = AB>,
     >(
         settings: &impl Settings,
         hamiltonian: &H,
         adapt: &A,
+        point: &P,
         dim: usize,
         options: &NutsOptions,
     ) -> Self {
@@ -430,6 +438,7 @@ impl<HB, AB> NutsStatsBuilder<HB, AB> {
             unconstrained,
             hamiltonian: hamiltonian.new_builder(settings, dim),
             adapt: adapt.new_builder(settings, dim),
+            point: point.new_builder(settings, dim),
             diverging: BooleanBuilder::with_capacity(capacity),
             divergence_start: div_start,
             divergence_start_grad: div_start_grad,
@@ -441,14 +450,17 @@ impl<HB, AB> NutsStatsBuilder<HB, AB> {
     }
 }
 
-impl<HS, AS, HB, AB> StatTraceBuilder<NutsSampleStats<HS, AS>> for NutsStatsBuilder<HB, AB>
+impl<PS, HS, AS, PB, HB, AB> StatTraceBuilder<NutsSampleStats<PS, HS, AS>>
+    for NutsStatsBuilder<PB, HB, AB>
 where
     HB: StatTraceBuilder<HS>,
     AB: StatTraceBuilder<AS>,
+    PB: StatTraceBuilder<PS>,
     HS: Clone + Send + Debug,
     AS: Clone + Send + Debug,
+    PS: Clone + Send + Debug,
 {
-    fn append_value(&mut self, value: NutsSampleStats<HS, AS>) {
+    fn append_value(&mut self, value: NutsSampleStats<PS, HS, AS>) {
         let NutsSampleStats {
             depth,
             maxdepth_reached,
@@ -463,6 +475,7 @@ where
             unconstrained,
             potential_stats,
             strategy_stats,
+            point_stats,
             tuning,
         } = value;
 
@@ -532,6 +545,7 @@ where
 
         self.hamiltonian.append_value(potential_stats);
         self.adapt.append_value(strategy_stats);
+        self.point.append_value(point_stats);
     }
 
     fn finalize(self) -> Option<StructArray> {
@@ -548,6 +562,7 @@ where
             gradient,
             hamiltonian,
             adapt,
+            point,
             mut diverging,
             divergence_start,
             divergence_start_grad,
@@ -615,6 +630,7 @@ where
 
         merge_into(hamiltonian, &mut arrays, &mut fields);
         merge_into(adapt, &mut arrays, &mut fields);
+        merge_into(point, &mut arrays, &mut fields);
 
         add_field(gradient, "gradient", &mut arrays, &mut fields);
         add_field(
@@ -667,6 +683,7 @@ where
             gradient,
             hamiltonian,
             adapt,
+            point,
             diverging,
             divergence_start,
             divergence_start_grad,
@@ -734,6 +751,7 @@ where
 
         merge_into(hamiltonian, &mut arrays, &mut fields);
         merge_into(adapt, &mut arrays, &mut fields);
+        merge_into(point, &mut arrays, &mut fields);
 
         add_field(gradient, "gradient", &mut arrays, &mut fields);
         add_field(

@@ -26,6 +26,63 @@ pub struct TransformedPoint<M: Math> {
     transform_id: i64,
 }
 
+#[derive(Clone, Debug)]
+pub struct TransformedPointStats {
+    pub fisher_distance: f64,
+}
+
+pub struct TransformedPointStatsBuilder {
+    fisher_distance: Float64Builder,
+}
+
+impl StatTraceBuilder<TransformedPointStats> for TransformedPointStatsBuilder {
+    fn append_value(&mut self, value: TransformedPointStats) {
+        let TransformedPointStats { fisher_distance } = value;
+
+        self.fisher_distance.append_value(fisher_distance);
+    }
+
+    fn finalize(self) -> Option<StructArray> {
+        let Self {
+            mut fisher_distance,
+        } = self;
+
+        let fields = vec![Field::new("fisher_distance", DataType::Float64, false)];
+        let arrays = vec![ArrayBuilder::finish(&mut fisher_distance)];
+
+        Some(StructArray::new(fields.into(), arrays, None))
+    }
+
+    fn inspect(&self) -> Option<StructArray> {
+        let Self { fisher_distance } = self;
+
+        let fields = vec![Field::new("fisher_distance", DataType::Float64, false)];
+        let arrays = vec![ArrayBuilder::finish_cloned(fisher_distance)];
+
+        Some(StructArray::new(fields.into(), arrays, None))
+    }
+}
+
+impl<M: Math> SamplerStats<M> for TransformedPoint<M> {
+    type Stats = TransformedPointStats;
+    type Builder = TransformedPointStatsBuilder;
+
+    fn new_builder(&self, settings: &impl Settings, _dim: usize) -> Self::Builder {
+        TransformedPointStatsBuilder {
+            fisher_distance: Float64Builder::with_capacity(
+                settings.hint_num_tune() + settings.hint_num_draws(),
+            ),
+        }
+    }
+
+    fn current_stats(&self, math: &mut M) -> Self::Stats {
+        TransformedPointStats {
+            fisher_distance: math
+                .sq_norm_sum(&self.transformed_position, &self.transformed_gradient),
+        }
+    }
+}
+
 impl<M: Math> TransformedPoint<M> {
     fn first_velocity_halfstep(&self, math: &mut M, out: &mut Self, epsilon: f64) {
         math.axpy_out(

@@ -128,6 +128,14 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         )
     }
 
+    fn sq_norm_sum(&mut self, x: &Self::Vector, y: &Self::Vector) -> f64 {
+        x.as_slice()
+            .iter()
+            .zip(y.as_slice())
+            .map(|(&x, &y)| (x + y) * (x + y))
+            .sum()
+    }
+
     fn read_from_slice(&mut self, dest: &mut Self::Vector, source: &[f64]) {
         dest.as_slice_mut().copy_from_slice(source);
     }

@@ -64,6 +64,8 @@ pub trait Math {
         y: &Self::Vector,
     ) -> (f64, f64);
 
+    fn sq_norm_sum(&mut self, x: &Self::Vector, y: &Self::Vector) -> f64;
+
     fn read_from_slice(&mut self, dest: &mut Self::Vector, source: &[f64]);
     fn write_to_slice(&mut self, source: &Self::Vector, dest: &mut [f64]);
     fn eigs_as_array(&mut self, source: &Self::EigValues) -> Box<[f64]>;
