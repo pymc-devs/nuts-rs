@@ -166,14 +166,17 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
     }
 }
 
-pub type Stats = ();
 pub type StatsBuilder = ();
 
 impl<M: Math> SamplerStats<M> for Strategy<M> {
-    type Builder = Stats;
-    type Stats = StatsBuilder;
+    type Builder = StatsBuilder;
+    type StatOptions = ();
 
-    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {}
-
-    fn current_stats(&self, _math: &mut M) -> Self::Stats {}
+    fn new_builder(
+        &self,
+        _stat_options: Self::StatOptions,
+        _settings: &impl Settings,
+        _dim: usize,
+    ) -> Self::Builder {
+    }
 }

@@ -93,6 +93,7 @@ impl<'a> CpuLogpFunc for NormalLogp<'a> {
         _rng: &mut R,
         _untransformed_positions: impl Iterator<Item = &'b [f64]>,
         _untransformed_gradients: impl Iterator<Item = &'b [f64]>,
+        _logps: impl Iterator<Item = &'b f64>,
         _params: &'b mut Self::TransformParams,
     ) -> Result<(), Self::LogpError> {
         todo!()

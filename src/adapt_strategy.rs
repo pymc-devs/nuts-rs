@@ -16,8 +16,7 @@ use crate::{
     state::State,
     stepsize::AcceptanceRateCollector,
     stepsize_adapt::{
-        DualAverageSettings, Stats as StepSizeStats, StatsBuilder as StepSizeStatsBuilder,
-        Strategy as StepSizeStrategy,
+        DualAverageSettings, StatsBuilder as StepSizeStatsBuilder, Strategy as StepSizeStrategy,
     },
     NutsError,
 };
@@ -63,20 +62,18 @@ impl<S: Debug + Default> Default for EuclideanAdaptOptions<S> {
 }
 
 impl<M: Math, A: MassMatrixAdaptStrategy<M>> SamplerStats<M> for GlobalStrategy<M, A> {
-    type Stats = CombinedStats<StepSizeStats, A::Stats>;
-    type Builder = CombinedStatsBuilder<StepSizeStatsBuilder, A::Builder>;
+    type Builder = GlobalStrategyBuilder<A::Builder>;
+    type StatOptions = <A as SamplerStats<M>>::StatOptions;
 
-    fn current_stats(&self, math: &mut M) -> Self::Stats {
-        CombinedStats {
-            stats1: self.step_size.current_stats(math),
-            stats2: self.mass_matrix.current_stats(math),
-        }
-    }
-
-    fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder {
-        CombinedStatsBuilder {
-            stats1: SamplerStats::<M>::new_builder(&self.step_size, settings, dim),
-            stats2: self.mass_matrix.new_builder(settings, dim),
+    fn new_builder(
+        &self,
+        options: Self::StatOptions,
+        settings: &impl Settings,
+        dim: usize,
+    ) -> Self::Builder {
+        GlobalStrategyBuilder {
+            step_size: SamplerStats::<M>::new_builder(&self.step_size, (), settings, dim),
+            mass_matrix: self.mass_matrix.new_builder(options, settings, dim),
         }
     }
 }
@@ -218,33 +215,37 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
     fn is_tuning(&self) -> bool {
         self.tuning
     }
+
+    fn last_num_steps(&self) -> u64 {
+        self.step_size.last_n_steps
+    }
 }
 
-#[derive(Debug, Clone)]
-pub struct CombinedStats<D1, D2> {
-    pub stats1: D1,
-    pub stats2: D2,
+pub struct GlobalStrategyBuilder<B> {
+    pub step_size: StepSizeStatsBuilder,
+    pub mass_matrix: B,
 }
 
-#[derive(Clone)]
-pub struct CombinedStatsBuilder<B1, B2> {
-    pub stats1: B1,
-    pub stats2: B2,
-}
-
-impl<S1, S2, B1, B2> StatTraceBuilder<CombinedStats<S1, S2>> for CombinedStatsBuilder<B1, B2>
+impl<M: Math, A> StatTraceBuilder<M, GlobalStrategy<M, A>> for GlobalStrategyBuilder<A::Builder>
 where
-    B1: StatTraceBuilder<S1>,
-    B2: StatTraceBuilder<S2>,
+    A: MassMatrixAdaptStrategy<M>,
 {
-    fn append_value(&mut self, value: CombinedStats<S1, S2>) {
-        self.stats1.append_value(value.stats1);
-        self.stats2.append_value(value.stats2);
+    fn append_value(&mut self, math: Option<&mut M>, value: &GlobalStrategy<M, A>) {
+        let math = math.expect("Smapler stats need math");
+        self.step_size.append_value(Some(math), &value.step_size);
+        self.mass_matrix
+            .append_value(Some(math), &value.mass_matrix);
     }
 
     fn finalize(self) -> Option<StructArray> {
-        let Self { stats1, stats2 } = self;
-        match (stats1.finalize(), stats2.finalize()) {
+        let Self {
+            step_size,
+            mass_matrix,
+        } = self;
+        match (
+            StatTraceBuilder::<M, _>::finalize(step_size),
+            mass_matrix.finalize(),
+        ) {
             (None, None) => None,
             (Some(stats1), None) => Some(stats1),
             (None, Some(stats2)) => Some(stats2),
@@ -266,8 +267,14 @@ where
     }
 
     fn inspect(&self) -> Option<StructArray> {
-        let Self { stats1, stats2 } = self;
-        match (stats1.inspect(), stats2.inspect()) {
+        let Self {
+            step_size,
+            mass_matrix,
+        } = self;
+        match (
+            StatTraceBuilder::<M, _>::inspect(step_size),
+            mass_matrix.inspect(),
+        ) {
             (None, None) => None,
             (Some(stats1), None) => Some(stats1),
             (None, Some(stats2)) => Some(stats2),
@@ -374,6 +381,7 @@ pub mod test_logps {
 
     #[derive(Error, Debug)]
     pub enum NormalLogpError {}
+
     impl LogpError for NormalLogpError {
         fn is_recoverable(&self) -> bool {
             false
@@ -438,6 +446,7 @@ pub mod test_logps {
             _rng: &mut R,
             _untransformed_positions: impl Iterator<Item = &'a [f64]>,
             _untransformed_gradients: impl Iterator<Item = &'a [f64]>,
+            _untransformed_logp: impl Iterator<Item = &'a f64>,
             _params: &'a mut Self::TransformParams,
         ) -> Result<(), Self::LogpError> {
             unimplemented!()

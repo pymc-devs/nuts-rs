@@ -18,7 +18,7 @@ use std::{
 
 use crate::{
     adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy},
-    chain::{AdaptStrategy, Chain, NutsChain},
+    chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
     euclidean_hamiltonian::EuclideanHamiltonian,
     low_rank_mass_matrix::{LowRankMassMatrix, LowRankMassMatrixStrategy, LowRankSettings},
     mass_matrix::DiagMassMatrix,
@@ -27,8 +27,8 @@ use crate::{
     nuts::NutsOptions,
     sampler_stats::{SamplerStats, StatTraceBuilder},
     transform_adapt_strategy::{TransformAdaptation, TransformedSettings},
-    transformed_hamiltonian::TransformedHamiltonian,
-    DiagAdaptExpSettings, SampleStats,
+    transformed_hamiltonian::{TransformedHamiltonian, TransformedPointStatsOptions},
+    DiagAdaptExpSettings,
 };
 
 /// All sampler configurations implement this trait
@@ -42,14 +42,25 @@ pub trait Settings: private::Sealed + Clone + Copy + Default + Sync + Send + 'st
         rng: &mut R,
     ) -> Self::Chain<M>;
 
-    fn sample_stats<M: Math>(
-        &self,
-        stats: &<Self::Chain<M> as SamplerStats<M>>::Stats,
-    ) -> SampleStats;
     fn hint_num_tune(&self) -> usize;
     fn hint_num_draws(&self) -> usize;
     fn num_chains(&self) -> usize;
     fn seed(&self) -> u64;
+    fn stats_options<M: Math>(
+        &self,
+        chain: &Self::Chain<M>,
+    ) -> <Self::Chain<M> as SamplerStats<M>>::StatOptions;
+}
+
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct Progress {
+    pub draw: u64,
+    pub chain: u64,
+    pub diverging: bool,
+    pub tuning: bool,
+    pub step_size: f64,
+    pub num_steps: u64,
 }
 
 mod private {
@@ -187,22 +198,6 @@ impl Settings for LowRankNutsSettings {
         NutsChain::new(math, potential, strategy, options, rng, chain)
     }
 
-    fn sample_stats<M: Math>(
-        &self,
-        stats: &<Self::Chain<M> as SamplerStats<M>>::Stats,
-    ) -> SampleStats {
-        let step_size = stats.potential_stats.step_size;
-        let num_steps = stats.strategy_stats.stats1.n_steps;
-        SampleStats {
-            chain: stats.chain,
-            draw: stats.draw,
-            diverging: stats.divergence_info.is_some(),
-            tuning: stats.tuning,
-            step_size,
-            num_steps,
-        }
-    }
-
     fn hint_num_tune(&self) -> usize {
         self.num_tune as _
     }
@@ -217,6 +212,17 @@ impl Settings for LowRankNutsSettings {
 
     fn seed(&self) -> u64 {
         self.seed
+    }
+
+    fn stats_options<M: Math>(
+        &self,
+        _chain: &Self::Chain<M>,
+    ) -> <Self::Chain<M> as SamplerStats<M>>::StatOptions {
+        StatOptions {
+            adapt: (),
+            hamiltonian: (),
+            point: (),
+        }
     }
 }
 
@@ -251,22 +257,6 @@ impl Settings for DiagGradNutsSettings {
         NutsChain::new(math, potential, strategy, options, rng, chain)
     }
 
-    fn sample_stats<M: Math>(
-        &self,
-        stats: &<Self::Chain<M> as SamplerStats<M>>::Stats,
-    ) -> SampleStats {
-        let step_size = stats.potential_stats.step_size;
-        let num_steps = stats.strategy_stats.stats1.n_steps;
-        SampleStats {
-            chain: stats.chain,
-            draw: stats.draw,
-            diverging: stats.divergence_info.is_some(),
-            tuning: stats.tuning,
-            step_size,
-            num_steps,
-        }
-    }
-
     fn hint_num_tune(&self) -> usize {
         self.num_tune as _
     }
@@ -281,6 +271,17 @@ impl Settings for DiagGradNutsSettings {
 
     fn seed(&self) -> u64 {
         self.seed
+    }
+
+    fn stats_options<M: Math>(
+        &self,
+        _chain: &Self::Chain<M>,
+    ) -> <Self::Chain<M> as SamplerStats<M>>::StatOptions {
+        StatOptions {
+            adapt: (),
+            hamiltonian: (),
+            point: (),
+        }
     }
 }
 
@@ -311,22 +312,6 @@ impl Settings for TransformedNutsSettings {
         NutsChain::new(math, hamiltonian, strategy, options, rng, chain)
     }
 
-    fn sample_stats<M: Math>(
-        &self,
-        stats: &<Self::Chain<M> as SamplerStats<M>>::Stats,
-    ) -> SampleStats {
-        let step_size = stats.potential_stats.step_size;
-        let num_steps = stats.strategy_stats.step_size.n_steps;
-        SampleStats {
-            chain: stats.chain,
-            draw: stats.draw,
-            diverging: stats.divergence_info.is_some(),
-            tuning: stats.tuning,
-            step_size,
-            num_steps,
-        }
-    }
-
     fn hint_num_tune(&self) -> usize {
         self.num_tune as _
     }
@@ -342,6 +327,21 @@ impl Settings for TransformedNutsSettings {
     fn seed(&self) -> u64 {
         self.seed
     }
+
+    fn stats_options<M: Math>(
+        &self,
+        _chain: &Self::Chain<M>,
+    ) -> <Self::Chain<M> as SamplerStats<M>>::StatOptions {
+        // TODO make extra config
+        let point = TransformedPointStatsOptions {
+            store_transformed: self.store_unconstrained,
+        };
+        StatOptions {
+            adapt: (),
+            hamiltonian: (),
+            point,
+        }
+    }
 }
 
 pub fn sample_sequentially<'math, M: Math + 'math, R: Rng + ?Sized>(
@@ -351,14 +351,10 @@ pub fn sample_sequentially<'math, M: Math + 'math, R: Rng + ?Sized>(
     draws: u64,
     chain: u64,
     rng: &mut R,
-) -> Result<impl Iterator<Item = Result<(Box<[f64]>, SampleStats)>> + 'math> {
+) -> Result<impl Iterator<Item = Result<(Box<[f64]>, Progress)>> + 'math> {
     let mut sampler = settings.new_chain(chain, math, rng);
     sampler.set_position(start)?;
-    Ok((0..draws).map(move |_| {
-        sampler
-            .draw()
-            .map(|(point, info)| (point, settings.sample_stats::<M>(&info)))
-    }))
+    Ok((0..draws).map(move |_| sampler.draw()))
 }
 
 pub trait DrawStorage: Send {
@@ -416,7 +412,7 @@ impl ChainProgress {
         }
     }
 
-    fn update(&mut self, stats: &SampleStats, draw_duration: Duration) {
+    fn update(&mut self, stats: &Progress, draw_duration: Duration) {
         if stats.diverging & !stats.tuning {
             self.divergences += 1;
             self.divergent_draws.push(self.finished_draws);
@@ -558,7 +554,8 @@ impl<'scope, M: Model, S: Settings> ChainProcess<'scope, M, S> {
                 let draw_trace = model
                     .new_trace(&mut rng, chain_id, settings)
                     .context("Failed to create trace object")?;
-                let stats_trace = sampler.new_builder(settings, dim);
+                let stat_opts = settings.stats_options(&sampler);
+                let stats_trace = sampler.new_builder(stat_opts, settings, dim);
 
                 let new_trace = ChainTrace {
                     draws_builder: draw_trace,
@@ -618,9 +615,9 @@ impl<'scope, M: Model, S: Settings> ChainProcess<'scope, M, S> {
                     progress
                         .lock()
                         .expect("Poisoned mutex")
-                        .update(&settings.sample_stats(&info), now.elapsed());
+                        .update(&info, now.elapsed());
                     DrawStorage::append_value(&mut val.draws_builder, &point)?;
-                    StatTraceBuilder::append_value(&mut val.stats_builder, info);
+                    StatTraceBuilder::append_value(&mut val.stats_builder, None, &sampler);
                     draw += 1;
                     if draw == draws {
                         break;
@@ -943,6 +940,7 @@ pub mod test_logps {
 
     #[derive(Error, Debug)]
     pub enum NormalLogpError {}
+
     impl LogpError for NormalLogpError {
         fn is_recoverable(&self) -> bool {
             false
@@ -1054,6 +1052,7 @@ pub mod test_logps {
             _rng: &mut R,
             _untransformed_positions: impl Iterator<Item = &'b [f64]>,
             _untransformed_gradients: impl Iterator<Item = &'b [f64]>,
+            _untransformed_logp: impl Iterator<Item = &'b f64>,
             _params: &'b mut Self::TransformParams,
         ) -> std::result::Result<(), Self::LogpError> {
             unimplemented!()
@@ -1180,7 +1179,7 @@ mod tests {
         let mut chain = settings.new_chain(0, math, &mut rng);
 
         let (_draw, info) = chain.draw()?;
-        assert!(settings.sample_stats::<CpuMath<&NormalLogp>>(&info).tuning);
+        assert!(info.tuning);
         assert_eq!(info.draw, 0);
 
         let math = CpuMath::new(&logp);

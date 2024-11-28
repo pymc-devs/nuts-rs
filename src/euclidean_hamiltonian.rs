@@ -1,4 +1,3 @@
-use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -52,14 +51,11 @@ pub struct EuclideanPoint<M: Math> {
     pub initial_energy: f64,
 }
 
-#[derive(Clone, Debug)]
-pub struct PointStats {}
-
 pub struct PointStatsBuilder {}
 
-impl StatTraceBuilder<PointStats> for PointStatsBuilder {
-    fn append_value(&mut self, value: PointStats) {
-        let PointStats {} = value;
+impl<M: Math> StatTraceBuilder<M, EuclideanPoint<M>> for PointStatsBuilder {
+    fn append_value(&mut self, _math: Option<&mut M>, _value: &EuclideanPoint<M>) {
+        let Self {} = self;
     }
 
     fn finalize(self) -> Option<StructArray> {
@@ -74,15 +70,16 @@ impl StatTraceBuilder<PointStats> for PointStatsBuilder {
 }
 
 impl<M: Math> SamplerStats<M> for EuclideanPoint<M> {
-    type Stats = PointStats;
     type Builder = PointStatsBuilder;
+    type StatOptions = ();
 
-    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {
+    fn new_builder(
+        &self,
+        _stat_options: Self::StatOptions,
+        _settings: &impl Settings,
+        _dim: usize,
+    ) -> Self::Builder {
         Self::Builder {}
-    }
-
-    fn current_stats(&self, _math: &mut M) -> Self::Stats {
-        PointStats {}
     }
 }
 
@@ -219,28 +216,23 @@ impl<M: Math> Point<M> for EuclideanPoint<M> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct PotentialStats<S: Clone + Debug> {
-    mass_matrix_stats: S,
-    pub step_size: f64,
-}
-
 pub struct PotentialStatsBuilder<B> {
     mass_matrix: B,
     step_size: Float64Builder,
 }
 
-impl<S: Clone + Debug, B: StatTraceBuilder<S>> StatTraceBuilder<PotentialStats<S>>
-    for PotentialStatsBuilder<B>
+impl<M: Math, Mass: MassMatrix<M>> StatTraceBuilder<M, EuclideanHamiltonian<M, Mass>>
+    for PotentialStatsBuilder<Mass::Builder>
 {
-    fn append_value(&mut self, value: PotentialStats<S>) {
-        let PotentialStats {
-            mass_matrix_stats,
+    fn append_value(&mut self, math: Option<&mut M>, value: &EuclideanHamiltonian<M, Mass>) {
+        let math = math.expect("Sampler stats needs math");
+        let Self {
+            mass_matrix,
             step_size,
-        } = value;
+        } = self;
 
-        self.mass_matrix.append_value(mass_matrix_stats);
-        self.step_size.append_value(step_size);
+        mass_matrix.append_value(Some(math), &value.mass_matrix);
+        step_size.append_value(value.step_size);
     }
 
     fn finalize(self) -> Option<StructArray> {
@@ -292,21 +284,19 @@ impl<S: Clone + Debug, B: StatTraceBuilder<S>> StatTraceBuilder<PotentialStats<S
 
 impl<M: Math, Mass: MassMatrix<M>> SamplerStats<M> for EuclideanHamiltonian<M, Mass> {
     type Builder = PotentialStatsBuilder<Mass::Builder>;
-    type Stats = PotentialStats<Mass::Stats>;
+    type StatOptions = Mass::StatOptions;
 
-    fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder {
+    fn new_builder(
+        &self,
+        stat_options: Self::StatOptions,
+        settings: &impl Settings,
+        dim: usize,
+    ) -> Self::Builder {
         Self::Builder {
-            mass_matrix: self.mass_matrix.new_builder(settings, dim),
+            mass_matrix: self.mass_matrix.new_builder(stat_options, settings, dim),
             step_size: Float64Builder::with_capacity(
                 settings.hint_num_draws() + settings.hint_num_tune(),
             ),
-        }
-    }
-
-    fn current_stats(&self, math: &mut M) -> Self::Stats {
-        PotentialStats {
-            mass_matrix_stats: self.mass_matrix.current_stats(math),
-            step_size: self.step_size,
         }
     }
 }
