@@ -418,6 +418,15 @@ mod tests {
                 assert_approx_eq(out1, out2);
             }
         }
+
+        #[test]
+        fn test_vector_dot((x, y) in array2(10)) {
+            let actual = vector_dot(&x[..], &y[..]);
+            let x = ndarray::Array1::from_vec(x);
+            let y = ndarray::Array1::from_vec(y);
+            let expected = x.iter().zip(y.iter()).map(|(&x, &y)| x * y).sum();
+            assert_approx_eq(actual, expected);
+        }
     }
 
     #[test]
