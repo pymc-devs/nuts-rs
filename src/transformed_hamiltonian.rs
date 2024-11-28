@@ -1,8 +1,11 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use arrow::{
-    array::{ArrayBuilder, Float64Builder, StructArray},
-    datatypes::{DataType, Field},
+    array::{
+        ArrayBuilder, FixedSizeListBuilder, Float64Builder, Int64Builder, PrimitiveBuilder,
+        StructArray,
+    },
+    datatypes::{DataType, Field, Float64Type, Int64Type},
 };
 
 use crate::{
@@ -26,59 +29,153 @@ pub struct TransformedPoint<M: Math> {
     transform_id: i64,
 }
 
-#[derive(Clone, Debug)]
-pub struct TransformedPointStats {
-    pub fisher_distance: f64,
-}
-
 pub struct TransformedPointStatsBuilder {
     fisher_distance: Float64Builder,
+    transformed_position: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
+    transformed_gradient: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
+    transformation_index: PrimitiveBuilder<Int64Type>,
 }
 
-impl StatTraceBuilder<TransformedPointStats> for TransformedPointStatsBuilder {
-    fn append_value(&mut self, value: TransformedPointStats) {
-        let TransformedPointStats { fisher_distance } = value;
+impl<M: Math> StatTraceBuilder<M, TransformedPoint<M>> for TransformedPointStatsBuilder {
+    fn append_value(&mut self, math: Option<&mut M>, value: &TransformedPoint<M>) {
+        let math = math.expect("Transformed point stats need math instance");
+        let Self {
+            fisher_distance,
+            transformed_position,
+            transformed_gradient,
+            transformation_index,
+        } = self;
 
-        self.fisher_distance.append_value(fisher_distance);
+        fisher_distance.append_value(
+            math.sq_norm_sum(&value.transformed_position, &value.transformed_gradient),
+        );
+        transformation_index.append_value(value.transform_id);
+
+        if let Some(store) = transformed_position {
+            store
+                .values()
+                .append_slice(&math.box_array(&value.transformed_position));
+            store.append(true);
+        }
+        if let Some(store) = transformed_gradient {
+            store
+                .values()
+                .append_slice(&math.box_array(&value.transformed_gradient));
+            store.append(true);
+        }
     }
 
     fn finalize(self) -> Option<StructArray> {
         let Self {
             mut fisher_distance,
+            transformed_position,
+            transformed_gradient,
+            mut transformation_index,
         } = self;
 
-        let fields = vec![Field::new("fisher_distance", DataType::Float64, false)];
-        let arrays = vec![ArrayBuilder::finish(&mut fisher_distance)];
+        let mut fields = vec![
+            Field::new("fisher_distance", DataType::Float64, false),
+            Field::new("transformation_index", DataType::Int64, false),
+        ];
+        let mut arrays = vec![
+            ArrayBuilder::finish(&mut fisher_distance),
+            ArrayBuilder::finish(&mut transformation_index),
+        ];
+
+        if let Some(mut transformed_position) = transformed_position {
+            let array = ArrayBuilder::finish(&mut transformed_position);
+            fields.push(Field::new(
+                "transformed_position",
+                array.data_type().clone(),
+                true,
+            ));
+            arrays.push(array);
+        }
+
+        if let Some(mut transformed_gradient) = transformed_gradient {
+            let array = ArrayBuilder::finish(&mut transformed_gradient);
+            fields.push(Field::new(
+                "transformed_gradient",
+                array.data_type().clone(),
+                true,
+            ));
+            arrays.push(array);
+        }
 
         Some(StructArray::new(fields.into(), arrays, None))
     }
 
     fn inspect(&self) -> Option<StructArray> {
-        let Self { fisher_distance } = self;
+        let Self {
+            fisher_distance,
+            transformed_position,
+            transformed_gradient,
+            transformation_index,
+        } = self;
 
-        let fields = vec![Field::new("fisher_distance", DataType::Float64, false)];
-        let arrays = vec![ArrayBuilder::finish_cloned(fisher_distance)];
+        let mut fields = vec![
+            Field::new("fisher_distance", DataType::Float64, false),
+            Field::new("transformation_index", DataType::Int64, false),
+        ];
+        let mut arrays = vec![
+            ArrayBuilder::finish_cloned(fisher_distance),
+            ArrayBuilder::finish_cloned(transformation_index),
+        ];
+
+        if let Some(transformed_position) = transformed_position {
+            let array = ArrayBuilder::finish_cloned(transformed_position);
+            fields.push(Field::new(
+                "transformed_position",
+                array.data_type().clone(),
+                true,
+            ));
+            arrays.push(array);
+        }
+
+        if let Some(transformed_gradient) = transformed_gradient {
+            let array = ArrayBuilder::finish_cloned(transformed_gradient);
+            fields.push(Field::new(
+                "transformed_gradient",
+                array.data_type().clone(),
+                true,
+            ));
+            arrays.push(array);
+        }
 
         Some(StructArray::new(fields.into(), arrays, None))
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct TransformedPointStatsOptions {
+    pub store_transformed: bool,
+}
+
 impl<M: Math> SamplerStats<M> for TransformedPoint<M> {
-    type Stats = TransformedPointStats;
     type Builder = TransformedPointStatsBuilder;
+    type StatOptions = TransformedPointStatsOptions;
 
-    fn new_builder(&self, settings: &impl Settings, _dim: usize) -> Self::Builder {
-        TransformedPointStatsBuilder {
-            fisher_distance: Float64Builder::with_capacity(
-                settings.hint_num_tune() + settings.hint_num_draws(),
-            ),
+    fn new_builder(
+        &self,
+        stat_options: Self::StatOptions,
+        settings: &impl Settings,
+        dim: usize,
+    ) -> Self::Builder {
+        let count = settings.hint_num_tune() + settings.hint_num_draws();
+
+        let mut transformed_position = None;
+        let mut transformed_gradient = None;
+        if stat_options.store_transformed {
+            let items = PrimitiveBuilder::new();
+            transformed_position = Some(FixedSizeListBuilder::new(items, dim as _));
+            let items = PrimitiveBuilder::new();
+            transformed_gradient = Some(FixedSizeListBuilder::new(items, dim as _));
         }
-    }
-
-    fn current_stats(&self, math: &mut M) -> Self::Stats {
-        TransformedPointStats {
-            fisher_distance: math
-                .sq_norm_sum(&self.transformed_position, &self.transformed_gradient),
+        TransformedPointStatsBuilder {
+            fisher_distance: Float64Builder::with_capacity(count),
+            transformation_index: Int64Builder::with_capacity(count),
+            transformed_gradient,
+            transformed_position,
         }
     }
 }
@@ -290,11 +387,13 @@ impl<M: Math> TransformedHamiltonian<M> {
         rng: &mut R,
         draws: impl ExactSizeIterator<Item = &'a M::Vector>,
         grads: impl ExactSizeIterator<Item = &'a M::Vector>,
+        logps: impl ExactSizeIterator<Item = &'a f64>,
     ) -> Result<(), NutsError> {
         math.update_transformation(
             rng,
             draws,
             grads,
+            logps,
             self.params.as_mut().expect("Transformation was empty"),
         )
         .map_err(|e| NutsError::BadInitGrad(Box::new(e)))?;
@@ -302,19 +401,14 @@ impl<M: Math> TransformedHamiltonian<M> {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct Stats {
-    pub step_size: f64,
-}
-
 pub struct Builder {
     step_size: Float64Builder,
 }
 
-impl StatTraceBuilder<Stats> for Builder {
-    fn append_value(&mut self, value: Stats) {
-        let Stats { step_size } = value;
-        self.step_size.append_value(step_size);
+impl<M: Math> StatTraceBuilder<M, TransformedHamiltonian<M>> for Builder {
+    fn append_value(&mut self, _math: Option<&mut M>, value: &TransformedHamiltonian<M>) {
+        let Self { step_size } = self;
+        step_size.append_value(value.step_size);
     }
 
     fn finalize(self) -> Option<StructArray> {
@@ -337,20 +431,19 @@ impl StatTraceBuilder<Stats> for Builder {
 }
 
 impl<M: Math> SamplerStats<M> for TransformedHamiltonian<M> {
-    type Stats = Stats;
     type Builder = Builder;
+    type StatOptions = ();
 
-    fn new_builder(&self, settings: &impl Settings, _dim: usize) -> Self::Builder {
+    fn new_builder(
+        &self,
+        _stat_options: Self::StatOptions,
+        settings: &impl Settings,
+        _dim: usize,
+    ) -> Self::Builder {
         Builder {
             step_size: Float64Builder::with_capacity(
                 settings.hint_num_draws() + settings.hint_num_tune(),
             ),
-        }
-    }
-
-    fn current_stats(&self, _math: &mut M) -> Self::Stats {
-        Stats {
-            step_size: self.step_size,
         }
     }
 }

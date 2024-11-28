@@ -7,9 +7,7 @@ use crate::nuts::{Collector, NutsOptions, SampleInfo};
 use crate::sampler_stats::{SamplerStats, StatTraceBuilder};
 use crate::state::State;
 use crate::stepsize::AcceptanceRateCollector;
-use crate::stepsize_adapt::{
-    Stats as StepSizeStats, StatsBuilder as StepSizeStatsBuilder, Strategy as StepSizeStrategy,
-};
+use crate::stepsize_adapt::{StatsBuilder as StepSizeStatsBuilder, Strategy as StepSizeStrategy};
 use crate::transformed_hamiltonian::TransformedHamiltonian;
 use crate::{DualAverageSettings, Math, NutsError, Settings};
 
@@ -43,50 +41,46 @@ pub struct TransformAdaptation {
     chain: u64,
 }
 
-#[derive(Clone, Debug)]
-pub struct Stats {
-    pub step_size: StepSizeStats,
-}
-
 pub struct Builder {
     step_size: StepSizeStatsBuilder,
 }
 
-impl StatTraceBuilder<Stats> for Builder {
-    fn append_value(&mut self, value: Stats) {
-        let Stats { step_size } = value;
-        self.step_size.append_value(step_size);
+impl<M: Math> StatTraceBuilder<M, TransformAdaptation> for Builder {
+    fn append_value(&mut self, math: Option<&mut M>, value: &TransformAdaptation) {
+        let Self { step_size } = self;
+        step_size.append_value(math, &value.step_size);
     }
 
     fn finalize(self) -> Option<StructArray> {
         let Self { step_size } = self;
-        step_size.finalize()
+        <StepSizeStatsBuilder as StatTraceBuilder<M, _>>::finalize(step_size)
     }
 
     fn inspect(&self) -> Option<StructArray> {
         let Self { step_size } = self;
-        step_size.inspect()
+        <StepSizeStatsBuilder as StatTraceBuilder<M, _>>::inspect(step_size)
     }
 }
 
 impl<M: Math> SamplerStats<M> for TransformAdaptation {
-    type Stats = Stats;
     type Builder = Builder;
+    type StatOptions = ();
 
-    fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder {
-        let step_size = SamplerStats::<M>::new_builder(&self.step_size, settings, dim);
+    fn new_builder(
+        &self,
+        _stat_options: Self::StatOptions,
+        settings: &impl Settings,
+        dim: usize,
+    ) -> Self::Builder {
+        let step_size = SamplerStats::<M>::new_builder(&self.step_size, (), settings, dim);
         Builder { step_size }
-    }
-
-    fn current_stats(&self, math: &mut M) -> Self::Stats {
-        let step_size = self.step_size.current_stats(math);
-        Stats { step_size }
     }
 }
 
 pub struct DrawCollector<M: Math> {
     draws: Vec<M::Vector>,
     grads: Vec<M::Vector>,
+    logps: Vec<f64>,
     collect_orbit: bool,
     max_energy_error: f64,
 }
@@ -96,6 +90,7 @@ impl<M: Math> DrawCollector<M> {
         Self {
             draws: vec![],
             grads: vec![],
+            logps: vec![],
             collect_orbit,
             max_energy_error,
         }
@@ -134,6 +129,7 @@ impl<M: Math, P: Point<M>> Collector<M, P> for DrawCollector<M> {
 
             self.draws.push(math.copy_array(point.position()));
             self.grads.push(math.copy_array(point.gradient()));
+            self.logps.push(point.logp());
         }
     }
 
@@ -158,6 +154,7 @@ impl<M: Math, P: Point<M>> Collector<M, P> for DrawCollector<M> {
 
             self.draws.push(math.copy_array(point.position()));
             self.grads.push(math.copy_array(point.gradient()));
+            self.logps.push(point.logp());
         }
     }
 }
@@ -227,6 +224,7 @@ impl<M: Math> AdaptStrategy<M> for TransformAdaptation {
                         rng,
                         collector.collector2.draws.iter(),
                         collector.collector2.grads.iter(),
+                        collector.collector2.logps.iter(),
                     )?;
                 }
             } else if (draw > 0) & (draw % self.options.transform_update_freq == 0) {
@@ -235,6 +233,7 @@ impl<M: Math> AdaptStrategy<M> for TransformAdaptation {
                     rng,
                     collector.collector2.draws.iter(),
                     collector.collector2.grads.iter(),
+                    collector.collector2.logps.iter(),
                 )?;
             }
             self.step_size.update_estimator_early();
@@ -261,5 +260,9 @@ impl<M: Math> AdaptStrategy<M> for TransformAdaptation {
 
     fn is_tuning(&self) -> bool {
         self.tuning
+    }
+
+    fn last_num_steps(&self) -> u64 {
+        self.step_size.last_n_steps
     }
 }

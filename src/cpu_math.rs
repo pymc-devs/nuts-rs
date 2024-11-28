@@ -13,7 +13,7 @@ use crate::{
 pub struct CpuMath<F: CpuLogpFunc> {
     logp_func: F,
     arch: pulp::Arch,
-    parallel: faer::Parallelism<'static>,
+    _parallel: faer::Parallelism<'static>,
 }
 
 impl<F: CpuLogpFunc> CpuMath<F> {
@@ -23,7 +23,7 @@ impl<F: CpuLogpFunc> CpuMath<F> {
         Self {
             logp_func,
             arch,
-            parallel,
+            _parallel: parallel,
         }
     }
 
@@ -32,7 +32,7 @@ impl<F: CpuLogpFunc> CpuMath<F> {
         Self {
             logp_func,
             arch,
-            parallel,
+            _parallel: parallel,
         }
     }
 }
@@ -407,12 +407,14 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         rng: &mut R,
         untransformed_positions: impl ExactSizeIterator<Item = &'a Self::Vector>,
         untransformed_gradients: impl ExactSizeIterator<Item = &'a Self::Vector>,
+        untransformed_logp: impl ExactSizeIterator<Item = &'a f64>,
         params: &'a mut Self::TransformParams,
     ) -> Result<(), Self::LogpErr> {
         self.logp_func.update_transformation(
             rng,
             untransformed_positions.map(|x| x.as_slice()),
             untransformed_gradients.map(|x| x.as_slice()),
+            untransformed_logp,
             params,
         )
     }
@@ -482,6 +484,7 @@ pub trait CpuLogpFunc {
         _rng: &mut R,
         _untransformed_positions: impl ExactSizeIterator<Item = &'a [f64]>,
         _untransformed_gradients: impl ExactSizeIterator<Item = &'a [f64]>,
+        _untransformed_logp: impl ExactSizeIterator<Item = &'a f64>,
         _params: &'a mut Self::TransformParams,
     ) -> Result<(), Self::LogpError> {
         unimplemented!()

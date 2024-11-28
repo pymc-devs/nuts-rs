@@ -35,26 +35,19 @@ pub struct DiagMassMatrix<M: Math> {
     store_mass_matrix: bool,
 }
 
-#[derive(Clone, Debug)]
-pub struct DiagMassMatrixStats {
-    pub mass_matrix_inv: Option<Box<[f64]>>,
-}
-
 pub struct DiagMassMatrixStatsBuilder {
     mass_matrix_inv: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
 }
 
-impl StatTraceBuilder<DiagMassMatrixStats> for DiagMassMatrixStatsBuilder {
-    fn append_value(&mut self, value: DiagMassMatrixStats) {
-        let DiagMassMatrixStats { mass_matrix_inv } = value;
+impl<M: Math> StatTraceBuilder<M, DiagMassMatrix<M>> for DiagMassMatrixStatsBuilder {
+    fn append_value(&mut self, math: Option<&mut M>, value: &DiagMassMatrix<M>) {
+        let math = math.expect("Need reference to math for stats");
+        let Self { mass_matrix_inv } = self;
 
-        if let Some(store) = self.mass_matrix_inv.as_mut() {
-            if let Some(values) = mass_matrix_inv.as_ref() {
-                store.values().append_slice(values);
-                store.append(true);
-            } else {
-                store.append(false);
-            }
+        if let Some(store) = mass_matrix_inv {
+            let values = math.box_array(&value.variance);
+            store.values().append_slice(&values);
+            store.append(true);
         }
     }
 
@@ -88,9 +81,14 @@ impl StatTraceBuilder<DiagMassMatrixStats> for DiagMassMatrixStatsBuilder {
 
 impl<M: Math> SamplerStats<M> for DiagMassMatrix<M> {
     type Builder = DiagMassMatrixStatsBuilder;
-    type Stats = DiagMassMatrixStats;
+    type StatOptions = ();
 
-    fn new_builder(&self, _settings: &impl Settings, dim: usize) -> Self::Builder {
+    fn new_builder(
+        &self,
+        _stat_options: Self::StatOptions,
+        _settings: &impl Settings,
+        dim: usize,
+    ) -> Self::Builder {
         if self.store_mass_matrix {
             let items = PrimitiveBuilder::new();
             let values = FixedSizeListBuilder::new(items, dim as _);
@@ -101,17 +99,6 @@ impl<M: Math> SamplerStats<M> for DiagMassMatrix<M> {
             Self::Builder {
                 mass_matrix_inv: None,
             }
-        }
-    }
-
-    fn current_stats(&self, math: &mut M) -> Self::Stats {
-        let matrix = if self.store_mass_matrix {
-            Some(math.box_array(&self.variance))
-        } else {
-            None
-        };
-        DiagMassMatrixStats {
-            mass_matrix_inv: matrix,
         }
     }
 }

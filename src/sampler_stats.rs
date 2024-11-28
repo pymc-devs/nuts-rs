@@ -1,19 +1,27 @@
-use std::fmt::Debug;
-
 use arrow::array::StructArray;
 
 use crate::{Math, Settings};
 
 pub trait SamplerStats<M: Math> {
-    type Stats: Send + Debug + Clone;
-    type Builder: StatTraceBuilder<Self::Stats>;
+    type Builder: StatTraceBuilder<M, Self>;
+    type StatOptions;
 
-    fn new_builder(&self, settings: &impl Settings, dim: usize) -> Self::Builder;
-    fn current_stats(&self, math: &mut M) -> Self::Stats;
+    fn new_builder(
+        &self,
+        options: Self::StatOptions,
+        settings: &impl Settings,
+        dim: usize,
+    ) -> Self::Builder;
 }
 
-impl StatTraceBuilder<()> for () {
-    fn append_value(&mut self, _value: ()) {}
+pub trait StatTraceBuilder<M: Math, T: ?Sized>: Send {
+    fn append_value(&mut self, math: Option<&mut M>, value: &T);
+    fn finalize(self) -> Option<StructArray>;
+    fn inspect(&self) -> Option<StructArray>;
+}
+
+impl<M: Math, T> StatTraceBuilder<M, T> for () {
+    fn append_value(&mut self, _math: Option<&mut M>, _value: &T) {}
 
     fn finalize(self) -> Option<StructArray> {
         None
@@ -22,10 +30,4 @@ impl StatTraceBuilder<()> for () {
     fn inspect(&self) -> Option<StructArray> {
         None
     }
-}
-
-pub trait StatTraceBuilder<T: ?Sized>: Send {
-    fn append_value(&mut self, value: T);
-    fn finalize(self) -> Option<StructArray>;
-    fn inspect(&self) -> Option<StructArray>;
 }

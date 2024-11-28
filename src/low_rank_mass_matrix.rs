@@ -118,45 +118,43 @@ impl Default for LowRankSettings {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct MatrixStats {
-    eigenvals: Option<Box<[f64]>>,
-    stds: Option<Box<[f64]>>,
-    num_eigenvalues: u64,
-}
-
 pub struct MatrixBuilder {
     eigenvals: Option<ListBuilder<PrimitiveBuilder<Float64Type>>>,
     stds: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
     num_eigenvalues: PrimitiveBuilder<UInt64Type>,
 }
 
-impl StatTraceBuilder<MatrixStats> for MatrixBuilder {
-    fn append_value(&mut self, value: MatrixStats) {
-        let MatrixStats {
+impl<M: Math> StatTraceBuilder<M, LowRankMassMatrix<M>> for MatrixBuilder {
+    fn append_value(&mut self, math: Option<&mut M>, value: &LowRankMassMatrix<M>) {
+        let math = math.expect("Need reference to math for stats");
+        let Self {
             eigenvals,
             stds,
             num_eigenvalues,
-        } = value;
+        } = self;
 
-        if let Some(store) = self.eigenvals.as_mut() {
-            if let Some(values) = eigenvals.as_ref() {
-                store.values().append_slice(values);
+        if let Some(store) = eigenvals {
+            if let Some(inner) = &value.inner {
+                store
+                    .values()
+                    .append_slice(&math.eigs_as_array(&inner.vals));
                 store.append(true);
             } else {
                 store.append(false);
             }
         }
-        if let Some(store) = self.stds.as_mut() {
-            if let Some(values) = stds.as_ref() {
-                store.values().append_slice(values);
-                store.append(true);
-            } else {
-                store.append(false);
-            }
+        if let Some(store) = stds {
+            store.values().append_slice(&math.box_array(&value.stds));
+            store.append(true);
         }
 
-        self.num_eigenvalues.append_value(num_eigenvalues);
+        num_eigenvalues.append_value(
+            value
+                .inner
+                .as_ref()
+                .map(|inner| inner.num_eigenvalues)
+                .unwrap_or(0),
+        );
     }
 
     fn finalize(self) -> Option<StructArray> {
@@ -242,10 +240,15 @@ impl StatTraceBuilder<MatrixStats> for MatrixBuilder {
 }
 
 impl<M: Math> SamplerStats<M> for LowRankMassMatrix<M> {
-    type Stats = MatrixStats;
     type Builder = MatrixBuilder;
+    type StatOptions = ();
 
-    fn new_builder(&self, _settings: &impl crate::Settings, dim: usize) -> Self::Builder {
+    fn new_builder(
+        &self,
+        _stat_options: Self::StatOptions,
+        _settings: &impl crate::Settings,
+        dim: usize,
+    ) -> Self::Builder {
         let num_eigenvalues = PrimitiveBuilder::new();
         if self.settings.store_mass_matrix {
             let items = PrimitiveBuilder::new();
@@ -263,36 +266,6 @@ impl<M: Math> SamplerStats<M> for LowRankMassMatrix<M> {
             MatrixBuilder {
                 eigenvals: None,
                 stds: None,
-                num_eigenvalues,
-            }
-        }
-    }
-
-    fn current_stats(&self, math: &mut M) -> Self::Stats {
-        let num_eigenvalues = self
-            .inner
-            .as_ref()
-            .map(|inner| inner.num_eigenvalues)
-            .unwrap_or(0);
-
-        if self.settings.store_mass_matrix {
-            let mut stds = vec![0f64; math.dim()].into_boxed_slice();
-            math.write_to_slice(&self.stds, &mut stds);
-
-            let vals = self
-                .inner
-                .as_ref()
-                .map(|inner| math.eigs_as_array(&inner.vals));
-
-            MatrixStats {
-                stds: Some(stds),
-                eigenvals: vals,
-                num_eigenvalues,
-            }
-        } else {
-            MatrixStats {
-                stds: None,
-                eigenvals: None,
                 num_eigenvalues,
             }
         }
@@ -340,22 +313,24 @@ impl<M: Math> MassMatrix<M> for LowRankMassMatrix<M> {
     }
 }
 
+/*
 #[derive(Debug, Clone)]
 pub struct Stats {
-    //foreground_length: u64,
-    //background_length: u64,
-    //is_update: bool,
-    //diag: Box<[f64]>,
-    //eigvalues: Box<[f64]>,
-    //eigvectors: Box<[f64]>,
+    foreground_length: u64,
+    background_length: u64,
+    is_update: bool,
+    diag: Box<[f64]>,
+    eigvalues: Box<[f64]>,
+    eigvectors: Box<[f64]>,
 }
+*/
 
 #[derive(Debug)]
 pub struct Builder {}
 
-impl StatTraceBuilder<Stats> for Builder {
-    fn append_value(&mut self, value: Stats) {
-        let Stats {} = value;
+impl<M: Math> StatTraceBuilder<M, LowRankMassMatrixStrategy> for Builder {
+    fn append_value(&mut self, _math: Option<&mut M>, _value: &LowRankMassMatrixStrategy) {
+        let Self {} = self;
     }
 
     fn finalize(self) -> Option<StructArray> {
@@ -555,15 +530,16 @@ fn spd_mean(cov_draws: Mat<f64>, cov_grads: Mat<f64>) -> Mat<f64> {
 }
 
 impl<M: Math> SamplerStats<M> for LowRankMassMatrixStrategy {
-    type Stats = Stats;
     type Builder = Builder;
+    type StatOptions = ();
 
-    fn new_builder(&self, _settings: &impl crate::Settings, _dim: usize) -> Self::Builder {
+    fn new_builder(
+        &self,
+        _stat_options: Self::StatOptions,
+        _settings: &impl crate::Settings,
+        _dim: usize,
+    ) -> Self::Builder {
         Builder {}
-    }
-
-    fn current_stats(&self, _math: &mut M) -> Self::Stats {
-        Stats {}
     }
 }
 

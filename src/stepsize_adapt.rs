@@ -15,9 +15,9 @@ use crate::{
 pub struct Strategy {
     step_size_adapt: DualAverage,
     options: DualAverageSettings,
-    last_mean_tree_accept: f64,
-    last_sym_mean_tree_accept: f64,
-    last_n_steps: u64,
+    pub last_mean_tree_accept: f64,
+    pub last_sym_mean_tree_accept: f64,
+    pub last_n_steps: u64,
 }
 
 impl Strategy {
@@ -133,14 +133,6 @@ impl Strategy {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Stats {
-    pub step_size_bar: f64,
-    pub mean_tree_accept: f64,
-    pub mean_tree_accept_sym: f64,
-    pub n_steps: u64,
-}
-
 pub struct StatsBuilder {
     step_size_bar: PrimitiveBuilder<Float64Type>,
     mean_tree_accept: PrimitiveBuilder<Float64Type>,
@@ -148,13 +140,15 @@ pub struct StatsBuilder {
     n_steps: PrimitiveBuilder<UInt64Type>,
 }
 
-impl StatTraceBuilder<Stats> for StatsBuilder {
-    fn append_value(&mut self, value: Stats) {
-        self.step_size_bar.append_value(value.step_size_bar);
-        self.mean_tree_accept.append_value(value.mean_tree_accept);
+impl<M: Math> StatTraceBuilder<M, Strategy> for StatsBuilder {
+    fn append_value(&mut self, _math: Option<&mut M>, value: &Strategy) {
+        self.step_size_bar
+            .append_value(value.step_size_adapt.current_step_size_adapted());
+        self.mean_tree_accept
+            .append_value(value.last_mean_tree_accept);
         self.mean_tree_accept_sym
-            .append_value(value.mean_tree_accept_sym);
-        self.n_steps.append_value(value.n_steps);
+            .append_value(value.last_sym_mean_tree_accept);
+        self.n_steps.append_value(value.last_n_steps);
     }
 
     fn finalize(self) -> Option<StructArray> {
@@ -210,23 +204,19 @@ impl StatTraceBuilder<Stats> for StatsBuilder {
 
 impl<M: Math> SamplerStats<M> for Strategy {
     type Builder = StatsBuilder;
-    type Stats = Stats;
+    type StatOptions = ();
 
-    fn new_builder(&self, _settings: &impl Settings, _dim: usize) -> Self::Builder {
+    fn new_builder(
+        &self,
+        _stat_options: Self::StatOptions,
+        _settings: &impl Settings,
+        _dim: usize,
+    ) -> Self::Builder {
         Self::Builder {
             step_size_bar: PrimitiveBuilder::new(),
             mean_tree_accept: PrimitiveBuilder::new(),
             mean_tree_accept_sym: PrimitiveBuilder::new(),
             n_steps: PrimitiveBuilder::new(),
-        }
-    }
-
-    fn current_stats(&self, _math: &mut M) -> Self::Stats {
-        Stats {
-            step_size_bar: self.step_size_adapt.current_step_size_adapted(),
-            mean_tree_accept: self.last_mean_tree_accept,
-            mean_tree_accept_sym: self.last_sym_mean_tree_accept,
-            n_steps: self.last_n_steps,
         }
     }
 }

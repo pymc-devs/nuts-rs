@@ -11,7 +11,7 @@
 //! ## Usage
 //!
 //! ```
-//! use nuts_rs::{CpuLogpFunc, CpuMath, LogpError, DiagGradNutsSettings, Chain, SampleStats,
+//! use nuts_rs::{CpuLogpFunc, CpuMath, LogpError, DiagGradNutsSettings, Chain, Progress,
 //! Settings};
 //! use thiserror::Error;
 //! use rand::thread_rng;
@@ -110,11 +110,11 @@ pub use chain::Chain;
 pub use cpu_math::{CpuLogpFunc, CpuMath};
 pub use hamiltonian::DivergenceInfo;
 pub use math_base::{LogpError, Math};
-pub use nuts::{NutsError, SampleStats};
+pub use nuts::NutsError;
 pub use sampler::{
     sample_sequentially, ChainOutput, ChainProgress, DiagGradNutsSettings, DrawStorage,
-    LowRankNutsSettings, Model, NutsSettings, ProgressCallback, Sampler, SamplerWaitResult,
-    Settings, Trace, TransformedNutsSettings,
+    LowRankNutsSettings, Model, NutsSettings, Progress, ProgressCallback, Sampler,
+    SamplerWaitResult, Settings, Trace, TransformedNutsSettings,
 };
 
 pub use low_rank_mass_matrix::LowRankSettings;

@@ -174,6 +174,7 @@ pub trait Math {
         rng: &mut R,
         untransformed_positions: impl ExactSizeIterator<Item = &'a Self::Vector>,
         untransformed_gradients: impl ExactSizeIterator<Item = &'a Self::Vector>,
+        untransformed_logps: impl ExactSizeIterator<Item = &'a f64>,
         params: &'a mut Self::TransformParams,
     ) -> Result<(), Self::LogpErr>;
 
