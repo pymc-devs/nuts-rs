@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.0] - 2024-11-29
+
+### Documentation
+
+- Update readme (Adrian Seyboldt)
+
+
+### Features
+
+- Add sampler stats for points (Adrian Seyboldt)
+
+
+### Refactor
+
+- Remove unnecessary stats structs and add some transform stats (Adrian Seyboldt)
+
+
+### Testing
+
+- Add vector_dot test (Adrian Seyboldt)
+
+- Fix parallel test in simd mode (Adrian Seyboldt)
+
+
 ## [0.13.0] - 2024-10-23
 
 ### Bug Fixes
@@ -45,6 +69,8 @@ All notable changes to this project will be documented in this file.
 - Prepare release (Adrian Seyboldt)
 
 - Update dependencies (Adrian Seyboldt)
+
+- Prepare release (Adrian Seyboldt)
 
 
 ### Refactor
