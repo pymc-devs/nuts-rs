@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.14.0] - 2024-11-29
+## [0.14.0] - 2024-12-04
 
 ### Documentation
 
@@ -12,6 +12,8 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - Add sampler stats for points (Adrian Seyboldt)
+
+- Adapt some default parameters for transformed adaptation (Adrian Seyboldt)
 
 
 ### Refactor
