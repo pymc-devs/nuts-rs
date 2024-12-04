@@ -149,7 +149,7 @@ impl Default for LowRankNutsSettings {
 impl Default for TransformedNutsSettings {
     fn default() -> Self {
         Self {
-            num_tune: 4000,
+            num_tune: 1500,
             num_draws: 1000,
             maxdepth: 8,
             max_energy_error: 1000f64,
@@ -159,7 +159,7 @@ impl Default for TransformedNutsSettings {
             adapt_options: Default::default(),
             check_turning: true,
             seed: 0,
-            num_chains: 6,
+            num_chains: 1,
         }
     }
 }
