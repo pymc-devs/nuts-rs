@@ -25,7 +25,7 @@ impl Default for TransformedSettings {
         Self {
             step_size_window: 0.1f64,
             transform_update_freq: 50,
-            use_orbit_for_training: true,
+            use_orbit_for_training: false,
             transform_train_max_energy_error: 50f64,
             dual_average_options: Default::default(),
         }
