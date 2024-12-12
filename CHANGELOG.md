@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.14.0] - 2024-12-04
+## [0.14.0] - 2024-12-12
 
 ### Documentation
 
@@ -14,6 +14,15 @@ All notable changes to this project will be documented in this file.
 - Add sampler stats for points (Adrian Seyboldt)
 
 - Adapt some default parameters for transformed adaptation (Adrian Seyboldt)
+
+
+### Miscellaneous Tasks
+
+- Update changelog (Adrian Seyboldt)
+
+- Update pulp (Adrian Seyboldt)
+
+- Update multiversion (Adrian Seyboldt)
 
 
 ### Refactor
