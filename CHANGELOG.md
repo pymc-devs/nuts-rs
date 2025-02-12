@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.0] - 2025-02-12
+
+### Miscellaneous Tasks
+
+- Update dependencies (Adrian Seyboldt)
+
+
+### Ci
+
+- Update coverage and audit ci (Adrian Seyboldt)
+
+
 ## [0.14.0] - 2024-12-12
 
 ### Documentation
@@ -23,6 +35,8 @@ All notable changes to this project will be documented in this file.
 - Update pulp (Adrian Seyboldt)
 
 - Update multiversion (Adrian Seyboldt)
+
+- Update version and changelog (Adrian Seyboldt)
 
 
 ### Refactor
