@@ -199,7 +199,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         };
 
         if (other.log_size >= self_log_size)
-            || (rng.gen_bool((other.log_size - self_log_size).exp()))
+            || (rng.random_bool((other.log_size - self_log_size).exp()))
         {
             self.draw = other.draw;
         }
@@ -275,7 +275,7 @@ where
 
     let mut tree = NutsTree::new(init.clone());
     while tree.depth < options.maxdepth {
-        let direction: Direction = rng.gen();
+        let direction: Direction = rng.random();
         tree = match tree.extend(math, rng, hamiltonian, direction, collector, options) {
             ExtendResult::Ok(tree) => tree,
             ExtendResult::Turning(tree) => {
@@ -300,7 +300,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rand::{rngs::ThreadRng, thread_rng};
+    use rand::{rng, rngs::ThreadRng};
 
     use crate::{
         adapt_strategy::test_logps::NormalLogp,
@@ -318,7 +318,7 @@ mod tests {
         let math = CpuMath::new(func);
 
         let settings = DiagGradNutsSettings::default();
-        let mut rng = thread_rng();
+        let mut rng = rng();
 
         let mut chain = settings.new_chain(0, math, &mut rng);
 

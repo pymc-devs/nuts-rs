@@ -1,6 +1,6 @@
 [package]
 name = "nuts-rs"
-version = "0.14.0"
+version = "0.15.0"
 authors = [
   "Adrian Seyboldt <adrian.seyboldt@gmail.com>",
   "PyMC Developers <pymc.devs@gmail.com>",
@@ -18,16 +18,20 @@ opt-level = 2
 codegen-units = 1
 
 [dependencies]
-rand = { version = "0.8.5", features = ["small_rng"] }
-rand_distr = "0.4.3"
+rand = { version = "0.9.0", features = ["small_rng"] }
+rand_distr = "0.5.0"
 multiversion = "0.8.0"
-itertools = "0.13.0"
+itertools = "0.14.0"
 thiserror = "2.0.3"
-arrow = { version = "53.1.0", default-features = false, features = ["ffi"] }
-rand_chacha = "0.3.1"
+arrow = { version = "54.1.0", default-features = false, features = ["ffi"] }
+rand_chacha = "0.9.0"
 anyhow = "1.0.72"
-faer = { version = "0.19.4", default-features = false, features = ["std"] }
-pulp = "0.20.1"
+faer = { version = "0.21.4", default-features = false, features = [
+  "std",
+  "npy",
+  "linalg",
+] }
+pulp = "0.21.4"
 rayon = "1.10.0"
 
 [dev-dependencies]
@@ -37,6 +41,7 @@ criterion = "0.5.1"
 nix = "0.29.0"
 approx = "0.5.1"
 ndarray = "0.16.1"
+equator = "0.4.2"
 
 [[bench]]
 name = "sample"
