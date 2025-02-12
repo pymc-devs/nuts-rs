@@ -177,7 +177,7 @@ impl Settings for LowRankNutsSettings {
         &self,
         chain: u64,
         mut math: M,
-        rng: &mut R,
+        mut rng: &mut R,
     ) -> Self::Chain<M> {
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
@@ -193,7 +193,7 @@ impl Settings for LowRankNutsSettings {
             check_turning: self.check_turning,
         };
 
-        let rng = rand::rngs::SmallRng::from_rng(rng).expect("Could not seed rng");
+        let rng = rand::rngs::SmallRng::try_from_rng(&mut rng).expect("Could not seed rng");
 
         NutsChain::new(math, potential, strategy, options, rng, chain)
     }
@@ -233,7 +233,7 @@ impl Settings for DiagGradNutsSettings {
         &self,
         chain: u64,
         mut math: M,
-        rng: &mut R,
+        mut rng: &mut R,
     ) -> Self::Chain<M> {
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
@@ -252,7 +252,7 @@ impl Settings for DiagGradNutsSettings {
             check_turning: self.check_turning,
         };
 
-        let rng = rand::rngs::SmallRng::from_rng(rng).expect("Could not seed rng");
+        let rng = rand::rngs::SmallRng::try_from_rng(&mut rng).expect("Could not seed rng");
 
         NutsChain::new(math, potential, strategy, options, rng, chain)
     }
@@ -292,7 +292,7 @@ impl Settings for TransformedNutsSettings {
         &self,
         chain: u64,
         mut math: M,
-        rng: &mut R,
+        mut rng: &mut R,
     ) -> Self::Chain<M> {
         let num_tune = self.num_tune;
         let max_energy_error = self.max_energy_error;
@@ -308,7 +308,7 @@ impl Settings for TransformedNutsSettings {
             check_turning: self.check_turning,
         };
 
-        let rng = rand::rngs::SmallRng::from_rng(rng).expect("Could not seed rng");
+        let rng = rand::rngs::SmallRng::try_from_rng(&mut rng).expect("Could not seed rng");
         NutsChain::new(math, hamiltonian, strategy, options, rng, chain)
     }
 

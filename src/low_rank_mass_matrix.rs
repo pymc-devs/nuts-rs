@@ -4,7 +4,7 @@ use arrow::{
     array::{ArrayBuilder, FixedSizeListBuilder, ListBuilder, PrimitiveBuilder, StructArray},
     datatypes::{Field, Float64Type, UInt64Type},
 };
-use faer::{Col, Mat, Scale};
+use faer::{Col, ColRef, Mat, MatRef, Scale};
 use itertools::Itertools;
 
 use crate::{
@@ -15,6 +15,18 @@ use crate::{
     sampler_stats::{SamplerStats, StatTraceBuilder},
     Math, NutsError,
 };
+
+fn mat_all_finite(mat: &MatRef<f64>) -> bool {
+    let mut ok = true;
+    faer::zip!(mat).for_each(|faer::unzip!(val)| ok = ok & val.is_finite());
+    ok
+}
+
+fn col_all_finite(mat: &ColRef<f64>) -> bool {
+    let mut ok = true;
+    faer::zip!(mat).for_each(|faer::unzip!(val)| ok = ok & val.is_finite());
+    ok
+}
 
 #[derive(Debug)]
 struct InnerMatrix<M: Math> {
@@ -28,12 +40,12 @@ impl<M: Math> InnerMatrix<M> {
     fn new(math: &mut M, mut vals: Col<f64>, vecs: Mat<f64>) -> Self {
         let vecs = math.new_eig_vectors(
             vecs.col_iter()
-                .map(|col| col.try_as_slice().expect("Array not contiguous")),
+                .map(|col| col.try_as_col_major().unwrap().as_slice()),
         );
-        let vals_math = math.new_eig_values(vals.as_slice());
+        let vals_math = math.new_eig_values(vals.try_as_col_major().unwrap().as_slice());
 
         vals.iter_mut().for_each(|x| *x = x.sqrt().recip());
-        let vals_inv_math = math.new_eig_values(vals.as_slice());
+        let vals_inv_math = math.new_eig_values(vals.try_as_col_major().unwrap().as_slice());
 
         Self {
             vecs,
@@ -85,15 +97,21 @@ impl<M: Math> LowRankMassMatrix<M> {
     }
 
     fn update(&mut self, math: &mut M, mut stds: Col<f64>, vals: Col<f64>, vecs: Mat<f64>) {
-        math.read_from_slice(&mut self.stds, stds.as_slice());
+        math.read_from_slice(&mut self.stds, stds.try_as_col_major().unwrap().as_slice());
 
         stds.iter_mut().for_each(|x| *x = x.recip());
-        math.read_from_slice(&mut self.inv_stds, stds.as_slice());
+        math.read_from_slice(
+            &mut self.inv_stds,
+            stds.try_as_col_major().unwrap().as_slice(),
+        );
 
         stds.iter_mut().for_each(|x| *x = x.recip() * x.recip());
-        math.read_from_slice(&mut self.variance, stds.as_slice());
+        math.read_from_slice(
+            &mut self.variance,
+            stds.try_as_col_major().unwrap().as_slice(),
+        );
 
-        if vals.is_all_finite() & vecs.is_all_finite() {
+        if col_all_finite(&vals.as_ref()) & mat_all_finite(&vecs.as_ref()) {
             self.inner = Some(InnerMatrix::new(math, vals, vecs));
         } else {
             self.inner = None;
@@ -398,14 +416,14 @@ impl LowRankMassMatrixStrategy {
 
         let stds = rescale_points(&mut draws, &mut grads);
 
-        let svd_draws = draws.thin_svd();
-        let svd_grads = grads.thin_svd();
+        let svd_draws = draws.thin_svd().expect("Failed to compute SVD");
+        let svd_grads = grads.thin_svd().expect("Failed to compute SVD");
 
-        let subspace = faer::concat![[svd_draws.u(), svd_grads.u()]];
+        let subspace = faer::concat![[svd_draws.U(), svd_grads.U()]];
 
         let subspace_qr = subspace.col_piv_qr();
 
-        let subspace_basis = subspace_qr.compute_thin_q();
+        let subspace_basis = subspace_qr.compute_thin_Q();
 
         let draws_proj = subspace_basis.transpose() * (&draws);
         let grads_proj = subspace_basis.transpose() * (&grads);
@@ -421,7 +439,7 @@ impl LowRankMassMatrixStrategy {
             .collect_vec();
 
         let vals = filtered.iter().map(|x| *x.0).collect_vec();
-        let vals = faer::col::from_slice(&vals).to_owned();
+        let vals = ColRef::from_slice(&vals).to_owned();
 
         let vecs_vec = filtered.into_iter().map(|x| x.1).collect_vec();
         let mut vecs = Mat::zeros(subspace_basis.ncols(), vals.nrows());
@@ -493,38 +511,44 @@ fn estimate_mass_matrix(draws: Mat<f64>, grads: Mat<f64>, gamma: f64) -> (Col<f6
 
     let mean = spd_mean(cov_draws, cov_grads);
 
-    let mean_eig = mean.selfadjoint_eigendecomposition(faer::Side::Lower);
+    let mean_eig = mean
+        .self_adjoint_eigen(faer::Side::Lower)
+        .expect("Failed to compute eigenvalue decomposition");
 
     (
-        mean_eig.s().column_vector().to_owned(),
-        mean_eig.u().to_owned(),
+        mean_eig.S().column_vector().to_owned(),
+        mean_eig.U().to_owned(),
     )
 }
 
 fn spd_mean(cov_draws: Mat<f64>, cov_grads: Mat<f64>) -> Mat<f64> {
-    let eigs_grads = cov_grads.selfadjoint_eigendecomposition(faer::Side::Lower);
+    let eigs_grads = cov_grads
+        .self_adjoint_eigen(faer::Side::Lower)
+        .expect("Failed to compute eigenvalue decomposition");
 
-    let u = eigs_grads.u();
-    let eigs = eigs_grads.s().column_vector().to_owned();
+    let u = eigs_grads.U();
+    let eigs = eigs_grads.S().column_vector().to_owned();
 
     let mut eigs_sqrt = eigs.clone();
     eigs_sqrt.iter_mut().for_each(|val| *val = val.sqrt());
-    let cov_grads_sqrt = u * eigs_sqrt.column_vector_into_diagonal() * u.transpose();
+    let cov_grads_sqrt = u * eigs_sqrt.into_diagonal() * u.transpose();
     let m = (&cov_grads_sqrt) * cov_draws * cov_grads_sqrt;
 
-    let m_eig = m.selfadjoint_eigendecomposition(faer::Side::Lower);
+    let m_eig = m
+        .self_adjoint_eigen(faer::Side::Lower)
+        .expect("Failed to compute eigenvalue decomposition");
 
-    let m_u = m_eig.u();
-    let mut m_s = m_eig.s().column_vector().to_owned();
+    let m_u = m_eig.U();
+    let mut m_s = m_eig.S().column_vector().to_owned();
     m_s.iter_mut().for_each(|val| *val = val.sqrt());
 
-    let m_sqrt = m_u * m_s.column_vector_into_diagonal() * m_u.transpose();
+    let m_sqrt = m_u * m_s.into_diagonal() * m_u.transpose();
 
     let mut eigs_grads_inv = eigs;
     eigs_grads_inv
         .iter_mut()
         .for_each(|val| *val = val.sqrt().recip());
-    let grads_inv_sqrt = u * eigs_grads_inv.column_vector_into_diagonal() * u.transpose();
+    let grads_inv_sqrt = u * eigs_grads_inv.into_diagonal() * u.transpose();
 
     (&grads_inv_sqrt) * m_sqrt * grads_inv_sqrt
 }
@@ -612,9 +636,12 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for LowRankMassMatrixStrategy {
 mod test {
     use std::ops::AddAssign;
 
-    use faer::{assert_matrix_eq, Col, Mat};
+    use equator::Cmp;
+    use faer::{utils::approx::ApproxEq, Col, Mat};
     use rand::{rngs::SmallRng, Rng, SeedableRng};
     use rand_distr::StandardNormal;
+
+    use crate::low_rank_mass_matrix::mat_all_finite;
 
     use super::{estimate_mass_matrix, spd_mean};
 
@@ -637,7 +664,14 @@ mod test {
             .column_vector_mut()
             .add_assign(expected_diag);
 
-        faer::assert_matrix_eq!(out, expected, comp = ulp, tol = 8);
+        let comp = ApproxEq {
+            abs_tol: 1e-10,
+            rel_tol: 1e-10,
+        };
+
+        faer::zip!(&out, &expected).for_each(|faer::unzip!(out, expected)| {
+            comp.test(out, expected).unwrap();
+        });
     }
 
     #[test]
@@ -652,12 +686,17 @@ mod test {
 
         let (vals, vecs) = estimate_mass_matrix(draws, grads, 0.0001);
         assert!(vals.iter().cloned().all(|x| x > 0.));
-        assert!(vecs.is_all_finite());
-        assert_matrix_eq!(
-            vals.as_2d(),
-            Col::full(20, 1.).as_2d(),
-            comp = abs,
-            tol = 1e-4
-        );
+        assert!(mat_all_finite(&vecs.as_ref()));
+
+        let comp = ApproxEq {
+            abs_tol: 1e-5,
+            rel_tol: 1e-5,
+        };
+
+        let expected = Col::full(20, 1.);
+
+        faer::zip!(&vals, &expected).for_each(|faer::unzip!(out, expected)| {
+            comp.test(out, expected).unwrap();
+        });
     }
 }

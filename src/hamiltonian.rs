@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use rand_distr::{Distribution, StandardUniform};
+
 use crate::{
     nuts::Collector,
     sampler_stats::SamplerStats,
@@ -32,9 +34,9 @@ pub enum Direction {
     Backward,
 }
 
-impl rand::distributions::Distribution<Direction> for rand::distributions::Standard {
+impl Distribution<Direction> for StandardUniform {
     fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> Direction {
-        if rng.gen::<bool>() {
+        if rng.random::<bool>() {
             Direction::Forward
         } else {
             Direction::Backward
