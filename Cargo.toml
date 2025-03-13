@@ -23,7 +23,7 @@ rand_distr = "0.5.0"
 multiversion = "0.8.0"
 itertools = "0.14.0"
 thiserror = "2.0.3"
-arrow = { version = "54.1.0", default-features = false, features = ["ffi"] }
+arrow = { version = "54.2.0", default-features = false, features = ["ffi"] }
 rand_chacha = "0.9.0"
 anyhow = "1.0.72"
 faer = { version = "0.21.4", default-features = false, features = [
@@ -35,7 +35,7 @@ pulp = "0.21.4"
 rayon = "1.10.0"
 
 [dev-dependencies]
-proptest = "1.5.0"
+proptest = "1.6.0"
 pretty_assertions = "1.4.0"
 criterion = "0.5.1"
 nix = "0.29.0"
