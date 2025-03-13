@@ -151,8 +151,8 @@ impl Default for TransformedNutsSettings {
         Self {
             num_tune: 1500,
             num_draws: 1000,
-            maxdepth: 8,
-            max_energy_error: 1000f64,
+            maxdepth: 10,
+            max_energy_error: 20f64,
             store_gradient: false,
             store_unconstrained: false,
             store_divergences: false,

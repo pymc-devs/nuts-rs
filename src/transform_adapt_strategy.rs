@@ -23,10 +23,10 @@ pub struct TransformedSettings {
 impl Default for TransformedSettings {
     fn default() -> Self {
         Self {
-            step_size_window: 0.1f64,
-            transform_update_freq: 50,
+            step_size_window: 0.07f64,
+            transform_update_freq: 128,
             use_orbit_for_training: false,
-            transform_train_max_energy_error: 50f64,
+            transform_train_max_energy_error: 20f64,
             dual_average_options: Default::default(),
         }
     }
