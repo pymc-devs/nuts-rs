@@ -2,11 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.15.0] - 2025-02-12
+## [0.16.0] - 2025-05-27
+
+### Bug Fixes
+
+- Eigen decomposition error for low rank mass matrix (Adrian Seyboldt)
+
+
+### Miscellaneous Tasks
+
+- Bump arrow version (Adrian Seyboldt)
+
+
+### Performance
+
+- Replace multiversion with pulp for simd (Adrian Seyboldt)
+
+
+### Build
+
+- Remove simd_support feature (Adrian Seyboldt)
+
+
+## [0.15.1] - 2025-03-18
+
+### Features
+
+- Change defaults for transform adapt (Adrian Seyboldt)
+
 
 ### Miscellaneous Tasks
 
 - Update dependencies (Adrian Seyboldt)
+
+- Update dependencies (Adrian Seyboldt)
+
+- Bump version (Adrian Seyboldt)
 
 
 ### Ci
