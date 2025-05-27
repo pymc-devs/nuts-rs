@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.1] - 2025-05-27
+
+### Bug Fixes
+
+- Disable unused faer features (Adrian Seyboldt)
+
+
+### Performance
+
+- Shortcut for empty posteriors (Adrian Seyboldt)
+
+
 ## [0.16.0] - 2025-05-27
 
 ### Bug Fixes
@@ -13,6 +25,8 @@ All notable changes to this project will be documented in this file.
 
 - Bump arrow version (Adrian Seyboldt)
 
+- Bump version and update changelog (Adrian Seyboldt)
+
 
 ### Performance
 
@@ -22,6 +36,11 @@ All notable changes to this project will be documented in this file.
 ### Build
 
 - Remove simd_support feature (Adrian Seyboldt)
+
+
+### Ci
+
+- Add codecov token (Adrian Seyboldt)
 
 
 ## [0.15.1] - 2025-03-18
