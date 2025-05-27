@@ -18,13 +18,13 @@ use crate::{
 
 fn mat_all_finite(mat: &MatRef<f64>) -> bool {
     let mut ok = true;
-    faer::zip!(mat).for_each(|faer::unzip!(val)| ok = ok & val.is_finite());
+    faer::zip!(mat).for_each(|faer::unzip!(val)| ok &= val.is_finite());
     ok
 }
 
 fn col_all_finite(mat: &ColRef<f64>) -> bool {
     let mut ok = true;
-    faer::zip!(mat).for_each(|faer::unzip!(val)| ok = ok & val.is_finite());
+    faer::zip!(mat).for_each(|faer::unzip!(val)| ok &= val.is_finite());
     ok
 }
 
@@ -414,10 +414,22 @@ impl LowRankMassMatrixStrategy {
             grads.col_as_slice_mut(i).copy_from_slice(&grad[..]);
         }
 
+        let Some((stds, vals, vecs)) = self.compute_update(draws, grads) else {
+            return;
+        };
+
+        matrix.update(math, stds, vals, vecs);
+    }
+
+    fn compute_update(
+        &self,
+        mut draws: Mat<f64>,
+        mut grads: Mat<f64>,
+    ) -> Option<(Col<f64>, Col<f64>, Mat<f64>)> {
         let stds = rescale_points(&mut draws, &mut grads);
 
-        let svd_draws = draws.thin_svd().expect("Failed to compute SVD");
-        let svd_grads = grads.thin_svd().expect("Failed to compute SVD");
+        let svd_draws = draws.thin_svd().ok()?;
+        let svd_grads = grads.thin_svd().ok()?;
 
         let subspace = faer::concat![[svd_draws.U(), svd_grads.U()]];
 
@@ -428,7 +440,7 @@ impl LowRankMassMatrixStrategy {
         let draws_proj = subspace_basis.transpose() * (&draws);
         let grads_proj = subspace_basis.transpose() * (&grads);
 
-        let (vals, vecs) = estimate_mass_matrix(draws_proj, grads_proj, self.settings.gamma);
+        let (vals, vecs) = estimate_mass_matrix(draws_proj, grads_proj, self.settings.gamma)?;
 
         let filtered = vals
             .iter()
@@ -448,8 +460,7 @@ impl LowRankMassMatrixStrategy {
             .for_each(|(mut col, vals)| col.copy_from(vals));
 
         let vecs = subspace_basis * vecs;
-
-        matrix.update(math, stds, vals, vecs);
+        Some((stds, vals, vecs))
     }
 }
 
@@ -490,7 +501,11 @@ fn rescale_points(draws: &mut Mat<f64>, grads: &mut Mat<f64>) -> Col<f64> {
     stds
 }
 
-fn estimate_mass_matrix(draws: Mat<f64>, grads: Mat<f64>, gamma: f64) -> (Col<f64>, Mat<f64>) {
+fn estimate_mass_matrix(
+    draws: Mat<f64>,
+    grads: Mat<f64>,
+    gamma: f64,
+) -> Option<(Col<f64>, Mat<f64>)> {
     let mut cov_draws = (&draws) * draws.transpose();
     let mut cov_grads = (&grads) * grads.transpose();
 
@@ -509,22 +524,18 @@ fn estimate_mass_matrix(draws: Mat<f64>, grads: Mat<f64>, gamma: f64) -> (Col<f6
         .iter_mut()
         .for_each(|x| *x += 1f64);
 
-    let mean = spd_mean(cov_draws, cov_grads);
+    let mean = spd_mean(cov_draws, cov_grads)?;
 
-    let mean_eig = mean
-        .self_adjoint_eigen(faer::Side::Lower)
-        .expect("Failed to compute eigenvalue decomposition");
+    let mean_eig = mean.self_adjoint_eigen(faer::Side::Lower).ok()?;
 
-    (
+    Some((
         mean_eig.S().column_vector().to_owned(),
         mean_eig.U().to_owned(),
-    )
+    ))
 }
 
-fn spd_mean(cov_draws: Mat<f64>, cov_grads: Mat<f64>) -> Mat<f64> {
-    let eigs_grads = cov_grads
-        .self_adjoint_eigen(faer::Side::Lower)
-        .expect("Failed to compute eigenvalue decomposition");
+fn spd_mean(cov_draws: Mat<f64>, cov_grads: Mat<f64>) -> Option<Mat<f64>> {
+    let eigs_grads = cov_grads.self_adjoint_eigen(faer::Side::Lower).ok()?;
 
     let u = eigs_grads.U();
     let eigs = eigs_grads.S().column_vector().to_owned();
@@ -534,9 +545,7 @@ fn spd_mean(cov_draws: Mat<f64>, cov_grads: Mat<f64>) -> Mat<f64> {
     let cov_grads_sqrt = u * eigs_sqrt.into_diagonal() * u.transpose();
     let m = (&cov_grads_sqrt) * cov_draws * cov_grads_sqrt;
 
-    let m_eig = m
-        .self_adjoint_eigen(faer::Side::Lower)
-        .expect("Failed to compute eigenvalue decomposition");
+    let m_eig = m.self_adjoint_eigen(faer::Side::Lower).ok()?;
 
     let m_u = m_eig.U();
     let mut m_s = m_eig.S().column_vector().to_owned();
@@ -550,7 +559,7 @@ fn spd_mean(cov_draws: Mat<f64>, cov_grads: Mat<f64>) -> Mat<f64> {
         .for_each(|val| *val = val.sqrt().recip());
     let grads_inv_sqrt = u * eigs_grads_inv.into_diagonal() * u.transpose();
 
-    (&grads_inv_sqrt) * m_sqrt * grads_inv_sqrt
+    Some((&grads_inv_sqrt) * m_sqrt * grads_inv_sqrt)
 }
 
 impl<M: Math> SamplerStats<M> for LowRankMassMatrixStrategy {
@@ -656,7 +665,7 @@ mod test {
         x.diagonal_mut().column_vector_mut().add_assign(x_diag);
         y.diagonal_mut().column_vector_mut().add_assign(y_diag);
 
-        let out = spd_mean(x, y);
+        let out = spd_mean(x, y).expect("Failed to compute spd mean");
         let expected_diag = faer::col![1., 2., 4.];
         let mut expected = faer::Mat::zeros(3, 3);
         expected
@@ -684,7 +693,8 @@ mod test {
         //let grads: Mat<f64> = Mat::from_fn(20, 3, |_, _| rng.sample(distr));
         let grads = -(&draws);
 
-        let (vals, vecs) = estimate_mass_matrix(draws, grads, 0.0001);
+        let (vals, vecs) =
+            estimate_mass_matrix(draws, grads, 0.0001).expect("Failed to compute mass matrix");
         assert!(vals.iter().cloned().all(|x| x > 0.));
         assert!(mat_all_finite(&vecs.as_ref()));
 
