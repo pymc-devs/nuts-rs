@@ -416,7 +416,7 @@ impl<M: Math, R: rand::Rng, A: AdaptStrategy<M>> StatTraceBuilder<M, NutsChain<M
 
         if let Some(div_msg) = divergence_msg.as_mut() {
             if let Some(err) = div_info.and_then(|info| info.logp_function_error.as_ref()) {
-                div_msg.append_value(format!("{}", err));
+                div_msg.append_value(format!("{err}"));
             } else {
                 div_msg.append_null();
             }
