@@ -274,6 +274,13 @@ where
     collector.register_init(math, init, options);
 
     let mut tree = NutsTree::new(init.clone());
+
+    if math.dim() == 0 {
+        let info = tree.info(false, None);
+        collector.register_draw(math, init, &info);
+        return Ok((init.clone(), info));
+    }
+
     while tree.depth < options.maxdepth {
         let direction: Direction = rng.random();
         tree = match tree.extend(math, rng, hamiltonian, direction, collector, options) {
