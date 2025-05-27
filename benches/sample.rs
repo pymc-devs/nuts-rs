@@ -1,18 +1,71 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, Criterion};
 use nix::sched::{sched_setaffinity, CpuSet};
 use nix::unistd::Pid;
-use nuts_rs::math::{axpy, axpy_out, vector_dot};
-use nuts_rs::test_logps::NormalLogp;
-use nuts_rs::{new_sampler, sample_parallel, Chain, JitterInitFunc, SamplerArgs};
+use nuts_rs::{Chain, CpuLogpFunc, CpuMath, LogpError, Math, Settings};
+use rand::SeedableRng;
 use rayon::ThreadPoolBuilder;
+use thiserror::Error;
 
-fn make_sampler(dim: usize, mu: f64) -> impl Chain {
-    let func = NormalLogp::new(dim, mu);
-    new_sampler(func, SamplerArgs::default(), 0, 0)
+#[derive(Debug)]
+struct PosteriorDensity {
+    dim: usize,
 }
 
-pub fn sample_one(mu: f64, out: &mut [f64]) {
-    let mut sampler = make_sampler(out.len(), mu);
+// The density might fail in a recoverable or non-recoverable manner...
+#[derive(Debug, Error)]
+enum PosteriorLogpError {}
+impl LogpError for PosteriorLogpError {
+    fn is_recoverable(&self) -> bool {
+        false
+    }
+}
+
+impl CpuLogpFunc for PosteriorDensity {
+    type LogpError = PosteriorLogpError;
+
+    // Only used for transforming adaptation.
+    type TransformParams = ();
+
+    // We define a 10 dimensional normal distribution
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    // The normal likelihood with mean 3 and its gradient.
+    fn logp(&mut self, position: &[f64], grad: &mut [f64]) -> Result<f64, Self::LogpError> {
+        let mu = 3f64;
+        let logp = position
+            .iter()
+            .copied()
+            .zip(grad.iter_mut())
+            .map(|(x, grad)| {
+                let diff = x - mu;
+                *grad = -diff;
+                -0.5 * diff * diff
+            })
+            .sum();
+        return Ok(logp);
+    }
+}
+
+fn make_sampler(dim: usize) -> impl Chain<CpuMath<PosteriorDensity>> {
+    let func = PosteriorDensity { dim: dim };
+
+    let settings = nuts_rs::DiagGradNutsSettings {
+        num_tune: 1000,
+        maxdepth: 3, // small value just for testing...
+        ..Default::default()
+    };
+
+    let math = nuts_rs::CpuMath::new(func);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42u64);
+    settings.new_chain(0, math, &mut rng)
+}
+
+pub fn sample_one(out: &mut [f64]) {
+    let mut sampler = make_sampler(out.len());
     let init = vec![3.5; out.len()];
     sampler.set_position(&init).unwrap();
     for _ in 0..1000 {
@@ -36,29 +89,39 @@ fn criterion_benchmark(c: &mut Criterion) {
     cpu_set.set(0).unwrap();
     sched_setaffinity(Pid::from_raw(0), &cpu_set).unwrap();
 
-    for n in [10, 12, 14, 100, 800, 802] {
-        let x = vec![2.5; n];
-        let mut y = vec![3.5; n];
-        let mut out = vec![0.; n];
+    for n in [4, 16, 17, 100, 4567] {
+        let mut math = CpuMath::new(PosteriorDensity { dim: n });
 
-        //axpy(&x, &mut y, 4.);
+        let x = math.new_array();
+        let p = math.new_array();
+        let p2 = math.new_array();
+        let n1 = math.new_array();
+        let mut y = math.new_array();
+        let mut out = math.new_array();
+
+        let x_vec = vec![2.5; n];
+        let mut y_vec = vec![2.5; n];
+
+        c.bench_function(&format!("multiply {}", n), |b| {
+            b.iter(|| math.array_mult(black_box(&x), black_box(&y), black_box(&mut out)));
+        });
+
         c.bench_function(&format!("axpy {}", n), |b| {
-            b.iter(|| axpy(black_box(&x), black_box(&mut y), black_box(4.)));
+            b.iter(|| math.axpy(black_box(&x), black_box(&mut y), black_box(4.)));
         });
 
         c.bench_function(&format!("axpy_ndarray {}", n), |b| {
             b.iter(|| {
-                let x = ndarray::aview1(black_box(&x));
-                let mut y = ndarray::aview_mut1(black_box(&mut y));
+                let x = ndarray::aview1(black_box(&x_vec));
+                let mut y = ndarray::aview_mut1(black_box(&mut y_vec));
                 //y *= &x;// * black_box(4.);
                 y.scaled_add(black_box(4f64), &x);
             });
         });
 
-        //axpy_out(&x, &y, 4., &mut out);
         c.bench_function(&format!("axpy_out {}", n), |b| {
             b.iter(|| {
-                axpy_out(
+                math.axpy_out(
                     black_box(&x),
                     black_box(&y),
                     black_box(4.),
@@ -66,57 +129,39 @@ fn criterion_benchmark(c: &mut Criterion) {
                 )
             });
         });
-        //vector_dot(&x, &y);
+
         c.bench_function(&format!("vector_dot {}", n), |b| {
-            b.iter(|| vector_dot(black_box(&x), black_box(&y)));
+            b.iter(|| math.array_vector_dot(black_box(&x), black_box(&y)));
         });
-        /*
-        scalar_prods_of_diff(&x, &y, &a, &d);
-        c.bench_function(&format!("scalar_prods_of_diff {}", n), |b| {
+
+        c.bench_function(&format!("scalar_prods2 {}", n), |b| {
             b.iter(|| {
-                scalar_prods_of_diff(black_box(&x), black_box(&y), black_box(&a), black_box(&d))
+                math.scalar_prods2(black_box(&p), black_box(&p2), black_box(&x), black_box(&y))
             });
         });
-        */
+
+        c.bench_function(&format!("scalar_prods3 {}", n), |b| {
+            b.iter(|| {
+                math.scalar_prods3(
+                    black_box(&p),
+                    black_box(&p2),
+                    black_box(&n1),
+                    black_box(&x),
+                    black_box(&y),
+                )
+            });
+        });
     }
 
     let mut out = vec![0.; 10];
     c.bench_function("sample_1000_10", |b| {
-        b.iter(|| sample_one(black_box(3.), black_box(&mut out)))
+        b.iter(|| sample_one(black_box(&mut out)))
     });
 
     let mut out = vec![0.; 1000];
     c.bench_function("sample_1000_1000", |b| {
-        b.iter(|| sample_one(black_box(3.), black_box(&mut out)))
+        b.iter(|| sample_one(black_box(&mut out)))
     });
-
-    for n in [10, 12, 1000] {
-        c.bench_function(&format!("sample_parallel_{}", n), |b| {
-            b.iter(|| {
-                let func = NormalLogp::new(n, 0.);
-                let settings = black_box(SamplerArgs::default());
-                let mut init_point_func = JitterInitFunc::new();
-                let n_chains = black_box(10);
-                let n_draws = black_box(1000);
-                let seed = black_box(42);
-                let n_try_init = 10;
-                let (handle, channel) = sample_parallel(
-                    func,
-                    &mut init_point_func,
-                    settings,
-                    n_chains,
-                    n_draws,
-                    seed,
-                    n_try_init,
-                )
-                .unwrap();
-                let draws: Vec<_> = channel.iter().collect();
-                //assert_eq!(draws.len() as u64, (n_draws + settings.num_tune) * n_chains);
-                handle.join().unwrap();
-                draws
-            });
-        });
-    }
 }
 
 criterion_group!(benches, criterion_benchmark);

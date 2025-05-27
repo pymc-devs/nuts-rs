@@ -103,6 +103,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         y: &Self::Vector,
     ) -> (f64, f64) {
         scalar_prods3(
+            self.arch,
             positive1.try_as_col_major().unwrap().as_slice(),
             negative1.try_as_col_major().unwrap().as_slice(),
             positive2.try_as_col_major().unwrap().as_slice(),
@@ -119,6 +120,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         y: &Self::Vector,
     ) -> (f64, f64) {
         scalar_prods2(
+            self.arch,
             positive1.try_as_col_major().unwrap().as_slice(),
             positive2.try_as_col_major().unwrap().as_slice(),
             x.try_as_col_major().unwrap().as_slice(),
@@ -153,6 +155,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
 
     fn axpy_out(&mut self, x: &Self::Vector, y: &Self::Vector, a: f64, out: &mut Self::Vector) {
         axpy_out(
+            self.arch,
             x.try_as_col_major().unwrap().as_slice(),
             y.try_as_col_major().unwrap().as_slice(),
             a,
@@ -162,6 +165,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
 
     fn axpy(&mut self, x: &Self::Vector, y: &mut Self::Vector, a: f64) {
         axpy(
+            self.arch,
             x.try_as_col_major().unwrap().as_slice(),
             y.try_as_col_major_mut().unwrap().as_slice_mut(),
             a,
@@ -174,7 +178,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
 
     fn array_all_finite(&mut self, array: &Self::Vector) -> bool {
         let mut ok = true;
-        faer::zip!(array).for_each(|faer::unzip!(val)| ok = ok & val.is_finite());
+        faer::zip!(array).for_each(|faer::unzip!(val)| ok &= val.is_finite());
         ok
     }
 
@@ -196,6 +200,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         dest: &mut Self::Vector,
     ) {
         multiply(
+            self.arch,
             array1.try_as_col_major().unwrap().as_slice(),
             array2.try_as_col_major().unwrap().as_slice(),
             dest.try_as_col_major_mut().unwrap().as_slice_mut(),
@@ -220,6 +225,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
 
     fn array_vector_dot(&mut self, array1: &Self::Vector, array2: &Self::Vector) -> f64 {
         vector_dot(
+            self.arch,
             array1.try_as_col_major().unwrap().as_slice(),
             array2.try_as_col_major().unwrap().as_slice(),
         )

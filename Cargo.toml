@@ -2,8 +2,8 @@
 name = "nuts-rs"
 version = "0.15.1"
 authors = [
-  "Adrian Seyboldt <adrian.seyboldt@gmail.com>",
-  "PyMC Developers <pymc.devs@gmail.com>",
+    "Adrian Seyboldt <adrian.seyboldt@gmail.com>",
+    "PyMC Developers <pymc.devs@gmail.com>",
 ]
 edition = "2021"
 license = "MIT"
@@ -20,16 +20,15 @@ codegen-units = 1
 [dependencies]
 rand = { version = "0.9.0", features = ["small_rng"] }
 rand_distr = "0.5.0"
-multiversion = "0.8.0"
 itertools = "0.14.0"
 thiserror = "2.0.3"
 arrow = { version = "54.2.0", default-features = false, features = ["ffi"] }
 rand_chacha = "0.9.0"
 anyhow = "1.0.72"
-faer = { version = "0.21.4", default-features = false, features = [
-  "std",
-  "npy",
-  "linalg",
+faer = { version = "0.22.6", default-features = false, features = [
+    "std",
+    "npy",
+    "linalg",
 ] }
 pulp = "0.21.4"
 rayon = "1.10.0"
@@ -37,8 +36,8 @@ rayon = "1.10.0"
 [dev-dependencies]
 proptest = "1.6.0"
 pretty_assertions = "1.4.0"
-criterion = "0.5.1"
-nix = "0.29.0"
+criterion = "0.6.0"
+nix = { version = "0.30.0", features = ["sched"] }
 approx = "0.5.1"
 ndarray = "0.16.1"
 equator = "0.4.2"
