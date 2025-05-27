@@ -702,7 +702,7 @@ impl Sampler {
         let main_thread = spawn(move || {
             let pool = ThreadPoolBuilder::new()
                 .num_threads(num_cores + 1) // One more thread because the controller also uses one
-                .thread_name(|i| format!("nutpie-worker-{}", i))
+                .thread_name(|i| format!("nutpie-worker-{i}"))
                 .build()
                 .context("Could not start thread pool")?;
 
@@ -927,7 +927,6 @@ pub mod test_logps {
         array::{Array, ArrayBuilder, FixedSizeListBuilder, PrimitiveBuilder},
         datatypes::Float64Type,
     };
-    use multiversion::multiversion;
     use thiserror::Error;
 
     use super::{DrawStorage, Model};
@@ -954,62 +953,17 @@ pub mod test_logps {
         fn dim(&self) -> usize {
             self.dim
         }
+
         fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, NormalLogpError> {
             let n = position.len();
             assert!(gradient.len() == n);
 
-            #[cfg(feature = "simd_support")]
-            #[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
-            fn logp_inner(mu: f64, position: &[f64], gradient: &mut [f64]) -> f64 {
-                use std::simd::f64x4;
-                use std::simd::num::SimdFloat;
-
-                let n = position.len();
-                assert!(gradient.len() == n);
-
-                let head_length = n - n % 4;
-
-                let (pos, pos_tail) = position.split_at(head_length);
-                let (grad, grad_tail) = gradient.split_at_mut(head_length);
-
-                let mu_splat = f64x4::splat(mu);
-
-                let mut logp = f64x4::splat(0f64);
-
-                for (p, g) in pos.chunks_exact(4).zip(grad.chunks_exact_mut(4)) {
-                    let p = f64x4::from_slice(p);
-                    let val = mu_splat - p;
-                    logp -= val * val * f64x4::splat(0.5);
-                    g.copy_from_slice(&val.to_array());
-                }
-
-                let mut logp_tail = 0f64;
-                for (p, g) in pos_tail.iter().zip(grad_tail.iter_mut()).take(3) {
-                    let val = mu - p;
-                    logp_tail -= val * val / 2.;
-                    *g = val;
-                }
-
-                logp.reduce_sum() + logp_tail
+            let mut logp = 0f64;
+            for (p, g) in position.iter().zip(gradient.iter_mut()) {
+                let val = self.mu - p;
+                logp -= val * val / 2.;
+                *g = val;
             }
-
-            #[cfg(not(feature = "simd_support"))]
-            #[multiversion(targets("x86_64+avx+avx2+fma", "arm+neon"))]
-            fn logp_inner(mu: f64, position: &[f64], gradient: &mut [f64]) -> f64 {
-                let n = position.len();
-                assert!(gradient.len() == n);
-
-                let mut logp = 0f64;
-                for (p, g) in position.iter().zip(gradient.iter_mut()) {
-                    let val = mu - p;
-                    logp -= val * val / 2.;
-                    *g = val;
-                }
-
-                logp
-            }
-
-            let logp = logp_inner(self.mu, position, gradient);
 
             Ok(logp)
         }
