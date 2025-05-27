@@ -1,5 +1,3 @@
-#![cfg_attr(feature = "simd_support", feature(portable_simd))]
-#![cfg_attr(feature = "simd_support", feature(slice_as_chunks))]
 //! Sample from posterior distributions using the No U-turn Sampler (NUTS).
 //! For details see the original [NUTS paper](https://arxiv.org/abs/1111.4246)
 //! and the more recent [introduction](https://arxiv.org/abs/1701.02434).

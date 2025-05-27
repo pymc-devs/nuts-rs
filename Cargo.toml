@@ -45,8 +45,3 @@ equator = "0.4.2"
 [[bench]]
 name = "sample"
 harness = false
-
-[features]
-nightly = ["simd_support"]
-
-simd_support = []
