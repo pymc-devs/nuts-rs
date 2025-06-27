@@ -39,6 +39,10 @@ impl Strategy {
         position: &[f64],
         rng: &mut R,
     ) -> Result<(), NutsError> {
+        if let Some(step_size) = self.options.fixed_step_size {
+            *hamiltonian.step_size_mut() = step_size;
+            return Ok(());
+        }
         let mut state = hamiltonian.init_state(math, position)?;
         hamiltonian.initialize_trajectory(math, &mut state, rng)?;
 
@@ -118,13 +122,17 @@ impl Strategy {
 
     pub fn update_stepsize<M: Math>(
         &mut self,
-        potential: &mut impl Hamiltonian<M>,
+        hamiltonian: &mut impl Hamiltonian<M>,
         use_best_guess: bool,
     ) {
+        if let Some(step_size) = self.options.fixed_step_size {
+            *hamiltonian.step_size_mut() = step_size;
+            return;
+        }
         if use_best_guess {
-            *potential.step_size_mut() = self.step_size_adapt.current_step_size_adapted();
+            *hamiltonian.step_size_mut() = self.step_size_adapt.current_step_size_adapted();
         } else {
-            *potential.step_size_mut() = self.step_size_adapt.current_step_size();
+            *hamiltonian.step_size_mut() = self.step_size_adapt.current_step_size();
         }
     }
 
@@ -226,6 +234,7 @@ pub struct DualAverageSettings {
     pub target_accept: f64,
     pub initial_step: f64,
     pub params: DualAverageOptions,
+    pub fixed_step_size: Option<f64>,
 }
 
 impl Default for DualAverageSettings {
@@ -234,6 +243,7 @@ impl Default for DualAverageSettings {
             target_accept: 0.8,
             initial_step: 0.1,
             params: DualAverageOptions::default(),
+            fixed_step_size: None,
         }
     }
 }
