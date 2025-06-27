@@ -60,22 +60,41 @@ pub struct SampleInfo {
 }
 
 /// A part of the trajectory tree during NUTS sampling.
+///
+/// Corresponds to SpanW in walnuts C++ code
 struct NutsTree<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> {
     /// The left position of the tree.
     ///
     /// The left side always has the smaller index_in_trajectory.
     /// Leapfrogs in backward direction will replace the left.
+    ///
+    /// theta_bk_, rho_bk_, grad_theta_bk_, logp_bk_ in C++ code
     left: State<M, H::Point>,
+
+    /// The right position of the tree.
+    ///
+    /// theta_fw_, rho_fw_, grad_theta_fw_, logp_fw_ in C++ code
     right: State<M, H::Point>,
 
     /// A draw from the trajectory between left and right using
     /// multinomial sampling.
+    ///
+    /// theta_select_ in C++ code
     draw: State<M, H::Point>,
+
+    /// Constant for acceptance probability
+    ///
+    /// logp_ in C++ code
     log_size: f64,
+
+    /// The depth of the tree
     depth: u64,
 
     /// A tree is the main tree if it contains the initial point
     /// of the trajectory.
+    ///
+    /// This is used to determine whether to use Metropolis
+    /// accptance or Barker
     is_main: bool,
     _phantom2: PhantomData<C>,
 }
@@ -172,6 +191,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         }
     }
 
+    // `combine` in C++ code
     fn merge_into<R: rand::Rng + ?Sized>(
         &mut self,
         _math: &mut M,
@@ -209,6 +229,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         self.log_size = log_size;
     }
 
+    // Corresponds to `build_leaf` in C++ code
     fn single_step(
         &self,
         math: &mut M,
