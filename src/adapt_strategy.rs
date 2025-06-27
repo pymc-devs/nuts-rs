@@ -484,6 +484,7 @@ mod test {
             store_unconstrained: true,
             check_turning: true,
             store_divergences: false,
+            walnuts_options: None,
         };
 
         let rng = {

@@ -225,6 +225,7 @@ impl<M: Math, Mass: MassMatrix<M>> Hamiltonian<M> for EuclideanHamiltonian<M, Ma
         math: &mut M,
         start: &State<M, Self::Point>,
         dir: Direction,
+        step_size_factor: f64,
         collector: &mut C,
     ) -> LeapfrogResult<M, Self::Point> {
         let mut out = self.pool().new_state(math);
@@ -237,7 +238,7 @@ impl<M: Math, Mass: MassMatrix<M>> Hamiltonian<M> for EuclideanHamiltonian<M, Ma
             Direction::Backward => -1,
         };
 
-        let epsilon = (sign as f64) * self.step_size;
+        let epsilon = (sign as f64) * self.step_size * step_size_factor;
 
         start
             .point()

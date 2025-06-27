@@ -28,10 +28,34 @@ pub struct DivergenceInfo {
     pub logp_function_error: Option<Arc<dyn std::error::Error + Send + Sync>>,
 }
 
+impl DivergenceInfo {
+    pub fn new() -> Self {
+        DivergenceInfo {
+            start_momentum: None,
+            start_location: None,
+            start_gradient: None,
+            end_location: None,
+            energy_error: None,
+            end_idx_in_trajectory: None,
+            start_idx_in_trajectory: None,
+            logp_function_error: None,
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub enum Direction {
     Forward,
     Backward,
+}
+
+impl Direction {
+    pub fn reverse(&self) -> Self {
+        match self {
+            Direction::Forward => Direction::Backward,
+            Direction::Backward => Direction::Forward,
+        }
+    }
 }
 
 impl Distribution<Direction> for StandardUniform {
@@ -82,6 +106,7 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
         math: &mut M,
         start: &State<M, Self::Point>,
         dir: Direction,
+        step_size_factor: f64,
         collector: &mut C,
     ) -> LeapfrogResult<M, Self::Point>;
 
