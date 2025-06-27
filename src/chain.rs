@@ -158,6 +158,7 @@ where
             &mut self.hamiltonian,
             &self.options,
             &mut self.collector,
+            self.draw_count < 70,
         )?;
         let mut position: Box<[f64]> = vec![0f64; math.dim()].into();
         state.write_position(math, &mut position);
@@ -226,6 +227,17 @@ pub struct NutsStats<P: HasDims, H: Storable<P>, A: Storable<P>, D: Storable<P>>
     pub point: D,
     #[storable(flatten)]
     pub divergence: DivergenceStats,
+    pub diverging: bool,
+    #[storable(dims("unconstrained_parameter"))]
+    pub divergence_start: Option<Vec<f64>>,
+    #[storable(dims("unconstrained_parameter"))]
+    pub divergence_start_gradient: Option<Vec<f64>>,
+    #[storable(dims("unconstrained_parameter"))]
+    pub divergence_end: Option<Vec<f64>>,
+    #[storable(dims("unconstrained_parameter"))]
+    pub divergence_momentum: Option<Vec<f64>>,
+    non_reversible: Option<bool>,
+    //pub divergence_message: Option<String>,
     #[storable(ignore)]
     _phantom: PhantomData<fn() -> P>,
 }
@@ -279,6 +291,17 @@ impl<M: Math, R: rand::Rng, A: AdaptStrategy<M>> SamplerStats<M> for NutsChain<M
             adapt: adapt_stats,
             point: point_stats,
             divergence: (div_info, options.divergence, self.draw_count).into(),
+            diverging: div_info.is_some(),
+            divergence_start: div_info
+                .and_then(|d| d.start_location.as_ref().map(|v| v.as_ref().to_vec())),
+            divergence_start_gradient: div_info
+                .and_then(|d| d.start_gradient.as_ref().map(|v| v.as_ref().to_vec())),
+            divergence_end: div_info
+                .and_then(|d| d.end_location.as_ref().map(|v| v.as_ref().to_vec())),
+            divergence_momentum: div_info
+                .and_then(|d| d.start_momentum.as_ref().map(|v| v.as_ref().to_vec())),
+            //divergence_message: self.divergence_msg.clone(),
+            non_reversible: div_info.and_then(|d| Some(d.non_reversible)),
             _phantom: PhantomData,
         }
     }

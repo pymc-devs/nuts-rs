@@ -122,7 +122,7 @@ pub use dynamics::{DivergenceInfo, KineticEnergyKind};
 pub use math::{CpuLogpFunc, CpuMath, CpuMathError, LogpError, Math};
 pub use mclmc::{MclmcChain, MclmcInfo, MclmcStats, MclmcTrajectoryKind};
 pub use model::Model;
-pub use nuts::NutsError;
+pub use nuts::{NutsError, WalnutsOptions};
 
 #[allow(deprecated)]
 pub use sampler::{
