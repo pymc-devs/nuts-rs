@@ -457,6 +457,7 @@ mod test {
             store_divergences: false,
             target_integration_time: None,
             extra_doublings: 0,
+            walnuts_options: None,
         };
 
         let rng = {

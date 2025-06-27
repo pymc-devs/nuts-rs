@@ -2,6 +2,7 @@
 
 use rand::RngExt;
 use rand_distr::num_traits::ToPrimitive;
+use serde::Serialize;
 use thiserror::Error;
 
 use std::{fmt::Debug, marker::PhantomData};
@@ -121,7 +122,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         H: Hamiltonian<M>,
         R: rand::Rng + ?Sized,
     {
-        let mut other = match self.single_step(math, hamiltonian, direction, collector) {
+        let mut other = match self.single_step(math, hamiltonian, direction, options, collector) {
             Ok(Ok(tree)) => tree,
             Ok(Err(info)) => return ExtendResult::Diverging(self, info),
             Err(err) => return ExtendResult::Err(err),
@@ -214,19 +215,141 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         math: &mut M,
         hamiltonian: &mut H,
         direction: Direction,
+        options: &NutsOptions,
         collector: &mut C,
     ) -> Result<std::result::Result<NutsTree<M, H, C>, DivergenceInfo>> {
         let start = match direction {
             Direction::Forward => &self.right,
             Direction::Backward => &self.left,
         };
-        let end = match hamiltonian.leapfrog(math, start, direction, collector) {
-            LeapfrogResult::Divergence(info) => return Ok(Err(info)),
-            LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
-            LeapfrogResult::Ok(end) => end,
+
+        let (log_size, end) = match options.walnuts_options {
+            Some(ref options) => {
+                // Walnuts implementation
+                // TODO: Shouldn't all be in this one big function...
+                let mut step_size_factor = 1.0;
+                let mut num_steps = 1;
+                let mut current = start.clone();
+
+                let mut success = false;
+
+                'step_size_search: for _ in 0..options.max_step_size_halvings {
+                    current = start.clone();
+                    let mut min_energy = current.energy();
+                    let mut max_energy = min_energy;
+
+                    for _ in 0..num_steps {
+                        current = match hamiltonian.leapfrog(
+                            math,
+                            &current,
+                            direction,
+                            step_size_factor,
+                            collector,
+                        ) {
+                            LeapfrogResult::Ok(state) => state,
+                            LeapfrogResult::Divergence(_) => {
+                                num_steps *= 2;
+                                step_size_factor *= 0.5;
+                                continue 'step_size_search;
+                            }
+                            LeapfrogResult::Err(err) => {
+                                return Err(NutsError::LogpFailure(err.into()));
+                            }
+                        };
+
+                        // Update min/max energies
+                        let current_energy = current.energy();
+                        min_energy = min_energy.min(current_energy);
+                        max_energy = max_energy.max(current_energy);
+                    }
+
+                    if max_energy - min_energy > options.max_energy_error {
+                        num_steps *= 2;
+                        step_size_factor *= 0.5;
+                        continue 'step_size_search;
+                    }
+
+                    success = true;
+                    break 'step_size_search;
+                }
+
+                if !success {
+                    // TODO: More info
+                    return Ok(Err(DivergenceInfo::new()));
+                }
+
+                // TODO
+                let back = direction.reverse();
+                let mut current_backward;
+
+                let mut reversible = true;
+
+                'rev_step_size: while num_steps >= 2 {
+                    num_steps /= 2;
+                    step_size_factor *= 0.5;
+
+                    // TODO: Can we share code for the micro steps in the two directions?
+                    current_backward = current.clone();
+
+                    let mut min_energy = current_backward.energy();
+                    let mut max_energy = min_energy;
+
+                    for _ in 0..num_steps {
+                        current_backward = match hamiltonian.leapfrog(
+                            math,
+                            &current_backward,
+                            back,
+                            step_size_factor,
+                            collector,
+                        ) {
+                            LeapfrogResult::Ok(state) => state,
+                            LeapfrogResult::Divergence(_) => {
+                                // We also reject in the backward direction, all is good so far...
+                                continue 'rev_step_size;
+                            }
+                            LeapfrogResult::Err(err) => {
+                                return Err(NutsError::LogpFailure(err.into()));
+                            }
+                        };
+
+                        // Update min/max energies
+                        let current_energy = current_backward.energy();
+                        min_energy = min_energy.min(current_energy);
+                        max_energy = max_energy.max(current_energy);
+                        if max_energy - min_energy > options.max_energy_error {
+                            // We reject also in the backward direction, all good so far...
+                            continue 'rev_step_size;
+                        }
+                    }
+
+                    // We did not reject in the backward direction, so we are not reversible
+                    reversible = false;
+                    break;
+                }
+
+                if reversible {
+                    let log_size = -current.point().energy_error();
+                    (log_size, current)
+                } else {
+                    // TODO: More info
+                    return Ok(Err(DivergenceInfo::new()));
+                }
+            }
+            None => {
+                // Classical NUTS
+                //
+                let end = match hamiltonian.leapfrog(math, start, direction, 1.0, collector) {
+                    LeapfrogResult::Divergence(info) => return Ok(Err(info)),
+                    LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
+                    LeapfrogResult::Ok(end) => end,
+                };
+
+                let log_size = -end.point().energy_error();
+
+                (log_size, end)
+            }
         };
 
-        let log_size = -end.point().energy_error();
         Ok(Ok(NutsTree {
             right: end.clone(),
             left: end.clone(),
@@ -249,7 +372,13 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct WalnutsOptions {
+    pub max_energy_error: f64,
+    pub max_step_size_halvings: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct NutsOptions {
     pub maxdepth: u64,
     pub mindepth: u64,
@@ -259,6 +388,7 @@ pub struct NutsOptions {
     pub store_divergences: bool,
     pub target_integration_time: Option<f64>,
     pub extra_doublings: u64,
+    pub walnuts_options: Option<WalnutsOptions>,
 }
 
 impl Default for NutsOptions {
@@ -272,6 +402,7 @@ impl Default for NutsOptions {
             store_divergences: false,
             target_integration_time: None,
             extra_doublings: 0,
+            walnuts_options: None,
         }
     }
 }

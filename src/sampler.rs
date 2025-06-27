@@ -22,13 +22,21 @@ use std::{
 };
 
 use crate::{
-    DiagAdaptExpSettings, Math,
+    DiagAdaptExpSettings, Math, Model, SamplerStats,
     adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy, GlobalStrategyStatsOptions},
     chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
     dynamics::{TransformedHamiltonian, TransformedPointStatsOptions},
+    euclidean_hamiltonian::EuclideanHamiltonian,
     external_adapt_strategy::{ExternalTransformAdaptation, TransformedSettings},
+    mass_matrix::{
+        DiagMassMatrix, LowRankMassMatrix, LowRankMassMatrixStrategy, LowRankSettings,
+        Strategy as DiagMassMatrixStrategy,
+    },
+    math_base::Math,
     model::Model,
     nuts::NutsOptions,
+    nuts::{NutsOptions, WalnutsOptions},
+    sampler_stats::StatsDims,
     sampler_stats::{SamplerStats, StatsDims},
     storage::{ChainStorage, StorageConfig, TraceStorage},
     transform::{
@@ -193,6 +201,7 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     /// be used to increase the effective sample size at the cost of more
     /// expensive sampling.
     pub extra_doublings: u64,
+    pub walnuts_options: Option<WalnutsOptions>,
 }
 
 pub type DiagGradNutsSettings = NutsSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
@@ -218,6 +227,7 @@ impl Default for DiagGradNutsSettings {
             target_integration_time: None,
             exact_normal_trajectory: false,
             extra_doublings: 0,
+            walnuts_options: None,
         }
     }
 }
@@ -241,6 +251,7 @@ impl Default for LowRankNutsSettings {
             target_integration_time: None,
             exact_normal_trajectory: false,
             extra_doublings: 0,
+            walnuts_options: None,
         };
         vals.adapt_options.mass_matrix_update_freq = 20;
         vals
@@ -266,6 +277,7 @@ impl Default for TransformedNutsSettings {
             target_integration_time: None,
             exact_normal_trajectory: false,
             extra_doublings: 0,
+            walnuts_options: None,
         }
     }
 }
@@ -302,6 +314,7 @@ impl Settings for LowRankNutsSettings {
             check_turning: self.check_turning,
             target_integration_time: self.target_integration_time,
             extra_doublings: self.extra_doublings,
+            walnuts_options: self.walnuts_options,
         };
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
@@ -379,6 +392,7 @@ impl Settings for DiagGradNutsSettings {
             check_turning: self.check_turning,
             target_integration_time: self.target_integration_time,
             extra_doublings: self.extra_doublings,
+            walnuts_options: self.walnuts_options,
         };
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
@@ -458,6 +472,7 @@ impl Settings for TransformedNutsSettings {
             check_turning: self.check_turning,
             target_integration_time: self.target_integration_time,
             extra_doublings: self.extra_doublings,
+            walnuts_options: self.walnuts_options,
         };
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
