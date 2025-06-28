@@ -103,8 +103,7 @@ impl Strategy {
 
         *hamiltonian.step_size_mut() = self.options.initial_step;
 
-        let state_next =
-            hamiltonian.leapfrog(math, &state, Direction::Forward, 1.0, &mut collector);
+        let state_next = hamiltonian.leapfrog(math, &state, Direction::Forward, 0, &mut collector);
 
         let LeapfrogResult::Ok(_) = state_next else {
             return Ok(());
@@ -120,7 +119,7 @@ impl Strategy {
         for _ in 0..100 {
             let mut collector = AcceptanceRateCollector::new();
             collector.register_init(math, &state, options);
-            let state_next = hamiltonian.leapfrog(math, &state, dir, 1.0, &mut collector);
+            let state_next = hamiltonian.leapfrog(math, &state, dir, 0, &mut collector);
             let LeapfrogResult::Ok(_) = state_next else {
                 *hamiltonian.step_size_mut() = self.options.initial_step;
                 return Ok(());

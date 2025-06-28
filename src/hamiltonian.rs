@@ -16,6 +16,7 @@ use crate::{
 ///   a cutoff value or nan.
 /// - The logp function caused a recoverable error (eg if an ODE solver
 ///   failed)
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct DivergenceInfo {
     pub start_momentum: Option<Box<[f64]>>,
@@ -26,6 +27,7 @@ pub struct DivergenceInfo {
     pub end_idx_in_trajectory: Option<i64>,
     pub start_idx_in_trajectory: Option<i64>,
     pub logp_function_error: Option<Arc<dyn std::error::Error + Send + Sync>>,
+    pub non_reversible: bool,
 }
 
 impl DivergenceInfo {
@@ -39,7 +41,66 @@ impl DivergenceInfo {
             end_idx_in_trajectory: None,
             start_idx_in_trajectory: None,
             logp_function_error: None,
+            non_reversible: false,
         }
+    }
+
+    pub fn new_energy_error_too_large<M: Math>(
+        math: &mut M,
+        start: &State<M, impl Point<M>>,
+        stop: &State<M, impl Point<M>>,
+    ) -> Self {
+        DivergenceInfo {
+            logp_function_error: None,
+            start_location: Some(math.box_array(start.point().position())),
+            start_gradient: Some(math.box_array(start.point().gradient())),
+            // TODO
+            start_momentum: None,
+            start_idx_in_trajectory: Some(start.index_in_trajectory()),
+            end_location: Some(math.box_array(&stop.point().position())),
+            end_idx_in_trajectory: Some(stop.index_in_trajectory()),
+            // TODO
+            energy_error: None,
+            non_reversible: false,
+        }
+    }
+
+    pub fn new_logp_function_error<M: Math>(
+        math: &mut M,
+        start: &State<M, impl Point<M>>,
+        logp_function_error: Arc<dyn std::error::Error + Send + Sync>,
+    ) -> Self {
+        DivergenceInfo {
+            logp_function_error: Some(logp_function_error),
+            start_location: Some(math.box_array(start.point().position())),
+            start_gradient: Some(math.box_array(start.point().gradient())),
+            // TODO
+            start_momentum: None,
+            start_idx_in_trajectory: Some(start.index_in_trajectory()),
+            end_location: None,
+            end_idx_in_trajectory: None,
+            energy_error: None,
+            non_reversible: false,
+        }
+    }
+
+    pub fn new_not_reversible<M: Math>(math: &mut M, start: &State<M, impl Point<M>>) -> Self {
+        // TODO add info about what went wrong
+        DivergenceInfo {
+            logp_function_error: None,
+            start_location: Some(math.box_array(start.point().position())),
+            start_gradient: Some(math.box_array(start.point().gradient())),
+            // TODO
+            start_momentum: None,
+            start_idx_in_trajectory: Some(start.index_in_trajectory()),
+            end_location: None,
+            end_idx_in_trajectory: None,
+            energy_error: None,
+            non_reversible: true,
+        }
+    }
+    pub fn new_max_step_size_halvings<M: Math>(math: &mut M, num_steps: u64, info: Self) -> Self {
+        info // TODO
     }
 }
 
@@ -106,9 +167,43 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
         math: &mut M,
         start: &State<M, Self::Point>,
         dir: Direction,
-        step_size_factor: f64,
+        step_size_splits: u64,
         collector: &mut C,
     ) -> LeapfrogResult<M, Self::Point>;
+
+    fn split_leapfrog<C: Collector<M, Self::Point>>(
+        &mut self,
+        math: &mut M,
+        start: &State<M, Self::Point>,
+        dir: Direction,
+        num_steps: u64,
+        collector: &mut C,
+        max_error: f64,
+    ) -> LeapfrogResult<M, Self::Point> {
+        let mut state = start.clone();
+
+        let mut min_energy = start.energy();
+        let mut max_energy = min_energy;
+
+        for _ in 0..num_steps {
+            state = match self.leapfrog(math, &state, dir, num_steps, collector) {
+                LeapfrogResult::Ok(state) => state,
+                LeapfrogResult::Divergence(info) => return LeapfrogResult::Divergence(info),
+                LeapfrogResult::Err(err) => return LeapfrogResult::Err(err),
+            };
+            let energy = state.energy();
+            min_energy = min_energy.min(energy);
+            max_energy = max_energy.max(energy);
+
+            // TODO: walnuts papers says to use abs, but c++ code doesn't?
+            if max_energy - min_energy > max_error {
+                let info = DivergenceInfo::new_energy_error_too_large(math, start, &state);
+                return LeapfrogResult::Divergence(info);
+            }
+        }
+
+        LeapfrogResult::Ok(state)
+    }
 
     fn is_turning(
         &self,
@@ -141,4 +236,6 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
 
     fn step_size(&self) -> f64;
     fn step_size_mut(&mut self) -> &mut f64;
+
+    fn max_energy_error(&self) -> f64;
 }
