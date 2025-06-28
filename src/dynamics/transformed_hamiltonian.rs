@@ -379,7 +379,7 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         math: &mut M,
         start: &State<M, Self::Point>,
         dir: Direction,
-        step_size_factor: f64,
+        step_size_splits: u64,
         collector: &mut C,
     ) -> LeapfrogResult<M, Self::Point> {
         let mut out = self.pool().new_state(math);
@@ -393,7 +393,7 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
             Direction::Backward => -1,
         };
 
-        let epsilon = (sign as f64) * self.step_size * step_size_factor;
+        let epsilon = (sign as f64) * self.step_size / (step_size_splits as f64);
 
         start
             .point()
@@ -417,8 +417,9 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
                 start_idx_in_trajectory: Some(start.point().index_in_trajectory()),
                 end_idx_in_trajectory: None,
                 energy_error: None,
+                non_reversible: false,
             };
-            collector.register_leapfrog(math, start, &out, Some(&div_info));
+            collector.register_leapfrog(math, start, &out, Some(&div_info), step_size_splits);
             return LeapfrogResult::Divergence(div_info);
         }
 
@@ -438,12 +439,19 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
                 start_idx_in_trajectory: Some(start.index_in_trajectory()),
                 end_idx_in_trajectory: Some(out.index_in_trajectory()),
                 energy_error: Some(energy_error),
+                non_reversible: false,
             };
-            collector.register_leapfrog(math, start, &out, Some(&divergence_info));
+            collector.register_leapfrog(
+                math,
+                start,
+                &out,
+                Some(&divergence_info),
+                step_size_splits,
+            );
             return LeapfrogResult::Divergence(divergence_info);
         }
 
-        collector.register_leapfrog(math, start, &out, None);
+        collector.register_leapfrog(math, start, &out, None, step_size_splits);
 
         LeapfrogResult::Ok(out)
     }
@@ -568,5 +576,9 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
 
     fn step_size_mut(&mut self) -> &mut f64 {
         &mut self.step_size
+    }
+
+    fn max_energy_error(&self) -> f64 {
+        self.max_energy_error
     }
 }

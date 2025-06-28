@@ -26,18 +26,9 @@ use crate::{
     adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy, GlobalStrategyStatsOptions},
     chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
     dynamics::{TransformedHamiltonian, TransformedPointStatsOptions},
-    euclidean_hamiltonian::EuclideanHamiltonian,
     external_adapt_strategy::{ExternalTransformAdaptation, TransformedSettings},
-    mass_matrix::{
-        DiagMassMatrix, LowRankMassMatrix, LowRankMassMatrixStrategy, LowRankSettings,
-        Strategy as DiagMassMatrixStrategy,
-    },
-    math_base::Math,
-    model::Model,
-    nuts::NutsOptions,
     nuts::{NutsOptions, WalnutsOptions},
     sampler_stats::StatsDims,
-    sampler_stats::{SamplerStats, StatsDims},
     storage::{ChainStorage, StorageConfig, TraceStorage},
     transform::{
         DiagAdaptStrategy, DiagMassMatrix, ExternalTransformation, LowRankMassMatrix,
