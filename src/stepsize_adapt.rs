@@ -120,19 +120,27 @@ impl Strategy {
             .advance(self.last_sym_mean_tree_accept, self.options.target_accept);
     }
 
-    pub fn update_stepsize<M: Math>(
+    pub fn update_stepsize<M: Math, R: Rng + ?Sized>(
         &mut self,
+        rng: &mut R,
         hamiltonian: &mut impl Hamiltonian<M>,
         use_best_guess: bool,
     ) {
-        if let Some(step_size) = self.options.fixed_step_size {
-            *hamiltonian.step_size_mut() = step_size;
-            return;
-        }
-        if use_best_guess {
-            *hamiltonian.step_size_mut() = self.step_size_adapt.current_step_size_adapted();
+        let step_size = if let Some(step_size) = self.options.fixed_step_size {
+            step_size
+        } else if use_best_guess {
+            self.step_size_adapt.current_step_size_adapted()
         } else {
-            *hamiltonian.step_size_mut() = self.step_size_adapt.current_step_size();
+            self.step_size_adapt.current_step_size()
+        };
+
+        if let Some(jitter) = self.options.jitter {
+            let jitter =
+                rng.sample(Uniform::new(1.0 - jitter, 1.0 + jitter).expect("Invalid jitter"));
+            let jittered_step_size = step_size * jitter;
+            *hamiltonian.step_size_mut() = jittered_step_size;
+        } else {
+            *hamiltonian.step_size_mut() = step_size;
         }
     }
 
@@ -235,6 +243,7 @@ pub struct DualAverageSettings {
     pub initial_step: f64,
     pub params: DualAverageOptions,
     pub fixed_step_size: Option<f64>,
+    pub jitter: Option<f64>,
 }
 
 impl Default for DualAverageSettings {
@@ -244,6 +253,7 @@ impl Default for DualAverageSettings {
             initial_step: 0.1,
             params: DualAverageOptions::default(),
             fixed_step_size: None,
+            jitter: None,
         }
     }
 }
