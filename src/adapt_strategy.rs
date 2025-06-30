@@ -143,6 +143,8 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         self.step_size.update(&collector.collector1);
 
         if draw >= self.num_tune {
+            // Needed for step size jitter
+            self.step_size.update_stepsize(rng, hamiltonian, true);
             self.tuning = false;
             return Ok(());
         }
@@ -194,14 +196,14 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
                 self.step_size
                     .init(math, options, hamiltonian, &position, rng)?;
             } else {
-                self.step_size.update_stepsize(hamiltonian, false)
+                self.step_size.update_stepsize(rng, hamiltonian, false)
             }
             return Ok(());
         }
 
         self.step_size.update_estimator_late();
         let is_last = draw == self.num_tune - 1;
-        self.step_size.update_stepsize(hamiltonian, is_last);
+        self.step_size.update_stepsize(rng, hamiltonian, is_last);
         Ok(())
     }
 
