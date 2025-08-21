@@ -61,6 +61,7 @@ pub struct Progress {
     pub tuning: bool,
     pub step_size: f64,
     pub num_steps: u64,
+    pub log_p: f64
 }
 
 mod private {

@@ -99,6 +99,10 @@ impl<M: Math, P: Point<M>> State<M, P> {
     pub fn energy(&self) -> f64 {
         self.point().energy()
     }
+
+    pub fn log_p(&self) -> f64 {
+        self.point().logp()
+    }
 }
 
 impl<M: Math, P: Point<M>> Drop for State<M, P> {

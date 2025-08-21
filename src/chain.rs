@@ -194,6 +194,7 @@ where
             tuning: self.strategy.is_tuning(),
             step_size: self.hamiltonian.step_size(),
             num_steps: self.strategy.last_num_steps(),
+            log_p: state.log_p(),
         };
 
         self.strategy.adapt(
