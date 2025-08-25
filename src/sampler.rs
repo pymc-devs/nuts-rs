@@ -87,6 +87,9 @@ pub struct NutsSettings<A: Debug + Copy + Default> {
     /// The maximum tree depth during sampling. The number of leapfrog steps
     /// is smaller than 2 ^ maxdepth.
     pub maxdepth: u64,
+    /// The minimum tree depth during sampling. The number of leapfrog steps
+    /// is larger than 2 ^ mindepth.
+    pub mindepth: u64,
     /// Store the gradient in the SampleStats
     pub store_gradient: bool,
     /// Store each unconstrained parameter vector in the sampler stats
@@ -114,6 +117,7 @@ impl Default for DiagGradNutsSettings {
             num_tune: 400,
             num_draws: 1000,
             maxdepth: 10,
+            mindepth: 0,
             max_energy_error: 1000f64,
             store_gradient: false,
             store_unconstrained: false,
@@ -132,6 +136,7 @@ impl Default for LowRankNutsSettings {
             num_tune: 800,
             num_draws: 1000,
             maxdepth: 10,
+            mindepth: 0,
             max_energy_error: 1000f64,
             store_gradient: false,
             store_unconstrained: false,
@@ -152,6 +157,7 @@ impl Default for TransformedNutsSettings {
             num_tune: 1500,
             num_draws: 1000,
             maxdepth: 10,
+            mindepth: 0,
             max_energy_error: 20f64,
             store_gradient: false,
             store_unconstrained: false,
@@ -187,6 +193,7 @@ impl Settings for LowRankNutsSettings {
 
         let options = NutsOptions {
             maxdepth: self.maxdepth,
+            mindepth: self.mindepth,
             store_gradient: self.store_gradient,
             store_divergences: self.store_divergences,
             store_unconstrained: self.store_unconstrained,
@@ -246,6 +253,7 @@ impl Settings for DiagGradNutsSettings {
 
         let options = NutsOptions {
             maxdepth: self.maxdepth,
+            mindepth: self.mindepth,
             store_gradient: self.store_gradient,
             store_divergences: self.store_divergences,
             store_unconstrained: self.store_unconstrained,
@@ -302,6 +310,7 @@ impl Settings for TransformedNutsSettings {
 
         let options = NutsOptions {
             maxdepth: self.maxdepth,
+            mindepth: self.mindepth,
             store_gradient: self.store_gradient,
             store_divergences: self.store_divergences,
             store_unconstrained: self.store_unconstrained,
