@@ -250,6 +250,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
 
 pub struct NutsOptions {
     pub maxdepth: u64,
+    pub mindepth: u64,
     pub store_gradient: bool,
     pub store_unconstrained: bool,
     pub check_turning: bool,
@@ -286,9 +287,13 @@ where
         tree = match tree.extend(math, rng, hamiltonian, direction, collector, options) {
             ExtendResult::Ok(tree) => tree,
             ExtendResult::Turning(tree) => {
-                let info = tree.info(false, None);
-                collector.register_draw(math, &tree.draw, &info);
-                return Ok((tree.draw, info));
+                if tree.depth < options.mindepth {
+                    tree
+                } else {
+                    let info = tree.info(false, None);
+                    collector.register_draw(math, &tree.draw, &info);
+                    return Ok((tree.draw, info));
+                }
             }
             ExtendResult::Diverging(tree, info) => {
                 let info = tree.info(false, Some(info));

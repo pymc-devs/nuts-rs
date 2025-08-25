@@ -501,6 +501,7 @@ mod test {
             EuclideanHamiltonian::new(&mut math, mass_matrix, max_energy_error, step_size);
         let options = NutsOptions {
             maxdepth: 10u64,
+            mindepth: 0,
             store_gradient: true,
             store_unconstrained: true,
             check_turning: true,
