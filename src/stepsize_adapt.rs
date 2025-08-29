@@ -254,7 +254,7 @@ impl Default for DualAverageSettings {
             initial_step: 0.1,
             params: DualAverageOptions::default(),
             fixed_step_size: None,
-            jitter: None,
+            jitter: Some(0.1),
         }
     }
 }
