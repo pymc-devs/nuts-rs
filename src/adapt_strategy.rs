@@ -14,10 +14,10 @@ use crate::{
     sampler::Settings,
     sampler_stats::{SamplerStats, StatTraceBuilder},
     state::State,
-    stepsize::AcceptanceRateCollector,
     stepsize_adapt::{
-        DualAverageSettings, StatsBuilder as StepSizeStatsBuilder, Strategy as StepSizeStrategy,
+        StatsBuilder as StepSizeStatsBuilder, StepSizeSettings, Strategy as StepSizeStrategy,
     },
+    stepsize_dual_avg::AcceptanceRateCollector,
     NutsError,
 };
 
@@ -38,7 +38,7 @@ pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct EuclideanAdaptOptions<S: Debug + Default> {
-    pub dual_average_options: DualAverageSettings,
+    pub step_size_settings: StepSizeSettings,
     pub mass_matrix_options: S,
     pub early_window: f64,
     pub step_size_window: f64,
@@ -50,7 +50,7 @@ pub struct EuclideanAdaptOptions<S: Debug + Default> {
 impl<S: Debug + Default> Default for EuclideanAdaptOptions<S> {
     fn default() -> Self {
         Self {
-            dual_average_options: DualAverageSettings::default(),
+            step_size_settings: StepSizeSettings::default(),
             mass_matrix_options: S::default(),
             early_window: 0.3,
             step_size_window: 0.15,
@@ -97,7 +97,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         assert!(early_end < num_tune);
 
         Self {
-            step_size: StepSizeStrategy::new(options.dual_average_options),
+            step_size: StepSizeStrategy::new(options.step_size_settings),
             mass_matrix: A::new(math, options.mass_matrix_options, num_tune, chain),
             options,
             num_tune,
