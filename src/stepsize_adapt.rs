@@ -3,6 +3,7 @@ use arrow::{
     datatypes::{DataType, Field, Float64Type, UInt64Type},
 };
 use rand::Rng;
+use rand_distr::Uniform;
 
 use crate::{
     hamiltonian::{Direction, Hamiltonian, LeapfrogResult, Point},
