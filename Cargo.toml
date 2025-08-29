@@ -5,7 +5,7 @@ authors = [
   "Adrian Seyboldt <adrian.seyboldt@gmail.com>",
   "PyMC Developers <pymc.devs@gmail.com>",
 ]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 repository = "https://github.com/pymc-devs/nuts-rs"
 keywords = ["statistics", "bayes"]
@@ -22,12 +22,21 @@ rand = { version = "0.9.0", features = ["small_rng"] }
 rand_distr = "0.5.0"
 itertools = "0.14.0"
 thiserror = "2.0.3"
-arrow = { version = "56.1.0", default-features = false, features = ["ffi"] }
 rand_chacha = "0.9.0"
 anyhow = "1.0.72"
 faer = { version = "0.22.6", default-features = false, features = ["linalg"] }
 pulp = "0.21.4"
 rayon = "1.10.0"
+zarrs = { version = "0.21.0", features = [
+  "filesystem",
+  "gzip",
+  "sharding",
+], optional = true }
+ndarray = { version = "0.16.1", optional = true }
+nuts-derive = { path = "./nuts-derive" }
+nuts-storable = { path = "./nuts-storable" }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0"
 
 [dev-dependencies]
 proptest = "1.6.0"
@@ -35,9 +44,17 @@ pretty_assertions = "1.4.0"
 criterion = "0.7.0"
 nix = { version = "0.30.0", features = ["sched"] }
 approx = "0.5.1"
-ndarray = "0.16.1"
 equator = "0.4.2"
+serde_json = "1.0"
+ndarray = "0.16.1"
+tempfile = "3.0"
+
+[features]
+zarr = ["dep:zarrs"]
+ndarray = ["dep:ndarray"]
 
 [[bench]]
 name = "sample"
 harness = false
+
+[workspace]

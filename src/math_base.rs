@@ -1,5 +1,8 @@
 use std::{error::Error, fmt::Debug};
 
+use nuts_storable::{HasDims, Storable, Value};
+use rand::Rng;
+
 /// Errors that happen when we evaluate the logp and gradient function
 pub trait LogpError: std::error::Error + Send {
     /// Unrecoverable errors during logp computation stop sampling,
@@ -7,13 +10,14 @@ pub trait LogpError: std::error::Error + Send {
     fn is_recoverable(&self) -> bool;
 }
 
-pub trait Math {
+pub trait Math: HasDims {
     type Vector: Debug;
     type EigVectors: Debug;
     type EigValues: Debug;
     type LogpErr: Debug + Send + Sync + LogpError + Sized + 'static;
     type Err: Debug + Send + Sync + Error + 'static;
-    type TransformParams;
+    type FlowParameters;
+    type ExpandedVector: Storable<Self>;
 
     fn new_array(&mut self) -> Self::Vector;
 
@@ -45,7 +49,26 @@ pub trait Math {
 
     fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, Self::LogpErr>;
 
+    fn init_position<R: Rng + ?Sized>(
+        &mut self,
+        rng: &mut R,
+        position: &mut Self::Vector,
+        gradient: &mut Self::Vector,
+    ) -> Result<f64, Self::LogpErr>;
+
+    /// Expand a vector into a larger representation, to for instance
+    /// compute deterministic values that are to be stored in the trace.
+    fn expand_vector<R: Rng + ?Sized>(
+        &mut self,
+        rng: &mut R,
+        array: &Self::Vector,
+    ) -> Result<Self::ExpandedVector, Self::Err>;
+
     fn dim(&self) -> usize;
+
+    fn vector_coord(&self) -> Option<Value> {
+        None
+    }
 
     fn scalar_prods3(
         &mut self,
@@ -144,7 +167,7 @@ pub trait Math {
 
     fn inv_transform_normalize(
         &mut self,
-        params: &Self::TransformParams,
+        params: &Self::FlowParameters,
         untransformed_position: &Self::Vector,
         untransofrmed_gradient: &Self::Vector,
         transformed_position: &mut Self::Vector,
@@ -153,7 +176,7 @@ pub trait Math {
 
     fn init_from_untransformed_position(
         &mut self,
-        params: &Self::TransformParams,
+        params: &Self::FlowParameters,
         untransformed_position: &Self::Vector,
         untransformed_gradient: &mut Self::Vector,
         transformed_position: &mut Self::Vector,
@@ -162,7 +185,7 @@ pub trait Math {
 
     fn init_from_transformed_position(
         &mut self,
-        params: &Self::TransformParams,
+        params: &Self::FlowParameters,
         untransformed_position: &mut Self::Vector,
         untransformed_gradient: &mut Self::Vector,
         transformed_position: &Self::Vector,
@@ -175,7 +198,7 @@ pub trait Math {
         untransformed_positions: impl ExactSizeIterator<Item = &'a Self::Vector>,
         untransformed_gradients: impl ExactSizeIterator<Item = &'a Self::Vector>,
         untransformed_logps: impl ExactSizeIterator<Item = &'a f64>,
-        params: &'a mut Self::TransformParams,
+        params: &'a mut Self::FlowParameters,
     ) -> Result<(), Self::LogpErr>;
 
     fn new_transformation<R: rand::Rng + ?Sized>(
@@ -184,7 +207,7 @@ pub trait Math {
         untransformed_position: &Self::Vector,
         untransfogmed_gradient: &Self::Vector,
         chain: u64,
-    ) -> Result<Self::TransformParams, Self::LogpErr>;
+    ) -> Result<Self::FlowParameters, Self::LogpErr>;
 
-    fn transformation_id(&self, params: &Self::TransformParams) -> Result<i64, Self::LogpErr>;
+    fn transformation_id(&self, params: &Self::FlowParameters) -> Result<i64, Self::LogpErr>;
 }

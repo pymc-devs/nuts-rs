@@ -1,19 +1,18 @@
-use arrow::array::StructArray;
+use nuts_derive::Storable;
+use serde::Serialize;
 
 use crate::adapt_strategy::CombinedCollector;
 use crate::chain::AdaptStrategy;
 use crate::hamiltonian::{Hamiltonian, Point};
 use crate::nuts::{Collector, NutsOptions, SampleInfo};
-use crate::sampler_stats::{SamplerStats, StatTraceBuilder};
+use crate::sampler_stats::SamplerStats;
 use crate::state::State;
-use crate::stepsize_adapt::{
-    StatsBuilder as StepSizeStatsBuilder, StepSizeSettings, Strategy as StepSizeStrategy,
-};
+use crate::stepsize_adapt::{StepSizeSettings, Strategy as StepSizeStrategy};
 use crate::stepsize_dual_avg::AcceptanceRateCollector;
 use crate::transformed_hamiltonian::TransformedHamiltonian;
-use crate::{Math, NutsError, Settings};
+use crate::{Math, NutsError};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub struct TransformedSettings {
     pub step_size_window: f64,
     pub transform_update_freq: u64,
@@ -43,39 +42,15 @@ pub struct TransformAdaptation {
     chain: u64,
 }
 
-pub struct Builder {
-    step_size: StepSizeStatsBuilder,
-}
-
-impl<M: Math> StatTraceBuilder<M, TransformAdaptation> for Builder {
-    fn append_value(&mut self, math: Option<&mut M>, value: &TransformAdaptation) {
-        let Self { step_size } = self;
-        step_size.append_value(math, &value.step_size);
-    }
-
-    fn finalize(self) -> Option<StructArray> {
-        let Self { step_size } = self;
-        <StepSizeStatsBuilder as StatTraceBuilder<M, _>>::finalize(step_size)
-    }
-
-    fn inspect(&self) -> Option<StructArray> {
-        let Self { step_size } = self;
-        <StepSizeStatsBuilder as StatTraceBuilder<M, _>>::inspect(step_size)
-    }
-}
+#[derive(Debug, Storable)]
+pub struct Stats {}
 
 impl<M: Math> SamplerStats<M> for TransformAdaptation {
-    type Builder = Builder;
-    type StatOptions = ();
+    type Stats = Stats;
+    type StatsOptions = ();
 
-    fn new_builder(
-        &self,
-        _stat_options: Self::StatOptions,
-        settings: &impl Settings,
-        dim: usize,
-    ) -> Self::Builder {
-        let step_size = SamplerStats::<M>::new_builder(&self.step_size, (), settings, dim);
-        Builder { step_size }
+    fn extract_stats(&self, _math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
+        Stats {}
     }
 }
 

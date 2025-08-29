@@ -1,14 +1,16 @@
 use std::marker::PhantomData;
 
+use nuts_derive::Storable;
 use rand::Rng;
+use serde::Serialize;
 
 use crate::{
+    Math, NutsError,
     euclidean_hamiltonian::EuclideanPoint,
     hamiltonian::Point,
     mass_matrix::{DiagMassMatrix, DrawGradCollector, MassMatrix, RunningVariance},
     nuts::{Collector, NutsOptions},
     sampler_stats::SamplerStats,
-    Math, NutsError, Settings,
 };
 const LOWER_LIMIT: f64 = 1e-20f64;
 const UPPER_LIMIT: f64 = 1e20f64;
@@ -17,7 +19,7 @@ const INIT_LOWER_LIMIT: f64 = 1e-20f64;
 const INIT_UPPER_LIMIT: f64 = 1e20f64;
 
 /// Settings for mass matrix adaptation
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub struct DiagAdaptExpSettings {
     pub store_mass_matrix: bool,
     pub use_grad_based_estimate: bool,
@@ -39,6 +41,18 @@ pub struct Strategy<M: Math> {
     exp_variance_draw_bg: RunningVariance<M>,
     _settings: DiagAdaptExpSettings,
     _phantom: PhantomData<M>,
+}
+
+#[derive(Debug, Storable)]
+pub struct Stats {}
+
+impl<M: Math> SamplerStats<M> for Strategy<M> {
+    type Stats = Stats;
+    type StatsOptions = ();
+
+    fn extract_stats(&self, _math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
+        Stats {}
+    }
 }
 
 pub trait MassMatrixAdaptStrategy<M: Math>: SamplerStats<M> {
@@ -163,20 +177,5 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
 
     fn new_collector(&self, math: &mut M) -> Self::Collector {
         DrawGradCollector::new(math)
-    }
-}
-
-pub type StatsBuilder = ();
-
-impl<M: Math> SamplerStats<M> for Strategy<M> {
-    type Builder = StatsBuilder;
-    type StatOptions = ();
-
-    fn new_builder(
-        &self,
-        _stat_options: Self::StatOptions,
-        _settings: &impl Settings,
-        _dim: usize,
-    ) -> Self::Builder {
     }
 }

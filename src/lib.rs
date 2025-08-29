@@ -10,9 +10,10 @@
 //!
 //! ```
 //! use nuts_rs::{CpuLogpFunc, CpuMath, LogpError, DiagGradNutsSettings, Chain, Progress,
-//! Settings};
+//! Settings, HasDims};
 //! use thiserror::Error;
 //! use rand::thread_rng;
+//! use std::collections::HashMap;
 //!
 //! // Define a function that computes the unnormalized posterior density
 //! // and its gradient.
@@ -26,11 +27,18 @@
 //!     fn is_recoverable(&self) -> bool { false }
 //! }
 //!
+//! impl HasDims for PosteriorDensity {
+//!     fn dim_sizes(&self) -> HashMap<String, u64> {
+//!         vec![("unconstrained_parameter".to_string(), self.dim() as u64)].into_iter().collect()
+//!     }
+//! }
+//!
 //! impl CpuLogpFunc for PosteriorDensity {
 //!     type LogpError = PosteriorLogpError;
+//!     type ExpandedVector = Vec<f64>;
 //!
 //!     // Only used for transforming adaptation.
-//!     type TransformParams = ();
+//!     type FlowParameters = ();
 //!
 //!     // We define a 10 dimensional normal distribution
 //!     fn dim(&self) -> usize { 10 }
@@ -49,6 +57,10 @@
 //!             })
 //!             .sum();
 //!         return Ok(logp)
+//!     }
+//!
+//!     fn expand_vector<R: rand::Rng + ?Sized>(&mut self, rng: &mut R, position: &[f64]) -> Result<Vec<f64>, nuts_rs::CpuMathError> {
+//!         Ok(position.to_vec())
 //!     }
 //! }
 //!
@@ -78,6 +90,8 @@
 //!
 //! Users can also implement the `Model` trait for more control and parallel sampling.
 //!
+//! See the examples directory in the repository for more examples.
+//!
 //! ## Implementation details
 //!
 //! This crate mostly follows the implementation of NUTS in [Stan](https://mc-stan.org) and
@@ -87,13 +101,18 @@
 mod adapt_strategy;
 mod chain;
 mod cpu_math;
+mod csv_storage;
 mod euclidean_hamiltonian;
 mod hamiltonian;
+mod hashmap_storage;
 mod low_rank_mass_matrix;
 mod mass_matrix;
 mod mass_matrix_adapt;
 mod math;
 mod math_base;
+mod model;
+#[cfg(feature = "ndarray")]
+mod ndarray_storage;
 mod nuts;
 mod sampler;
 mod sampler_stats;
@@ -101,23 +120,39 @@ mod state;
 mod stepsize_adam;
 mod stepsize_adapt;
 mod stepsize_dual_avg;
+mod storage;
 mod transform_adapt_strategy;
 mod transformed_hamiltonian;
+#[cfg(feature = "zarr")]
+mod zarr_storage;
+
+pub use nuts_derive::Storable;
+pub use nuts_storable::{HasDims, ItemType, Storable, Value};
 
 pub use adapt_strategy::EuclideanAdaptOptions;
 pub use chain::Chain;
-pub use cpu_math::{CpuLogpFunc, CpuMath};
+pub use cpu_math::{CpuLogpFunc, CpuMath, CpuMathError};
 pub use hamiltonian::DivergenceInfo;
 pub use math_base::{LogpError, Math};
+pub use model::Model;
 pub use nuts::NutsError;
 pub use sampler::{
-    sample_sequentially, ChainOutput, ChainProgress, DiagGradNutsSettings, DrawStorage,
-    LowRankNutsSettings, Model, NutsSettings, Progress, ProgressCallback, Sampler,
-    SamplerWaitResult, Settings, Trace, TransformedNutsSettings,
+    ChainProgress, DiagGradNutsSettings, LowRankNutsSettings, NutsSettings, Progress,
+    ProgressCallback, Sampler, SamplerWaitResult, Settings, TransformedNutsSettings,
+    sample_sequentially,
 };
+pub use sampler_stats::SamplerStats;
 
 pub use low_rank_mass_matrix::LowRankSettings;
 pub use mass_matrix_adapt::DiagAdaptExpSettings;
 pub use stepsize_adam::AdamOptions;
 pub use stepsize_adapt::{StepSizeAdaptMethod, StepSizeAdaptOptions, StepSizeSettings};
 pub use transform_adapt_strategy::TransformedSettings;
+
+#[cfg(feature = "zarr")]
+pub use zarr_storage::{ZarrConfig, ZarrTraceStorage};
+
+pub use csv_storage::{CsvConfig, CsvTraceStorage};
+pub use hashmap_storage::{HashMapConfig, HashMapValue};
+#[cfg(feature = "ndarray")]
+pub use ndarray_storage::{NdarrayConfig, NdarrayTrace, NdarrayValue};

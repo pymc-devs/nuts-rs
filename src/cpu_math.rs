@@ -1,7 +1,8 @@
-use std::{error::Error, fmt::Debug, mem::replace};
+use std::{collections::HashMap, error::Error, fmt::Debug, mem::replace};
 
 use faer::{Col, Mat};
-use itertools::{izip, Itertools};
+use itertools::{Itertools, izip};
+use nuts_storable::{HasDims, Storable, Value};
 use thiserror::Error;
 
 use crate::{
@@ -27,6 +28,38 @@ impl<F: CpuLogpFunc> CpuMath<F> {
 pub enum CpuMathError {
     #[error("Error during array operation")]
     ArrayError(),
+    #[error("Error during point expansion")]
+    ExpandError(),
+}
+
+impl<F: CpuLogpFunc> HasDims for CpuMath<F> {
+    fn dim_sizes(&self) -> HashMap<String, u64> {
+        self.logp_func.dim_sizes()
+    }
+
+    fn coords(&self) -> HashMap<String, nuts_storable::Value> {
+        self.logp_func.coords()
+    }
+}
+
+pub struct ExpandedVectorWrapper<F: CpuLogpFunc>(F::ExpandedVector);
+
+impl<F: CpuLogpFunc> Storable<CpuMath<F>> for ExpandedVectorWrapper<F> {
+    fn names(parent: &CpuMath<F>) -> Vec<&str> {
+        F::ExpandedVector::names(&parent.logp_func)
+    }
+
+    fn item_type(parent: &CpuMath<F>, item: &str) -> nuts_storable::ItemType {
+        F::ExpandedVector::item_type(&parent.logp_func, item)
+    }
+
+    fn dims<'a>(parent: &'a CpuMath<F>, item: &str) -> Vec<&'a str> {
+        F::ExpandedVector::dims(&parent.logp_func, item)
+    }
+
+    fn get_all(&self, parent: &CpuMath<F>) -> Vec<(&str, Option<nuts_storable::Value>)> {
+        self.0.get_all(&parent.logp_func)
+    }
 }
 
 impl<F: CpuLogpFunc> Math for CpuMath<F> {
@@ -35,7 +68,8 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     type EigValues = Col<f64>;
     type LogpErr = F::LogpError;
     type Err = CpuMathError;
-    type TransformParams = F::TransformParams;
+    type FlowParameters = F::FlowParameters;
+    type ExpandedVector = ExpandedVectorWrapper<F>;
 
     fn new_array(&mut self) -> Self::Vector {
         Col::zeros(self.dim())
@@ -92,6 +126,54 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
 
     fn dim(&self) -> usize {
         self.logp_func.dim()
+    }
+
+    fn expand_vector<R: rand::Rng + ?Sized>(
+        &mut self,
+        rng: &mut R,
+        array: &Self::Vector,
+    ) -> Result<Self::ExpandedVector, Self::Err> {
+        Ok(ExpandedVectorWrapper(
+            self.logp_func.expand_vector(
+                rng,
+                array
+                    .try_as_col_major()
+                    .ok_or(CpuMathError::ExpandError())?
+                    .as_slice(),
+            )?,
+        ))
+    }
+
+    fn vector_coord(&self) -> Option<Value> {
+        self.logp_func.vector_coord()
+    }
+
+    fn init_position<R: rand::Rng + ?Sized>(
+        &mut self,
+        rng: &mut R,
+        position: &mut Self::Vector,
+        gradient: &mut Self::Vector,
+    ) -> Result<f64, Self::LogpErr> {
+        let pos = position
+            .try_as_col_major_mut()
+            .expect("Array is not contiguous")
+            .as_slice_mut();
+
+        pos.iter_mut().for_each(|x| {
+            let val: f64 = rng.random();
+            *x = val * 2f64 - 1f64
+        });
+
+        self.logp_func.logp(
+            position
+                .try_as_col_major()
+                .expect("Array is not contiguous")
+                .as_slice(),
+            gradient
+                .try_as_col_major_mut()
+                .expect("Array is not contiguous")
+                .as_slice_mut(),
+        )
     }
 
     fn scalar_prods3(
@@ -424,7 +506,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
 
     fn inv_transform_normalize(
         &mut self,
-        params: &Self::TransformParams,
+        params: &Self::FlowParameters,
         untransformed_position: &Self::Vector,
         untransofrmed_gradient: &Self::Vector,
         transformed_position: &mut Self::Vector,
@@ -453,7 +535,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
 
     fn init_from_untransformed_position(
         &mut self,
-        params: &Self::TransformParams,
+        params: &Self::FlowParameters,
         untransformed_position: &Self::Vector,
         untransformed_gradient: &mut Self::Vector,
         transformed_position: &mut Self::Vector,
@@ -482,7 +564,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
 
     fn init_from_transformed_position(
         &mut self,
-        params: &Self::TransformParams,
+        params: &Self::FlowParameters,
         untransformed_position: &mut Self::Vector,
         untransformed_gradient: &mut Self::Vector,
         transformed_position: &Self::Vector,
@@ -512,7 +594,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         untransformed_positions: impl ExactSizeIterator<Item = &'a Self::Vector>,
         untransformed_gradients: impl ExactSizeIterator<Item = &'a Self::Vector>,
         untransformed_logp: impl ExactSizeIterator<Item = &'a f64>,
-        params: &'a mut Self::TransformParams,
+        params: &'a mut Self::FlowParameters,
     ) -> Result<(), Self::LogpErr> {
         self.logp_func.update_transformation(
             rng,
@@ -529,7 +611,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         untransformed_position: &Self::Vector,
         untransfogmed_gradient: &Self::Vector,
         chain: u64,
-    ) -> Result<Self::TransformParams, Self::LogpErr> {
+    ) -> Result<Self::FlowParameters, Self::LogpErr> {
         self.logp_func.new_transformation(
             rng,
             untransformed_position
@@ -544,21 +626,33 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         )
     }
 
-    fn transformation_id(&self, params: &Self::TransformParams) -> Result<i64, Self::LogpErr> {
+    fn transformation_id(&self, params: &Self::FlowParameters) -> Result<i64, Self::LogpErr> {
         self.logp_func.transformation_id(params)
     }
 }
 
-pub trait CpuLogpFunc {
+pub trait CpuLogpFunc: HasDims {
     type LogpError: Debug + Send + Sync + Error + LogpError + 'static;
-    type TransformParams;
+    type FlowParameters;
+    type ExpandedVector: Storable<Self>;
 
     fn dim(&self) -> usize;
     fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, Self::LogpError>;
+    fn expand_vector<R>(
+        &mut self,
+        rng: &mut R,
+        array: &[f64],
+    ) -> Result<Self::ExpandedVector, CpuMathError>
+    where
+        R: rand::Rng + ?Sized;
+
+    fn vector_coord(&self) -> Option<Value> {
+        None
+    }
 
     fn inv_transform_normalize(
         &mut self,
-        _params: &Self::TransformParams,
+        _params: &Self::FlowParameters,
         _untransformed_position: &[f64],
         _untransformed_gradient: &[f64],
         _transformed_position: &mut [f64],
@@ -569,7 +663,7 @@ pub trait CpuLogpFunc {
 
     fn init_from_untransformed_position(
         &mut self,
-        _params: &Self::TransformParams,
+        _params: &Self::FlowParameters,
         _untransformed_position: &[f64],
         _untransformed_gradient: &mut [f64],
         _transformed_position: &mut [f64],
@@ -580,7 +674,7 @@ pub trait CpuLogpFunc {
 
     fn init_from_transformed_position(
         &mut self,
-        _params: &Self::TransformParams,
+        _params: &Self::FlowParameters,
         _untransformed_position: &mut [f64],
         _untransformed_gradient: &mut [f64],
         _transformed_position: &[f64],
@@ -595,7 +689,7 @@ pub trait CpuLogpFunc {
         _untransformed_positions: impl ExactSizeIterator<Item = &'a [f64]>,
         _untransformed_gradients: impl ExactSizeIterator<Item = &'a [f64]>,
         _untransformed_logp: impl ExactSizeIterator<Item = &'a f64>,
-        _params: &'a mut Self::TransformParams,
+        _params: &'a mut Self::FlowParameters,
     ) -> Result<(), Self::LogpError> {
         unimplemented!()
     }
@@ -606,11 +700,20 @@ pub trait CpuLogpFunc {
         _untransformed_position: &[f64],
         _untransformed_gradient: &[f64],
         _chain: u64,
-    ) -> Result<Self::TransformParams, Self::LogpError> {
+    ) -> Result<Self::FlowParameters, Self::LogpError> {
         unimplemented!()
     }
 
-    fn transformation_id(&self, _params: &Self::TransformParams) -> Result<i64, Self::LogpError> {
+    fn transformation_id(&self, _params: &Self::FlowParameters) -> Result<i64, Self::LogpError> {
         unimplemented!()
+    }
+}
+
+impl<M: CpuLogpFunc + Clone> Clone for CpuMath<M> {
+    fn clone(&self) -> Self {
+        Self {
+            logp_func: self.logp_func.clone(),
+            arch: self.arch,
+        }
     }
 }

@@ -1,24 +1,22 @@
-use std::{fmt::Debug, marker::PhantomData, ops::Deref};
+use std::{fmt::Debug, marker::PhantomData};
 
-use arrow::array::StructArray;
-use itertools::Itertools;
+use nuts_derive::Storable;
+use nuts_storable::{HasDims, Storable};
 use rand::Rng;
+use serde::Serialize;
 
 use crate::{
+    NutsError,
     chain::AdaptStrategy,
     euclidean_hamiltonian::EuclideanHamiltonian,
     hamiltonian::{DivergenceInfo, Hamiltonian, Point},
     mass_matrix_adapt::MassMatrixAdaptStrategy,
     math_base::Math,
     nuts::{Collector, NutsOptions},
-    sampler::Settings,
-    sampler_stats::{SamplerStats, StatTraceBuilder},
+    sampler_stats::{SamplerStats, StatsDims},
     state::State,
-    stepsize_adapt::{
-        StatsBuilder as StepSizeStatsBuilder, StepSizeSettings, Strategy as StepSizeStrategy,
-    },
+    stepsize_adapt::{StepSizeSettings, Strategy as StepSizeStrategy},
     stepsize_dual_avg::AcceptanceRateCollector,
-    NutsError,
 };
 
 pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
@@ -36,7 +34,7 @@ pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
     last_update: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct EuclideanAdaptOptions<S: Debug + Default> {
     pub step_size_settings: StepSizeSettings,
     pub mass_matrix_options: S,
@@ -57,23 +55,6 @@ impl<S: Debug + Default> Default for EuclideanAdaptOptions<S> {
             mass_matrix_switch_freq: 80,
             early_mass_matrix_switch_freq: 10,
             mass_matrix_update_freq: 1,
-        }
-    }
-}
-
-impl<M: Math, A: MassMatrixAdaptStrategy<M>> SamplerStats<M> for GlobalStrategy<M, A> {
-    type Builder = GlobalStrategyBuilder<A::Builder>;
-    type StatOptions = <A as SamplerStats<M>>::StatOptions;
-
-    fn new_builder(
-        &self,
-        options: Self::StatOptions,
-        settings: &impl Settings,
-        dim: usize,
-    ) -> Self::Builder {
-        GlobalStrategyBuilder {
-            step_size: SamplerStats::<M>::new_builder(&self.step_size, (), settings, dim),
-            mass_matrix: self.mass_matrix.new_builder(options, settings, dim),
         }
     }
 }
@@ -223,77 +204,46 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
     }
 }
 
-pub struct GlobalStrategyBuilder<B> {
-    pub step_size: StepSizeStatsBuilder,
-    pub mass_matrix: B,
+#[derive(Debug, Storable)]
+pub struct GlobalStrategyStats<P: HasDims, S: Storable<P>, M: Storable<P>> {
+    #[storable(flatten)]
+    pub step_size: S,
+    #[storable(flatten)]
+    pub mass_matrix: M,
+    #[storable(ignore)]
+    _phantom: std::marker::PhantomData<fn() -> P>,
 }
 
-impl<M: Math, A> StatTraceBuilder<M, GlobalStrategy<M, A>> for GlobalStrategyBuilder<A::Builder>
+#[derive(Debug)]
+pub struct GlobalStrategyStatsOptions<M: Math, A: MassMatrixAdaptStrategy<M>> {
+    pub step_size: (),
+    pub mass_matrix: A::StatsOptions,
+}
+
+impl<M: Math, A: MassMatrixAdaptStrategy<M>> Clone for GlobalStrategyStatsOptions<M, A> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<M: Math, A: MassMatrixAdaptStrategy<M>> Copy for GlobalStrategyStatsOptions<M, A> {}
+
+impl<M: Math, A> SamplerStats<M> for GlobalStrategy<M, A>
 where
     A: MassMatrixAdaptStrategy<M>,
 {
-    fn append_value(&mut self, math: Option<&mut M>, value: &GlobalStrategy<M, A>) {
-        let math = math.expect("Smapler stats need math");
-        self.step_size.append_value(Some(math), &value.step_size);
-        self.mass_matrix
-            .append_value(Some(math), &value.mass_matrix);
-    }
+    type Stats =
+        GlobalStrategyStats<StatsDims, <StepSizeStrategy as SamplerStats<M>>::Stats, A::Stats>;
+    type StatsOptions = GlobalStrategyStatsOptions<M, A>;
 
-    fn finalize(self) -> Option<StructArray> {
-        let Self {
-            step_size,
-            mass_matrix,
-        } = self;
-        match (
-            StatTraceBuilder::<M, _>::finalize(step_size),
-            mass_matrix.finalize(),
-        ) {
-            (None, None) => None,
-            (Some(stats1), None) => Some(stats1),
-            (None, Some(stats2)) => Some(stats2),
-            (Some(stats1), Some(stats2)) => {
-                let mut data1 = stats1.into_parts();
-                let data2 = stats2.into_parts();
-
-                assert!(data1.2.is_none());
-                assert!(data2.2.is_none());
-
-                let mut fields = data1.0.into_iter().map(|x| x.deref().clone()).collect_vec();
-
-                fields.extend(data2.0.into_iter().map(|x| x.deref().clone()));
-                data1.1.extend(data2.1);
-
-                Some(StructArray::new(data1.0, data1.1, None))
-            }
-        }
-    }
-
-    fn inspect(&self) -> Option<StructArray> {
-        let Self {
-            step_size,
-            mass_matrix,
-        } = self;
-        match (
-            StatTraceBuilder::<M, _>::inspect(step_size),
-            mass_matrix.inspect(),
-        ) {
-            (None, None) => None,
-            (Some(stats1), None) => Some(stats1),
-            (None, Some(stats2)) => Some(stats2),
-            (Some(stats1), Some(stats2)) => {
-                let mut data1 = stats1.into_parts();
-                let data2 = stats2.into_parts();
-
-                assert!(data1.2.is_none());
-                assert!(data2.2.is_none());
-
-                let mut fields = data1.0.into_iter().map(|x| x.deref().clone()).collect_vec();
-
-                fields.extend(data2.0.into_iter().map(|x| x.deref().clone()));
-                data1.1.extend(data2.1);
-
-                Some(StructArray::new(data1.0, data1.1, None))
-            }
+    fn extract_stats(&self, math: &mut M, opt: Self::StatsOptions) -> Self::Stats {
+        GlobalStrategyStats {
+            step_size: {
+                let _: () = opt.step_size;
+                self.step_size.extract_stats(math, ())
+            },
+            mass_matrix: self.mass_matrix.extract_stats(math, opt.mass_matrix),
+            _phantom: PhantomData,
         }
     }
 }
@@ -366,7 +316,10 @@ where
 
 #[cfg(test)]
 pub mod test_logps {
+    use std::collections::HashMap;
+
     use crate::{cpu_math::CpuLogpFunc, math_base::LogpError};
+    use nuts_storable::HasDims;
     use thiserror::Error;
 
     #[derive(Clone, Debug)]
@@ -390,9 +343,18 @@ pub mod test_logps {
         }
     }
 
+    impl HasDims for NormalLogp {
+        fn dim_sizes(&self) -> HashMap<String, u64> {
+            vec![("unconstrained_parameter".to_string(), self.dim as u64)]
+                .into_iter()
+                .collect()
+        }
+    }
+
     impl CpuLogpFunc for NormalLogp {
         type LogpError = NormalLogpError;
-        type TransformParams = ();
+        type FlowParameters = ();
+        type ExpandedVector = Vec<f64>;
 
         fn dim(&self) -> usize {
             self.dim
@@ -410,9 +372,20 @@ pub mod test_logps {
             Ok(logp)
         }
 
+        fn expand_vector<R>(
+            &mut self,
+            _rng: &mut R,
+            array: &[f64],
+        ) -> Result<Self::ExpandedVector, crate::cpu_math::CpuMathError>
+        where
+            R: rand::Rng + ?Sized,
+        {
+            Ok(array.to_vec())
+        }
+
         fn inv_transform_normalize(
             &mut self,
-            _params: &Self::TransformParams,
+            _params: &Self::FlowParameters,
             _untransformed_position: &[f64],
             _untransofrmed_gradient: &[f64],
             _transformed_position: &mut [f64],
@@ -423,7 +396,7 @@ pub mod test_logps {
 
         fn init_from_transformed_position(
             &mut self,
-            _params: &Self::TransformParams,
+            _params: &Self::FlowParameters,
             _untransformed_position: &mut [f64],
             _untransformed_gradient: &mut [f64],
             _transformed_position: &[f64],
@@ -434,7 +407,7 @@ pub mod test_logps {
 
         fn init_from_untransformed_position(
             &mut self,
-            _params: &Self::TransformParams,
+            _params: &Self::FlowParameters,
             _untransformed_position: &[f64],
             _untransformed_gradient: &mut [f64],
             _transformed_position: &mut [f64],
@@ -449,7 +422,7 @@ pub mod test_logps {
             _untransformed_positions: impl Iterator<Item = &'a [f64]>,
             _untransformed_gradients: impl Iterator<Item = &'a [f64]>,
             _untransformed_logp: impl Iterator<Item = &'a f64>,
-            _params: &'a mut Self::TransformParams,
+            _params: &'a mut Self::FlowParameters,
         ) -> Result<(), Self::LogpError> {
             unimplemented!()
         }
@@ -460,13 +433,13 @@ pub mod test_logps {
             _untransformed_position: &[f64],
             _untransfogmed_gradient: &[f64],
             _chain: u64,
-        ) -> Result<Self::TransformParams, Self::LogpError> {
+        ) -> Result<Self::FlowParameters, Self::LogpError> {
             unimplemented!()
         }
 
         fn transformation_id(
             &self,
-            _params: &Self::TransformParams,
+            _params: &Self::FlowParameters,
         ) -> Result<i64, Self::LogpError> {
             unimplemented!()
         }
@@ -478,8 +451,11 @@ mod test {
     use super::test_logps::NormalLogp;
     use super::*;
     use crate::{
-        chain::NutsChain, cpu_math::CpuMath, euclidean_hamiltonian::EuclideanHamiltonian,
-        mass_matrix::DiagMassMatrix, Chain, DiagAdaptExpSettings,
+        Chain, DiagAdaptExpSettings,
+        chain::{NutsChain, StatOptions},
+        cpu_math::CpuMath,
+        euclidean_hamiltonian::EuclideanHamiltonian,
+        mass_matrix::DiagMassMatrix,
     };
 
     #[test]
@@ -514,7 +490,24 @@ mod test {
         };
         let chain = 0u64;
 
-        let mut sampler = NutsChain::new(math, hamiltonian, strategy, options, rng, chain);
+        let stats_options = StatOptions {
+            adapt: GlobalStrategyStatsOptions {
+                step_size: (),
+                mass_matrix: (),
+            },
+            hamiltonian: (),
+            point: (),
+        };
+
+        let mut sampler = NutsChain::new(
+            math,
+            hamiltonian,
+            strategy,
+            options,
+            rng,
+            chain,
+            stats_options,
+        );
         sampler.set_position(&vec![1.5f64; ndim]).unwrap();
         for _ in 0..200 {
             sampler.draw().unwrap();
