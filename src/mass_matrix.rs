@@ -1,16 +1,8 @@
-use arrow::{
-    array::{ArrayBuilder, FixedSizeListBuilder, PrimitiveBuilder, StructArray},
-    datatypes::{Field, Float64Type},
-};
+use nuts_derive::Storable;
 
 use crate::{
-    euclidean_hamiltonian::EuclideanPoint,
-    hamiltonian::Point,
-    math_base::Math,
-    nuts::Collector,
-    sampler::Settings,
-    sampler_stats::{SamplerStats, StatTraceBuilder},
-    state::State,
+    euclidean_hamiltonian::EuclideanPoint, hamiltonian::Point, math_base::Math, nuts::Collector,
+    sampler_stats::SamplerStats, state::State,
 };
 
 pub trait MassMatrix<M: Math>: SamplerStats<M> {
@@ -31,68 +23,23 @@ pub struct DiagMassMatrix<M: Math> {
     store_mass_matrix: bool,
 }
 
-pub struct DiagMassMatrixStatsBuilder {
-    mass_matrix_inv: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
-}
-
-impl<M: Math> StatTraceBuilder<M, DiagMassMatrix<M>> for DiagMassMatrixStatsBuilder {
-    fn append_value(&mut self, math: Option<&mut M>, value: &DiagMassMatrix<M>) {
-        let math = math.expect("Need reference to math for stats");
-        let Self { mass_matrix_inv } = self;
-
-        if let Some(store) = mass_matrix_inv {
-            let values = math.box_array(&value.variance);
-            store.values().append_slice(&values);
-            store.append(true);
-        }
-    }
-
-    fn finalize(self) -> Option<StructArray> {
-        let Self { mass_matrix_inv } = self;
-
-        let array = ArrayBuilder::finish(&mut mass_matrix_inv?);
-
-        let fields = vec![Field::new(
-            "mass_matrix_inv",
-            array.data_type().clone(),
-            true,
-        )];
-        let arrays = vec![array];
-        Some(StructArray::new(fields.into(), arrays, None))
-    }
-
-    fn inspect(&self) -> Option<StructArray> {
-        let Self { mass_matrix_inv } = self;
-
-        let array = ArrayBuilder::finish_cloned(mass_matrix_inv.as_ref()?);
-        let fields = vec![Field::new(
-            "mass_matrix_inv",
-            array.data_type().clone(),
-            true,
-        )];
-        let arrays = vec![array];
-        Some(StructArray::new(fields.into(), arrays, None))
-    }
+#[derive(Debug, Storable)]
+pub struct DiagMassMatrixStats {
+    #[storable(dims("unconstrained_parameter"))]
+    pub mass_matrix_inv: Option<Vec<f64>>,
 }
 
 impl<M: Math> SamplerStats<M> for DiagMassMatrix<M> {
-    type Builder = DiagMassMatrixStatsBuilder;
-    type StatOptions = ();
+    type Stats = DiagMassMatrixStats;
+    type StatsOptions = ();
 
-    fn new_builder(
-        &self,
-        _stat_options: Self::StatOptions,
-        _settings: &impl Settings,
-        dim: usize,
-    ) -> Self::Builder {
+    fn extract_stats(&self, math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
         if self.store_mass_matrix {
-            let items = PrimitiveBuilder::new();
-            let values = FixedSizeListBuilder::new(items, dim as _);
-            Self::Builder {
-                mass_matrix_inv: Some(values),
+            DiagMassMatrixStats {
+                mass_matrix_inv: Some(math.box_array(&self.variance).into_vec()),
             }
         } else {
-            Self::Builder {
+            DiagMassMatrixStats {
                 mass_matrix_inv: None,
             }
         }

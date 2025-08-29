@@ -312,14 +312,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rand::{rng, rngs::ThreadRng};
+    use rand::rng;
 
     use crate::{
-        adapt_strategy::test_logps::NormalLogp,
-        chain::NutsChain,
-        cpu_math::CpuMath,
-        sampler::DiagGradNutsSettings,
-        sampler_stats::{SamplerStats, StatTraceBuilder},
+        adapt_strategy::test_logps::NormalLogp, cpu_math::CpuMath, sampler::DiagGradNutsSettings,
         Chain, Settings,
     };
 
@@ -334,17 +330,12 @@ mod tests {
 
         let mut chain = settings.new_chain(0, math, &mut rng);
 
-        let opt_settings = settings.stats_options(&chain);
-        let mut builder = chain.new_builder(opt_settings, &settings, ndim);
-
         let (_, mut progress) = chain.draw().unwrap();
         for _ in 0..10 {
             let (_, prog) = chain.draw().unwrap();
             progress = prog;
-            builder.append_value(None, &chain);
         }
 
         assert!(!progress.diverging);
-        StatTraceBuilder::<_, NutsChain<_, ThreadRng, _>>::finalize(builder);
     }
 }

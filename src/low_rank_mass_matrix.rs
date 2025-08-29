@@ -1,19 +1,17 @@
 use std::collections::VecDeque;
 
-use arrow::{
-    array::{ArrayBuilder, FixedSizeListBuilder, ListBuilder, PrimitiveBuilder, StructArray},
-    datatypes::{Field, Float64Type, UInt64Type},
-};
 use faer::{Col, ColRef, Mat, MatRef, Scale};
 use itertools::Itertools;
+use nuts_derive::Storable;
+use serde::Serialize;
 
 use crate::{
+    Math, NutsError,
     euclidean_hamiltonian::EuclideanPoint,
     hamiltonian::Point,
     mass_matrix::{DrawGradCollector, MassMatrix},
     mass_matrix_adapt::MassMatrixAdaptStrategy,
-    sampler_stats::{SamplerStats, StatTraceBuilder},
-    Math, NutsError,
+    sampler_stats::SamplerStats,
 };
 
 fn mat_all_finite(mat: &MatRef<f64>) -> bool {
@@ -119,7 +117,7 @@ impl<M: Math> LowRankMassMatrix<M> {
     }
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, Serialize)]
 pub struct LowRankSettings {
     pub store_mass_matrix: bool,
     pub gamma: f64,
@@ -136,155 +134,38 @@ impl Default for LowRankSettings {
     }
 }
 
-pub struct MatrixBuilder {
-    eigenvals: Option<ListBuilder<PrimitiveBuilder<Float64Type>>>,
-    stds: Option<FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>>,
-    num_eigenvalues: PrimitiveBuilder<UInt64Type>,
-}
-
-impl<M: Math> StatTraceBuilder<M, LowRankMassMatrix<M>> for MatrixBuilder {
-    fn append_value(&mut self, math: Option<&mut M>, value: &LowRankMassMatrix<M>) {
-        let math = math.expect("Need reference to math for stats");
-        let Self {
-            eigenvals,
-            stds,
-            num_eigenvalues,
-        } = self;
-
-        if let Some(store) = eigenvals {
-            if let Some(inner) = &value.inner {
-                store
-                    .values()
-                    .append_slice(&math.eigs_as_array(&inner.vals));
-                store.append(true);
-            } else {
-                store.append(false);
-            }
-        }
-        if let Some(store) = stds {
-            store.values().append_slice(&math.box_array(&value.stds));
-            store.append(true);
-        }
-
-        num_eigenvalues.append_value(
-            value
-                .inner
-                .as_ref()
-                .map(|inner| inner.num_eigenvalues)
-                .unwrap_or(0),
-        );
-    }
-
-    fn finalize(self) -> Option<StructArray> {
-        let Self {
-            eigenvals,
-            stds,
-            mut num_eigenvalues,
-        } = self;
-
-        let num_eigenvalues = ArrayBuilder::finish(&mut num_eigenvalues);
-
-        let mut fields = vec![Field::new(
-            "mass_matrix_num_eigenvalues",
-            arrow::datatypes::DataType::UInt64,
-            false,
-        )];
-        let mut arrays = vec![num_eigenvalues];
-
-        if let Some(mut eigenvals) = eigenvals {
-            let eigenvals = ArrayBuilder::finish(&mut eigenvals);
-            fields.push(Field::new(
-                "mass_matrix_eigenvals",
-                eigenvals.data_type().clone(),
-                true,
-            ));
-
-            arrays.push(eigenvals);
-        }
-
-        if let Some(mut stds) = stds {
-            let stds = ArrayBuilder::finish(&mut stds);
-            fields.push(Field::new(
-                "mass_matrix_stds",
-                stds.data_type().clone(),
-                true,
-            ));
-
-            arrays.push(stds);
-        }
-
-        Some(StructArray::new(fields.into(), arrays, None))
-    }
-
-    fn inspect(&self) -> Option<StructArray> {
-        let Self {
-            ref eigenvals,
-            ref stds,
-            ref num_eigenvalues,
-        } = self;
-
-        let num_eigenvalues = ArrayBuilder::finish_cloned(num_eigenvalues);
-
-        let mut fields = vec![Field::new(
-            "mass_matrix_num_eigenvalues",
-            arrow::datatypes::DataType::UInt64,
-            false,
-        )];
-        let mut arrays = vec![num_eigenvalues];
-
-        if let Some(eigenvals) = &eigenvals {
-            let eigenvals = ArrayBuilder::finish_cloned(eigenvals);
-            fields.push(Field::new(
-                "mass_matrix_eigenvals",
-                eigenvals.data_type().clone(),
-                true,
-            ));
-
-            arrays.push(eigenvals);
-        }
-
-        if let Some(stds) = &stds {
-            let stds = ArrayBuilder::finish_cloned(stds);
-            fields.push(Field::new(
-                "mass_matrix_stds",
-                stds.data_type().clone(),
-                true,
-            ));
-
-            arrays.push(stds);
-        }
-        Some(StructArray::new(fields.into(), arrays, None))
-    }
+#[derive(Debug, Storable)]
+pub struct MatrixStats {
+    pub eigvals: Option<Vec<f64>>,
+    pub stds: Option<Vec<f64>>,
+    pub num_eigenvalues: u64,
 }
 
 impl<M: Math> SamplerStats<M> for LowRankMassMatrix<M> {
-    type Builder = MatrixBuilder;
-    type StatOptions = ();
+    type Stats = MatrixStats;
+    type StatsOptions = ();
 
-    fn new_builder(
-        &self,
-        _stat_options: Self::StatOptions,
-        _settings: &impl crate::Settings,
-        dim: usize,
-    ) -> Self::Builder {
-        let num_eigenvalues = PrimitiveBuilder::new();
+    fn extract_stats(&self, math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
         if self.settings.store_mass_matrix {
-            let items = PrimitiveBuilder::new();
-            let eigenvals = Some(ListBuilder::new(items));
-
-            let items = PrimitiveBuilder::new();
-            let stds = Some(FixedSizeListBuilder::new(items, dim as _));
-
-            MatrixBuilder {
-                eigenvals,
-                stds,
-                num_eigenvalues,
+            let eigvals = self
+                .inner
+                .as_ref()
+                .map(|inner| math.eigs_as_array(&inner.vals));
+            let stds = Some(math.box_array(&self.stds));
+            MatrixStats {
+                eigvals: eigvals.map(|x| x.into_vec()),
+                stds: stds.map(|x| x.into_vec()),
+                num_eigenvalues: self
+                    .inner
+                    .as_ref()
+                    .map(|inner| inner.num_eigenvalues)
+                    .unwrap_or(0),
             }
         } else {
-            MatrixBuilder {
-                eigenvals: None,
+            MatrixStats {
+                eigvals: None,
                 stds: None,
-                num_eigenvalues,
+                num_eigenvalues: 0,
             }
         }
     }
@@ -342,23 +223,6 @@ pub struct Stats {
     eigvectors: Box<[f64]>,
 }
 */
-
-#[derive(Debug)]
-pub struct Builder {}
-
-impl<M: Math> StatTraceBuilder<M, LowRankMassMatrixStrategy> for Builder {
-    fn append_value(&mut self, _math: Option<&mut M>, _value: &LowRankMassMatrixStrategy) {
-        let Self {} = self;
-    }
-
-    fn finalize(self) -> Option<StructArray> {
-        None
-    }
-
-    fn inspect(&self) -> Option<StructArray> {
-        None
-    }
-}
 
 #[derive(Debug)]
 pub struct LowRankMassMatrixStrategy {
@@ -445,7 +309,7 @@ impl LowRankMassMatrixStrategy {
         let filtered = vals
             .iter()
             .zip(vecs.col_iter())
-            .filter(|(&val, _)| {
+            .filter(|&(&val, _)| {
                 (val > self.settings.eigval_cutoff) | (val < self.settings.eigval_cutoff.recip())
             })
             .collect_vec();
@@ -563,17 +427,10 @@ fn spd_mean(cov_draws: Mat<f64>, cov_grads: Mat<f64>) -> Option<Mat<f64>> {
 }
 
 impl<M: Math> SamplerStats<M> for LowRankMassMatrixStrategy {
-    type Builder = Builder;
-    type StatOptions = ();
+    type Stats = ();
+    type StatsOptions = ();
 
-    fn new_builder(
-        &self,
-        _stat_options: Self::StatOptions,
-        _settings: &impl crate::Settings,
-        _dim: usize,
-    ) -> Self::Builder {
-        Builder {}
-    }
+    fn extract_stats(&self, _math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {}
 }
 
 impl<M: Math> MassMatrixAdaptStrategy<M> for LowRankMassMatrixStrategy {
@@ -646,8 +503,8 @@ mod test {
     use std::ops::AddAssign;
 
     use equator::Cmp;
-    use faer::{utils::approx::ApproxEq, Col, Mat};
-    use rand::{rngs::SmallRng, Rng, SeedableRng};
+    use faer::{Col, Mat, utils::approx::ApproxEq};
+    use rand::{Rng, SeedableRng, rngs::SmallRng};
     use rand_distr::StandardNormal;
 
     use crate::low_rank_mass_matrix::mat_all_finite;

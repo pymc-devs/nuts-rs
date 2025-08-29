@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 use crate::{
     hamiltonian::{DivergenceInfo, Point},
     math_base::Math,
@@ -6,7 +8,7 @@ use crate::{
 };
 
 /// Settings for step size adaptation
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct DualAverageOptions {
     pub k: f64,
     pub t0: f64,

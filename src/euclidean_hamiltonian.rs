@@ -1,15 +1,14 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use arrow::array::{ArrayBuilder, Float64Builder, StructArray};
-use arrow::datatypes::{DataType, Field};
+use nuts_derive::Storable;
+use nuts_storable::HasDims;
 
 use crate::hamiltonian::{Direction, DivergenceInfo, Hamiltonian, LeapfrogResult, Point};
 use crate::mass_matrix::MassMatrix;
 use crate::math_base::Math;
 use crate::nuts::{Collector, NutsError};
-use crate::sampler::Settings;
-use crate::sampler_stats::{SamplerStats, StatTraceBuilder};
+use crate::sampler_stats::{SamplerStats, StatsDims};
 use crate::state::{State, StatePool};
 use crate::LogpError;
 
@@ -51,35 +50,15 @@ pub struct EuclideanPoint<M: Math> {
     pub initial_energy: f64,
 }
 
-pub struct PointStatsBuilder {}
-
-impl<M: Math> StatTraceBuilder<M, EuclideanPoint<M>> for PointStatsBuilder {
-    fn append_value(&mut self, _math: Option<&mut M>, _value: &EuclideanPoint<M>) {
-        let Self {} = self;
-    }
-
-    fn finalize(self) -> Option<StructArray> {
-        let Self {} = self;
-        None
-    }
-
-    fn inspect(&self) -> Option<StructArray> {
-        let Self {} = self;
-        None
-    }
-}
+#[derive(Debug, Storable)]
+pub struct PointStats {}
 
 impl<M: Math> SamplerStats<M> for EuclideanPoint<M> {
-    type Builder = PointStatsBuilder;
-    type StatOptions = ();
+    type Stats = PointStats;
+    type StatsOptions = ();
 
-    fn new_builder(
-        &self,
-        _stat_options: Self::StatOptions,
-        _settings: &impl Settings,
-        _dim: usize,
-    ) -> Self::Builder {
-        Self::Builder {}
+    fn extract_stats(&self, _math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
+        PointStats {}
     }
 }
 
@@ -216,87 +195,24 @@ impl<M: Math> Point<M> for EuclideanPoint<M> {
     }
 }
 
-pub struct PotentialStatsBuilder<B> {
-    mass_matrix: B,
-    step_size: Float64Builder,
-}
-
-impl<M: Math, Mass: MassMatrix<M>> StatTraceBuilder<M, EuclideanHamiltonian<M, Mass>>
-    for PotentialStatsBuilder<Mass::Builder>
-{
-    fn append_value(&mut self, math: Option<&mut M>, value: &EuclideanHamiltonian<M, Mass>) {
-        let math = math.expect("Sampler stats needs math");
-        let Self {
-            mass_matrix,
-            step_size,
-        } = self;
-
-        mass_matrix.append_value(Some(math), &value.mass_matrix);
-        step_size.append_value(value.step_size);
-    }
-
-    fn finalize(self) -> Option<StructArray> {
-        let Self {
-            mass_matrix,
-            mut step_size,
-        } = self;
-
-        let mut fields = vec![Field::new("step_size", DataType::Float64, false)];
-        let mut arrays = vec![ArrayBuilder::finish(&mut step_size)];
-
-        if let Some(mass_matrix) = mass_matrix.finalize() {
-            let (m_fields, m_data, m_bitmap) = mass_matrix.into_parts();
-            assert!(m_bitmap.is_none());
-            fields.extend(
-                m_fields
-                    .into_iter()
-                    .map(|v| Arc::unwrap_or_clone(v.to_owned())),
-            );
-            arrays.extend(m_data);
-        }
-
-        Some(StructArray::new(fields.into(), arrays, None))
-    }
-
-    fn inspect(&self) -> Option<StructArray> {
-        let Self {
-            mass_matrix,
-            step_size,
-        } = self;
-
-        let mut fields = vec![Field::new("step_size", DataType::Float64, false)];
-        let mut arrays = vec![ArrayBuilder::finish_cloned(step_size)];
-
-        if let Some(mass_matrix) = mass_matrix.inspect() {
-            let (m_fields, m_data, m_bitmap) = mass_matrix.into_parts();
-            assert!(m_bitmap.is_none());
-            fields.extend(
-                m_fields
-                    .into_iter()
-                    .map(|v| Arc::unwrap_or_clone(v.to_owned())),
-            );
-            arrays.extend(m_data);
-        }
-
-        Some(StructArray::new(fields.into(), arrays, None))
-    }
+#[derive(Debug, Storable)]
+pub struct PotentialStats<P: HasDims, B: nuts_storable::Storable<P>> {
+    #[storable(flatten)]
+    pub mass_matrix: B,
+    pub step_size: f64,
+    #[storable(ignore)]
+    _phantom: PhantomData<fn() -> P>,
 }
 
 impl<M: Math, Mass: MassMatrix<M>> SamplerStats<M> for EuclideanHamiltonian<M, Mass> {
-    type Builder = PotentialStatsBuilder<Mass::Builder>;
-    type StatOptions = Mass::StatOptions;
+    type Stats = PotentialStats<StatsDims, Mass::Stats>;
+    type StatsOptions = Mass::StatsOptions;
 
-    fn new_builder(
-        &self,
-        stat_options: Self::StatOptions,
-        settings: &impl Settings,
-        dim: usize,
-    ) -> Self::Builder {
-        Self::Builder {
-            mass_matrix: self.mass_matrix.new_builder(stat_options, settings, dim),
-            step_size: Float64Builder::with_capacity(
-                settings.hint_num_draws() + settings.hint_num_tune(),
-            ),
+    fn extract_stats(&self, math: &mut M, opt: Self::StatsOptions) -> Self::Stats {
+        PotentialStats {
+            mass_matrix: self.mass_matrix.extract_stats(math, opt),
+            step_size: self.step_size,
+            _phantom: PhantomData,
         }
     }
 }

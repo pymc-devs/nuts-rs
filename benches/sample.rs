@@ -1,9 +1,10 @@
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, Criterion};
-use nix::sched::{sched_setaffinity, CpuSet};
+use criterion::{Criterion, criterion_group, criterion_main};
+use nix::sched::{CpuSet, sched_setaffinity};
 use nix::unistd::Pid;
 use nuts_rs::{Chain, CpuLogpFunc, CpuMath, LogpError, Math, Settings};
+use nuts_storable::HasDims;
 use rand::SeedableRng;
 use rayon::ThreadPoolBuilder;
 use thiserror::Error;
@@ -22,11 +23,20 @@ impl LogpError for PosteriorLogpError {
     }
 }
 
+impl HasDims for PosteriorDensity {
+    fn dim_sizes(&self) -> std::collections::HashMap<String, u64> {
+        vec![("unconstrained_parameter".to_string(), self.dim() as u64)]
+            .into_iter()
+            .collect()
+    }
+}
+
 impl CpuLogpFunc for PosteriorDensity {
     type LogpError = PosteriorLogpError;
+    type ExpandedVector = Vec<f64>;
 
     // Only used for transforming adaptation.
-    type TransformParams = ();
+    type FlowParameters = ();
 
     // We define a 10 dimensional normal distribution
     fn dim(&self) -> usize {
@@ -47,6 +57,17 @@ impl CpuLogpFunc for PosteriorDensity {
             })
             .sum();
         return Ok(logp);
+    }
+
+    fn expand_vector<R>(
+        &mut self,
+        _rng: &mut R,
+        array: &[f64],
+    ) -> Result<Self::ExpandedVector, nuts_rs::CpuMathError>
+    where
+        R: rand::Rng + ?Sized,
+    {
+        Ok(array.to_vec())
     }
 }
 

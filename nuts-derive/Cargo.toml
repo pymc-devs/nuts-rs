@@ -1,0 +1,13 @@
+[package]
+name = "nuts-derive"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "1.0", features = ["full"] }
+nuts-storable = { path = "../nuts-storable" }
+
+[lib]
+proc-macro = true

@@ -1,23 +1,21 @@
-use arrow::{
-    array::{ArrayBuilder, PrimitiveBuilder, StructArray},
-    datatypes::{DataType, Field, Float64Type, UInt64Type},
-};
 use itertools::Either;
+use nuts_derive::Storable;
 use rand::Rng;
 use rand_distr::Uniform;
+use serde::Serialize;
 
 use crate::{
+    Math, NutsError,
     hamiltonian::{Direction, Hamiltonian, LeapfrogResult, Point},
     nuts::{Collector, NutsOptions},
-    sampler_stats::{SamplerStats, StatTraceBuilder},
+    sampler_stats::SamplerStats,
     stepsize_adam::{Adam, AdamOptions},
     stepsize_dual_avg::{AcceptanceRateCollector, DualAverage, DualAverageOptions},
-    Math, NutsError, Settings,
 };
 use std::fmt::Debug;
 
 /// Method used for step size adaptation
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub enum StepSizeAdaptMethod {
     /// Use dual averaging for step size adaptation (default)
     DualAverage,
@@ -33,13 +31,23 @@ impl Default for StepSizeAdaptMethod {
 }
 
 /// Options for step size adaptation
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct StepSizeAdaptOptions {
     pub method: StepSizeAdaptMethod,
     /// Dual averaging adaptation options
     pub dual_average: DualAverageOptions,
     /// Adam optimizer adaptation options
     pub adam: AdamOptions,
+}
+
+impl Default for StepSizeAdaptOptions {
+    fn default() -> Self {
+        Self {
+            method: StepSizeAdaptMethod::DualAverage,
+            dual_average: DualAverageOptions::default(),
+            adam: AdamOptions::default(),
+        }
+    }
 }
 
 /// Step size adaptation strategy
@@ -185,10 +193,10 @@ impl Strategy {
     pub fn update_estimator_early(&mut self) {
         match self.adaptation.as_mut() {
             None => {}
-            Some(Either::Left(ref mut adapt)) => {
+            Some(Either::Left(adapt)) => {
                 adapt.advance(self.last_mean_tree_accept, self.options.target_accept);
             }
-            Some(Either::Right(ref mut adapt)) => {
+            Some(Either::Right(adapt)) => {
                 adapt.advance(self.last_mean_tree_accept, self.options.target_accept);
             }
         }
@@ -197,10 +205,10 @@ impl Strategy {
     pub fn update_estimator_late(&mut self) {
         match self.adaptation.as_mut() {
             None => {}
-            Some(Either::Left(ref mut adapt)) => {
+            Some(Either::Left(adapt)) => {
                 adapt.advance(self.last_sym_mean_tree_accept, self.options.target_accept);
             }
-            Some(Either::Right(ref mut adapt)) => {
+            Some(Either::Right(adapt)) => {
                 adapt.advance(self.last_sym_mean_tree_accept, self.options.target_accept);
             }
         }
@@ -245,105 +253,39 @@ impl Strategy {
     }
 }
 
-pub struct StatsBuilder {
-    step_size_bar: PrimitiveBuilder<Float64Type>,
-    mean_tree_accept: PrimitiveBuilder<Float64Type>,
-    mean_tree_accept_sym: PrimitiveBuilder<Float64Type>,
-    n_steps: PrimitiveBuilder<UInt64Type>,
-}
-
-impl<M: Math> StatTraceBuilder<M, Strategy> for StatsBuilder {
-    fn append_value(&mut self, _math: Option<&mut M>, value: &Strategy) {
-        let step_size_adapted = match value.adaptation {
-            None => {
-                if let StepSizeAdaptMethod::Fixed(val) = value.options.adapt_options.method {
-                    val
-                } else {
-                    panic!("Adaptation method must be Fixed if adaptation is None")
-                }
-            }
-            Some(Either::Left(ref adapt)) => adapt.current_step_size_adapted(),
-            Some(Either::Right(ref adapt)) => adapt.current_step_size(),
-        };
-        self.step_size_bar.append_value(step_size_adapted);
-        self.mean_tree_accept
-            .append_value(value.last_mean_tree_accept);
-        self.mean_tree_accept_sym
-            .append_value(value.last_sym_mean_tree_accept);
-        self.n_steps.append_value(value.last_n_steps);
-    }
-
-    fn finalize(self) -> Option<StructArray> {
-        let Self {
-            mut step_size_bar,
-            mut mean_tree_accept,
-            mut mean_tree_accept_sym,
-            mut n_steps,
-        } = self;
-
-        let fields = vec![
-            Field::new("step_size_bar", DataType::Float64, false),
-            Field::new("mean_tree_accept", DataType::Float64, false),
-            Field::new("mean_tree_accept_sym", DataType::Float64, false),
-            Field::new("n_steps", DataType::UInt64, false),
-        ];
-
-        let arrays = vec![
-            ArrayBuilder::finish(&mut step_size_bar),
-            ArrayBuilder::finish(&mut mean_tree_accept),
-            ArrayBuilder::finish(&mut mean_tree_accept_sym),
-            ArrayBuilder::finish(&mut n_steps),
-        ];
-
-        Some(StructArray::new(fields.into(), arrays, None))
-    }
-
-    fn inspect(&self) -> Option<StructArray> {
-        let Self {
-            step_size_bar,
-            mean_tree_accept,
-            mean_tree_accept_sym,
-            n_steps,
-        } = self;
-
-        let fields = vec![
-            Field::new("step_size_bar", DataType::Float64, false),
-            Field::new("mean_tree_accept", DataType::Float64, false),
-            Field::new("mean_tree_accept_sym", DataType::Float64, false),
-            Field::new("n_steps", DataType::UInt64, false),
-        ];
-
-        let arrays = vec![
-            ArrayBuilder::finish_cloned(step_size_bar),
-            ArrayBuilder::finish_cloned(mean_tree_accept),
-            ArrayBuilder::finish_cloned(mean_tree_accept_sym),
-            ArrayBuilder::finish_cloned(n_steps),
-        ];
-
-        Some(StructArray::new(fields.into(), arrays, None))
-    }
+#[derive(Debug, Storable)]
+pub struct Stats {
+    pub step_size_bar: f64,
+    pub mean_tree_accept: f64,
+    pub mean_tree_accept_sym: f64,
+    pub n_steps: u64,
 }
 
 impl<M: Math> SamplerStats<M> for Strategy {
-    type Builder = StatsBuilder;
-    type StatOptions = ();
+    type Stats = Stats;
+    type StatsOptions = ();
 
-    fn new_builder(
-        &self,
-        _stat_options: Self::StatOptions,
-        _settings: &impl Settings,
-        _dim: usize,
-    ) -> Self::Builder {
-        Self::Builder {
-            step_size_bar: PrimitiveBuilder::new(),
-            mean_tree_accept: PrimitiveBuilder::new(),
-            mean_tree_accept_sym: PrimitiveBuilder::new(),
-            n_steps: PrimitiveBuilder::new(),
+    fn extract_stats(&self, _math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
+        Stats {
+            step_size_bar: match self.adaptation {
+                None => {
+                    if let StepSizeAdaptMethod::Fixed(val) = self.options.adapt_options.method {
+                        val
+                    } else {
+                        panic!("Adaptation method must be Fixed if adaptation is None")
+                    }
+                }
+                Some(Either::Left(ref adapt)) => adapt.current_step_size_adapted(),
+                Some(Either::Right(ref adapt)) => adapt.current_step_size(),
+            },
+            mean_tree_accept: self.last_mean_tree_accept,
+            mean_tree_accept_sym: self.last_sym_mean_tree_accept,
+            n_steps: self.last_n_steps,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct StepSizeSettings {
     /// Target acceptance rate
     pub target_accept: f64,

@@ -1,38 +1,45 @@
-use anyhow::{bail, Context, Result};
-use arrow::array::Array;
+use anyhow::{Context, Result, bail};
 use itertools::Itertools;
-use rand::{rngs::SmallRng, Rng, SeedableRng};
+use nuts_storable::{HasDims, Storable, Value};
+use rand::{Rng, SeedableRng, rngs::SmallRng};
 use rand_chacha::ChaCha8Rng;
 use rayon::{ScopeFifo, ThreadPoolBuilder};
+use serde::Serialize;
 use std::{
+    collections::HashMap,
     fmt::Debug,
+    ops::Deref,
     sync::{
-        mpsc::{
-            channel, sync_channel, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError,
-        },
         Arc, Mutex,
+        mpsc::{
+            Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel,
+        },
     },
-    thread::{spawn, JoinHandle},
+    thread::{JoinHandle, spawn},
     time::{Duration, Instant},
 };
 
 use crate::{
-    adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy},
+    DiagAdaptExpSettings,
+    adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy, GlobalStrategyStatsOptions},
     chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
     euclidean_hamiltonian::EuclideanHamiltonian,
     low_rank_mass_matrix::{LowRankMassMatrix, LowRankMassMatrixStrategy, LowRankSettings},
     mass_matrix::DiagMassMatrix,
     mass_matrix_adapt::Strategy as DiagMassMatrixStrategy,
     math_base::Math,
+    model::Model,
     nuts::NutsOptions,
-    sampler_stats::{SamplerStats, StatTraceBuilder},
+    sampler_stats::{SamplerStats, StatsDims},
+    storage::{ChainStorage, StorageConfig, TraceStorage},
     transform_adapt_strategy::{TransformAdaptation, TransformedSettings},
     transformed_hamiltonian::{TransformedHamiltonian, TransformedPointStatsOptions},
-    DiagAdaptExpSettings,
 };
 
 /// All sampler configurations implement this trait
-pub trait Settings: private::Sealed + Clone + Copy + Default + Sync + Send + 'static {
+pub trait Settings:
+    private::Sealed + Clone + Copy + Default + Sync + Send + Serialize + 'static
+{
     type Chain<M: Math>: Chain<M>;
 
     fn new_chain<M: Math, R: Rng + ?Sized>(
@@ -46,10 +53,83 @@ pub trait Settings: private::Sealed + Clone + Copy + Default + Sync + Send + 'st
     fn hint_num_draws(&self) -> usize;
     fn num_chains(&self) -> usize;
     fn seed(&self) -> u64;
-    fn stats_options<M: Math>(
-        &self,
-        chain: &Self::Chain<M>,
-    ) -> <Self::Chain<M> as SamplerStats<M>>::StatOptions;
+    fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions;
+
+    fn stat_names<M: Math>(&self, math: &M) -> Vec<String> {
+        let dims = StatsDims::from(math);
+        <<Self::Chain<M> as SamplerStats<M>>::Stats as Storable<_>>::names(&dims)
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
+
+    fn data_names<M: Math>(&self, math: &M) -> Vec<String> {
+        <M::ExpandedVector as Storable<_>>::names(math)
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
+
+    fn stat_types<M: Math>(&self, math: &M) -> Vec<(String, nuts_storable::ItemType)> {
+        self.stat_names(math)
+            .into_iter()
+            .map(|name| (name.clone(), self.stat_type::<M>(math, &name)))
+            .collect()
+    }
+
+    fn stat_type<M: Math>(&self, math: &M, name: &str) -> nuts_storable::ItemType {
+        let dims = StatsDims::from(math);
+        <<Self::Chain<M> as SamplerStats<M>>::Stats as Storable<_>>::item_type(&dims, name)
+    }
+
+    fn data_types<M: Math>(&self, math: &M) -> Vec<(String, nuts_storable::ItemType)> {
+        self.data_names(math)
+            .into_iter()
+            .map(|name| (name.clone(), self.data_type(math, &name)))
+            .collect()
+    }
+    fn data_type<M: Math>(&self, math: &M, name: &str) -> nuts_storable::ItemType {
+        <M::ExpandedVector as Storable<_>>::item_type(math, name)
+    }
+
+    fn stat_dims_all<M: Math>(&self, math: &M) -> Vec<(String, Vec<String>)> {
+        self.stat_names(math)
+            .into_iter()
+            .map(|name| (name.clone(), self.stat_dims::<M>(math, &name)))
+            .collect()
+    }
+
+    fn stat_dims<M: Math>(&self, math: &M, name: &str) -> Vec<String> {
+        let dims = StatsDims::from(math);
+        <<Self::Chain<M> as SamplerStats<M>>::Stats as Storable<_>>::dims(&dims, name)
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
+
+    fn stat_dim_sizes<M: Math>(&self, math: &M) -> HashMap<String, u64> {
+        let dims = StatsDims::from(math);
+        dims.dim_sizes()
+    }
+
+    fn data_dims_all<M: Math>(&self, math: &M) -> Vec<(String, Vec<String>)> {
+        self.data_names(math)
+            .into_iter()
+            .map(|name| (name.clone(), self.data_dims(math, &name)))
+            .collect()
+    }
+
+    fn data_dims<M: Math>(&self, math: &M, name: &str) -> Vec<String> {
+        <M::ExpandedVector as Storable<_>>::dims(math, name)
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
+
+    fn stat_coords<M: Math>(&self, math: &M) -> HashMap<String, Value> {
+        let dims = StatsDims::from(math);
+        dims.coords()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -78,8 +158,8 @@ mod private {
 }
 
 /// Settings for the NUTS sampler
-#[derive(Debug, Clone, Copy)]
-pub struct NutsSettings<A: Debug + Copy + Default> {
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     /// The number of tuning steps, where we fit the step size and mass matrix.
     pub num_tune: u64,
     /// The number of draws after tuning
@@ -202,7 +282,15 @@ impl Settings for LowRankNutsSettings {
 
         let rng = rand::rngs::SmallRng::try_from_rng(&mut rng).expect("Could not seed rng");
 
-        NutsChain::new(math, potential, strategy, options, rng, chain)
+        NutsChain::new(
+            math,
+            potential,
+            strategy,
+            options,
+            rng,
+            chain,
+            self.stats_options(),
+        )
     }
 
     fn hint_num_tune(&self) -> usize {
@@ -221,12 +309,12 @@ impl Settings for LowRankNutsSettings {
         self.seed
     }
 
-    fn stats_options<M: Math>(
-        &self,
-        _chain: &Self::Chain<M>,
-    ) -> <Self::Chain<M> as SamplerStats<M>>::StatOptions {
+    fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
         StatOptions {
-            adapt: (),
+            adapt: GlobalStrategyStatsOptions {
+                mass_matrix: (),
+                step_size: (),
+            },
             hamiltonian: (),
             point: (),
         }
@@ -262,7 +350,15 @@ impl Settings for DiagGradNutsSettings {
 
         let rng = rand::rngs::SmallRng::try_from_rng(&mut rng).expect("Could not seed rng");
 
-        NutsChain::new(math, potential, strategy, options, rng, chain)
+        NutsChain::new(
+            math,
+            potential,
+            strategy,
+            options,
+            rng,
+            chain,
+            self.stats_options(),
+        )
     }
 
     fn hint_num_tune(&self) -> usize {
@@ -281,12 +377,12 @@ impl Settings for DiagGradNutsSettings {
         self.seed
     }
 
-    fn stats_options<M: Math>(
-        &self,
-        _chain: &Self::Chain<M>,
-    ) -> <Self::Chain<M> as SamplerStats<M>>::StatOptions {
+    fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
         StatOptions {
-            adapt: (),
+            adapt: GlobalStrategyStatsOptions {
+                mass_matrix: (),
+                step_size: (),
+            },
             hamiltonian: (),
             point: (),
         }
@@ -318,7 +414,15 @@ impl Settings for TransformedNutsSettings {
         };
 
         let rng = rand::rngs::SmallRng::try_from_rng(&mut rng).expect("Could not seed rng");
-        NutsChain::new(math, hamiltonian, strategy, options, rng, chain)
+        NutsChain::new(
+            math,
+            hamiltonian,
+            strategy,
+            options,
+            rng,
+            chain,
+            self.stats_options(),
+        )
     }
 
     fn hint_num_tune(&self) -> usize {
@@ -337,10 +441,7 @@ impl Settings for TransformedNutsSettings {
         self.seed
     }
 
-    fn stats_options<M: Math>(
-        &self,
-        _chain: &Self::Chain<M>,
-    ) -> <Self::Chain<M> as SamplerStats<M>>::StatOptions {
+    fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
         // TODO make extra config
         let point = TransformedPointStatsOptions {
             store_transformed: self.store_unconstrained,
@@ -364,30 +465,6 @@ pub fn sample_sequentially<'math, M: Math + 'math, R: Rng + ?Sized>(
     let mut sampler = settings.new_chain(chain, math, rng);
     sampler.set_position(start)?;
     Ok((0..draws).map(move |_| sampler.draw()))
-}
-
-pub trait DrawStorage: Send {
-    fn append_value(&mut self, point: &[f64]) -> Result<()>;
-    fn finalize(self) -> Result<Arc<dyn Array>>;
-    fn inspect(&self) -> Result<Arc<dyn Array>>;
-}
-
-pub trait Model: Send + Sync + 'static {
-    type Math<'model>: Math
-    where
-        Self: 'model;
-    type DrawStorage<'model, S: Settings>: DrawStorage
-    where
-        Self: 'model;
-
-    fn new_trace<'model, S: Settings, R: Rng + ?Sized>(
-        &'model self,
-        rng: &mut R,
-        chain_id: u64,
-        settings: &'model S,
-    ) -> Result<Self::DrawStorage<'model, S>>;
-    fn math(&self) -> Result<Self::Math<'_>>;
-    fn init_position<R: Rng + ?Sized>(&self, rng: &mut R, position: &mut [f64]) -> Result<()>;
 }
 
 #[non_exhaustive]
@@ -436,74 +513,32 @@ impl ChainProgress {
     }
 }
 
-pub struct ChainOutput {
-    pub draws: Arc<dyn Array>,
-    pub stats: Arc<dyn Array>,
-    pub chain_id: u64,
-}
-
 enum ChainCommand {
     Resume,
     Pause,
 }
 
-struct ChainTrace<'model, M: Model + 'model, S: Settings> {
-    draws_builder: M::DrawStorage<'model, S>,
-    stats_builder: <S::Chain<M::Math<'model>> as SamplerStats<M::Math<'model>>>::Builder,
-    chain_id: u64,
-}
-
-impl<'model, M: Model + 'model, S: Settings> ChainTrace<'model, M, S> {
-    fn inspect(&self) -> Result<ChainOutput> {
-        let stats = self.stats_builder.inspect().expect("No sample stats");
-        let draws = self.draws_builder.inspect()?;
-        Ok(ChainOutput {
-            chain_id: self.chain_id,
-            draws,
-            stats: Arc::new(stats) as Arc<_>,
-        })
-    }
-
-    fn finalize(self) -> Result<ChainOutput> {
-        let draws = self.draws_builder.finalize()?;
-        let stats = self.stats_builder.finalize().expect("No sample stats");
-        Ok(ChainOutput {
-            chain_id: self.chain_id,
-            draws,
-            stats: Arc::new(stats) as Arc<dyn Array>,
-        })
-    }
-}
-
-struct ChainProcess<'model, M, S>
+struct ChainProcess<T>
 where
-    M: Model + 'model,
-    S: Settings,
+    T: TraceStorage,
 {
     stop_marker: Sender<ChainCommand>,
-    trace: Arc<Mutex<Option<ChainTrace<'model, M, S>>>>,
+    trace: Arc<Mutex<Option<T::ChainStorage>>>,
     progress: Arc<Mutex<ChainProgress>>,
 }
 
-impl<'scope, M: Model, S: Settings> ChainProcess<'scope, M, S> {
-    fn finalize_many(chains: Vec<Self>) -> Vec<Result<Option<ChainOutput>>> {
-        chains
+impl<T: TraceStorage> ChainProcess<T> {
+    fn finalize_many(trace: T, chains: Vec<Self>) -> Result<(Option<anyhow::Error>, T::Finalized)> {
+        let finalized_chain_traces = chains
             .into_iter()
+            .filter_map(|chain| chain.trace.lock().expect("Poisoned lock").take())
             .map(|chain| chain.finalize())
-            .collect_vec()
+            .collect_vec();
+        trace.finalize(finalized_chain_traces)
     }
 
     fn progress(&self) -> ChainProgress {
         self.progress.lock().expect("Poisoned lock").clone()
-    }
-
-    fn current_trace(&self) -> Result<Option<ChainOutput>> {
-        self.trace
-            .lock()
-            .expect("Poisoned lock")
-            .as_ref()
-            .map(|trace| trace.inspect())
-            .transpose()
     }
 
     fn resume(&self) -> Result<()> {
@@ -516,42 +551,30 @@ impl<'scope, M: Model, S: Settings> ChainProcess<'scope, M, S> {
         Ok(())
     }
 
-    fn finalize(self) -> Result<Option<ChainOutput>> {
-        drop(self.stop_marker);
-        self.trace
-            .lock()
-            .expect("Poisoned lock")
-            .take()
-            .map(|trace| trace.finalize())
-            .transpose()
-    }
-
-    fn start<'model>(
+    fn start<'model, M: Model, S: Settings>(
         model: &'model M,
+        chain_trace: T::ChainStorage,
         chain_id: u64,
         seed: u64,
         settings: &'model S,
-        scope: &ScopeFifo<'scope>,
+        scope: &ScopeFifo<'model>,
         results: Sender<Result<()>>,
-    ) -> Result<Self>
-    where
-        'model: 'scope,
-    {
+    ) -> Result<Self> {
         let (stop_marker_tx, stop_marker_rx) = channel();
 
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         rng.set_stream(chain_id);
 
-        let trace = Arc::new(Mutex::new(None));
+        let chain_trace = Arc::new(Mutex::new(Some(chain_trace)));
         let progress = Arc::new(Mutex::new(ChainProgress::new(
             settings.hint_num_draws() + settings.hint_num_tune(),
         )));
 
-        let trace_inner = trace.clone();
+        let trace_inner = chain_trace.clone();
         let progress_inner = progress.clone();
 
         scope.spawn_fifo(move |_| {
-            let trace = trace_inner;
+            let chain_trace = trace_inner;
             let progress = progress_inner;
 
             let mut sample = move || {
@@ -560,18 +583,6 @@ impl<'scope, M: Model, S: Settings> ChainProcess<'scope, M, S> {
 
                 let mut sampler = settings.new_chain(chain_id, logp, &mut rng);
 
-                let draw_trace = model
-                    .new_trace(&mut rng, chain_id, settings)
-                    .context("Failed to create trace object")?;
-                let stat_opts = settings.stats_options(&sampler);
-                let stats_trace = sampler.new_builder(stat_opts, settings, dim);
-
-                let new_trace = ChainTrace {
-                    draws_builder: draw_trace,
-                    stats_builder: stats_trace,
-                    chain_id,
-                };
-                *trace.lock().expect("Poisoned mutex") = Some(new_trace);
                 progress.lock().expect("Poisoned mutex").started = true;
 
                 let mut initval = vec![0f64; dim];
@@ -612,12 +623,14 @@ impl<'scope, M: Model, S: Settings> ChainProcess<'scope, M, S> {
                     }
 
                     let now = Instant::now();
-                    let (point, info) = sampler.draw().unwrap();
-                    let mut guard = trace
+                    //let (point, info) = sampler.draw().unwrap();
+                    let (_point, draw_data, stats, info) = sampler.expanded_draw().unwrap();
+
+                    let mut guard = chain_trace
                         .lock()
                         .expect("Could not unlock trace lock. Poisoned mutex");
 
-                    let Some(val) = guard.as_mut() else {
+                    let Some(trace_val) = guard.as_mut() else {
                         // The trace was removed by controller thread. We can stop sampling
                         break;
                     };
@@ -625,8 +638,16 @@ impl<'scope, M: Model, S: Settings> ChainProcess<'scope, M, S> {
                         .lock()
                         .expect("Poisoned mutex")
                         .update(&info, now.elapsed());
-                    DrawStorage::append_value(&mut val.draws_builder, &point)?;
-                    StatTraceBuilder::append_value(&mut val.stats_builder, None, &sampler);
+
+                    let math = sampler.math();
+                    let dims = StatsDims::from(math.deref());
+                    trace_val.record_sample(
+                        settings,
+                        stats.get_all(&dims),
+                        draw_data.get_all(math.deref()),
+                        &info,
+                    )?;
+
                     draw += 1;
                     if draw == draws {
                         break;
@@ -639,17 +660,27 @@ impl<'scope, M: Model, S: Settings> ChainProcess<'scope, M, S> {
 
             let result = sample();
 
-            results
-                .send(result)
-                .expect("Could not send sampling results to main thread.");
+            // We intentially ignore errors here, because this means some other
+            // chain already failed, and should have reported the error.
+            let _ = results.send(result);
             drop(results);
         });
 
         Ok(Self {
-            trace,
+            trace: chain_trace,
             stop_marker: stop_marker_tx,
             progress,
         })
+    }
+
+    fn flush(&self) -> Result<()> {
+        self.trace
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Could not lock trace mutex"))
+            .context("Could not flush trace")?
+            .as_mut().map(|v| v.flush())
+            .transpose()?;
+        Ok(())
     }
 }
 
@@ -657,39 +688,26 @@ impl<'scope, M: Model, S: Settings> ChainProcess<'scope, M, S> {
 enum SamplerCommand {
     Pause,
     Continue,
-    InspectTrace,
     Progress,
+    Flush,
 }
 
 enum SamplerResponse {
     Ok(),
-    IntermediateTrace(Trace),
     Progress(Box<[ChainProgress]>),
 }
 
-pub enum SamplerWaitResult {
-    Trace(Trace),
-    Timeout(Sampler),
-    Err(anyhow::Error, Option<Trace>),
+pub enum SamplerWaitResult<F: Send + 'static> {
+    Trace(F),
+    Timeout(Sampler<F>),
+    Err(anyhow::Error, Option<F>),
 }
 
-pub struct Sampler {
-    main_thread: JoinHandle<Result<Vec<Result<Option<ChainOutput>>>>>,
+pub struct Sampler<F: Send + 'static> {
+    main_thread: JoinHandle<Result<(Option<anyhow::Error>, F)>>,
     commands: SyncSender<SamplerCommand>,
     responses: Receiver<SamplerResponse>,
     results: Receiver<Result<()>>,
-}
-
-pub struct Trace {
-    pub chains: Vec<ChainOutput>,
-}
-
-impl<I: Iterator<Item = ChainOutput>> From<I> for Trace {
-    fn from(value: I) -> Self {
-        let mut chains = value.into_iter().collect_vec();
-        chains.sort_unstable_by_key(|x| x.chain_id);
-        Trace { chains }
-    }
 }
 
 pub struct ProgressCallback {
@@ -697,13 +715,20 @@ pub struct ProgressCallback {
     pub rate: Duration,
 }
 
-impl Sampler {
-    pub fn new<S: Settings, M: Model>(
+impl<F: Send + 'static> Sampler<F> {
+    pub fn new<M, S, C, T>(
         model: M,
         settings: S,
+        trace_config: C,
         num_cores: usize,
         callback: Option<ProgressCallback>,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        S: Settings,
+        C: StorageConfig<Storage = T>,
+        M: Model,
+        T: TraceStorage<Finalized = F>,
+    {
         let (commands_tx, commands_rx) = sync_channel(0);
         let (responses_tx, responses_rx) = sync_channel(0);
         let (results_tx, results_rx) = channel();
@@ -723,9 +748,19 @@ impl Sampler {
                 let results = results_tx;
                 let mut chains = Vec::with_capacity(settings.num_chains());
 
+                let math = model_ref.math().context("Could not create model density")?;
+                let trace = trace_config
+                    .new_trace(settings_ref, &math)
+                    .context("Could not create trace object")?;
+                drop(math);
+
                 for chain_id in 0..settings.num_chains() {
+                    let chain_trace_val = trace
+                        .initialize_trace_for_chain(chain_id as u64)
+                        .context("Failed to create trace object")?;
                     let chain = ChainProcess::start(
                         model_ref,
+                        chain_trace_val,
                         chain_id as u64,
                         settings.seed(),
                         settings_ref,
@@ -738,7 +773,7 @@ impl Sampler {
 
                 let (chains, errors): (Vec<_>, Vec<_>) = chains.into_iter().partition_result();
                 if let Some(error) = errors.into_iter().next() {
-                    let _ = ChainProcess::finalize_many(chains);
+                    let _ = ChainProcess::finalize_many(trace, chains);
                     return Err(error).context("Could not start chains");
                 }
 
@@ -796,17 +831,16 @@ impl Sampler {
                                 is_paused = false;
                                 responses_tx.send(SamplerResponse::Ok())?;
                             }
-                            Ok(SamplerCommand::InspectTrace) => {
-                                let traces: Result<Vec<_>> =
-                                    chains.iter().map(|chain| chain.current_trace()).collect();
-                                responses_tx.send(SamplerResponse::IntermediateTrace(
-                                    traces?.into_iter().flatten().into(),
-                                ))?;
-                            }
                             Ok(SamplerCommand::Progress) => {
                                 let progress =
                                     chains.iter().map(|chain| chain.progress()).collect_vec();
                                 responses_tx.send(SamplerResponse::Progress(progress.into()))?;
+                            }
+                            Ok(SamplerCommand::Flush) => {
+                                for chain in chains.iter() {
+                                    chain.flush()?;
+                                }
+                                responses_tx.send(SamplerResponse::Ok())?;
                             }
                             Err(RecvTimeoutError::Timeout) => {}
                             Err(RecvTimeoutError::Disconnected) => {
@@ -827,10 +861,10 @@ impl Sampler {
                 };
                 let result: Result<()> = main_loop();
                 // Run finalization even if something failed
-                let output = Ok(ChainProcess::finalize_many(chains));
+                let output = ChainProcess::finalize_many(trace, chains)?;
 
                 result?;
-                output
+                Ok(output)
             })
         });
 
@@ -865,46 +899,40 @@ impl Sampler {
         Ok(())
     }
 
-    pub fn abort(self) -> (Result<()>, Option<Trace>) {
+    pub fn flush(&mut self) -> Result<()> {
+        self.commands.send(SamplerCommand::Flush)?;
+        let response = self
+            .responses
+            .recv()
+            .context("Could not recieve flush response from controller thread")?;
+        let SamplerResponse::Ok() = response else {
+            bail!("Got invalid response from sample controller thread");
+        };
+        Ok(())
+    }
+
+    pub fn abort(self) -> Result<(Option<anyhow::Error>, F)> {
         drop(self.commands);
         let result = self.main_thread.join();
         match result {
             Err(payload) => std::panic::resume_unwind(payload),
-            Ok(Ok(traces)) => {
-                let (traces, errors): (Vec<_>, Vec<_>) = traces.into_iter().partition_result();
-                let trace: Trace = traces.into_iter().flatten().into();
-                match errors.into_iter().next() {
-                    Some(err) => (Err(err), Some(trace)),
-                    None => (Ok(()), Some(trace)),
-                }
-            }
-            Ok(Err(err)) => (Err(err), None),
+            Ok(Ok(val)) => Ok(val),
+            Ok(Err(err)) => Err(err),
         }
     }
 
-    pub fn inspect_trace(&mut self) -> Result<Trace> {
-        self.commands.send(SamplerCommand::InspectTrace)?;
-        let response = self.responses.recv()?;
-        let SamplerResponse::IntermediateTrace(trace) = response else {
-            bail!("Got invalid response from sample controller thread");
-        };
-        Ok(trace)
-    }
-
-    pub fn wait_timeout(self, timeout: Duration) -> SamplerWaitResult {
+    pub fn wait_timeout(self, timeout: Duration) -> SamplerWaitResult<F> {
         let start = Instant::now();
         let mut remaining = Some(timeout);
         while remaining.is_some() {
             match self.results.recv_timeout(timeout) {
                 Ok(Ok(_)) => remaining = timeout.checked_sub(start.elapsed()),
                 Ok(Err(e)) => return SamplerWaitResult::Err(e, None),
-                Err(RecvTimeoutError::Disconnected) => {
-                    let (res, trace) = self.abort();
-                    if let Err(err) = res {
-                        return SamplerWaitResult::Err(err, trace);
-                    }
-                    return SamplerWaitResult::Trace(trace.expect("No chains available"));
-                }
+                Err(RecvTimeoutError::Disconnected) => match self.abort() {
+                    Ok((Some(err), trace)) => return SamplerWaitResult::Err(err, Some(trace)),
+                    Ok((None, trace)) => return SamplerWaitResult::Trace(trace),
+                    Err(err) => return SamplerWaitResult::Err(err, None),
+                },
                 Err(RecvTimeoutError::Timeout) => break,
             }
         }
@@ -924,21 +952,16 @@ impl Sampler {
 #[cfg(test)]
 pub mod test_logps {
 
-    use std::sync::Arc;
+    use std::collections::HashMap;
 
     use crate::{
+        Model,
         cpu_math::{CpuLogpFunc, CpuMath},
         math_base::LogpError,
-        Settings,
     };
     use anyhow::Result;
-    use arrow::{
-        array::{Array, ArrayBuilder, FixedSizeListBuilder, PrimitiveBuilder},
-        datatypes::Float64Type,
-    };
+    use nuts_storable::HasDims;
     use thiserror::Error;
-
-    use super::{DrawStorage, Model};
 
     #[derive(Clone, Debug)]
     pub struct NormalLogp {
@@ -955,9 +978,21 @@ pub mod test_logps {
         }
     }
 
+    impl HasDims for &NormalLogp {
+        fn dim_sizes(&self) -> HashMap<String, u64> {
+            vec![
+                ("unconstrained_parameter".to_string(), self.dim as u64),
+                ("dim".to_string(), self.dim as u64),
+            ]
+            .into_iter()
+            .collect()
+        }
+    }
+
     impl CpuLogpFunc for &NormalLogp {
         type LogpError = NormalLogpError;
-        type TransformParams = ();
+        type FlowParameters = ();
+        type ExpandedVector = Vec<f64>;
 
         fn dim(&self) -> usize {
             self.dim
@@ -977,9 +1012,20 @@ pub mod test_logps {
             Ok(logp)
         }
 
+        fn expand_vector<R>(
+            &mut self,
+            _rng: &mut R,
+            array: &[f64],
+        ) -> std::result::Result<Self::ExpandedVector, crate::cpu_math::CpuMathError>
+        where
+            R: rand::Rng + ?Sized,
+        {
+            Ok(array.to_vec())
+        }
+
         fn inv_transform_normalize(
             &mut self,
-            _params: &Self::TransformParams,
+            _params: &Self::FlowParameters,
             _untransformed_position: &[f64],
             _untransofrmed_gradient: &[f64],
             _transformed_position: &mut [f64],
@@ -990,7 +1036,7 @@ pub mod test_logps {
 
         fn init_from_untransformed_position(
             &mut self,
-            _params: &Self::TransformParams,
+            _params: &Self::FlowParameters,
             _untransformed_position: &[f64],
             _untransformed_gradient: &mut [f64],
             _transformed_position: &mut [f64],
@@ -1001,7 +1047,7 @@ pub mod test_logps {
 
         fn init_from_transformed_position(
             &mut self,
-            _params: &Self::TransformParams,
+            _params: &Self::FlowParameters,
             _untransformed_position: &mut [f64],
             _untransformed_gradient: &mut [f64],
             _transformed_position: &[f64],
@@ -1016,7 +1062,7 @@ pub mod test_logps {
             _untransformed_positions: impl Iterator<Item = &'b [f64]>,
             _untransformed_gradients: impl Iterator<Item = &'b [f64]>,
             _untransformed_logp: impl Iterator<Item = &'b f64>,
-            _params: &'b mut Self::TransformParams,
+            _params: &'b mut Self::FlowParameters,
         ) -> std::result::Result<(), Self::LogpError> {
             unimplemented!()
         }
@@ -1027,43 +1073,15 @@ pub mod test_logps {
             _untransformed_position: &[f64],
             _untransfogmed_gradient: &[f64],
             _chain: u64,
-        ) -> std::result::Result<Self::TransformParams, Self::LogpError> {
+        ) -> std::result::Result<Self::FlowParameters, Self::LogpError> {
             unimplemented!()
         }
 
         fn transformation_id(
             &self,
-            _params: &Self::TransformParams,
+            _params: &Self::FlowParameters,
         ) -> std::result::Result<i64, Self::LogpError> {
             unimplemented!()
-        }
-    }
-
-    pub struct SimpleDrawStorage {
-        draws: FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>,
-    }
-
-    impl SimpleDrawStorage {
-        pub fn new(size: usize) -> Self {
-            let items = PrimitiveBuilder::new();
-            let draws = FixedSizeListBuilder::new(items, size as _);
-            Self { draws }
-        }
-    }
-
-    impl DrawStorage for SimpleDrawStorage {
-        fn append_value(&mut self, point: &[f64]) -> Result<()> {
-            self.draws.values().append_slice(point);
-            self.draws.append(true);
-            Ok(())
-        }
-
-        fn finalize(mut self) -> Result<Arc<dyn Array>> {
-            Ok(ArrayBuilder::finish(&mut self.draws))
-        }
-
-        fn inspect(&self) -> Result<Arc<dyn Array>> {
-            Ok(ArrayBuilder::finish_cloned(&self.draws))
         }
     }
 
@@ -1077,22 +1095,12 @@ pub mod test_logps {
         }
     }
 
-    impl<F: Send + Sync + 'static> Model for CpuModel<F>
+    impl<F> Model for CpuModel<F>
     where
+        F: Send + Sync + 'static,
         for<'a> &'a F: CpuLogpFunc,
     {
         type Math<'model> = CpuMath<&'model F>;
-
-        type DrawStorage<'model, S: Settings> = SimpleDrawStorage;
-
-        fn new_trace<'model, S: Settings, R: rand::prelude::Rng + ?Sized>(
-            &'model self,
-            _rng: &mut R,
-            _chain_id: u64,
-            _settings: &'model S,
-        ) -> Result<Self::DrawStorage<'model, S>> {
-            Ok(SimpleDrawStorage::new((&self.logp).dim()))
-        }
 
         fn math(&self) -> Result<Self::Math<'_>> {
             Ok(CpuMath::new(&self.logp))
@@ -1111,20 +1119,24 @@ pub mod test_logps {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
 
     use super::test_logps::NormalLogp;
     use crate::{
+        Chain, DiagGradNutsSettings, Sampler, ZarrConfig,
         cpu_math::CpuMath,
         sample_sequentially,
-        sampler::{test_logps::CpuModel, Settings},
-        Chain, DiagGradNutsSettings, Sampler,
+        sampler::{Settings, test_logps::CpuModel},
     };
 
     use anyhow::Result;
     use itertools::Itertools;
     use pretty_assertions::assert_eq;
-    use rand::{rngs::StdRng, SeedableRng};
+    use rand::{SeedableRng, rngs::StdRng};
+    use zarrs::storage::store::MemoryStore;
 
     #[test]
     fn sample_chain() -> Result<()> {
@@ -1169,28 +1181,37 @@ mod tests {
         };
 
         let model = CpuModel::new(logp.clone());
-        let mut sampler = Sampler::new(model, settings, 4, None)?;
+        let store = MemoryStore::new();
+
+        let zarr_config = ZarrConfig::new(Arc::new(store));
+        let mut sampler = Sampler::new(model, settings, zarr_config, 4, None)?;
         sampler.pause()?;
         sampler.pause()?;
-        let _trace = sampler.inspect_trace()?;
+        // TODO flush trace
         sampler.resume()?;
-        let (ok, trace) = sampler.abort();
-        ok?;
-        assert!(trace.expect("No trace").chains.len() <= settings.num_chains);
+        let (ok, _) = sampler.abort()?;
+        if let Some(err) = ok {
+            Err(err)?;
+        }
 
+        let store = MemoryStore::new();
+        let zarr_config = ZarrConfig::new(Arc::new(store));
         let model = CpuModel::new(logp.clone());
-        let mut sampler = Sampler::new(model, settings, 4, None)?;
+        let mut sampler = Sampler::new(model, settings, zarr_config, 4, None)?;
         sampler.pause()?;
-        sampler.abort().0?;
+        if let (Some(err), _) = sampler.abort()? {
+            Err(err)?;
+        }
 
+        let store = MemoryStore::new();
+        let zarr_config = ZarrConfig::new(Arc::new(store));
         let model = CpuModel::new(logp.clone());
         let start = Instant::now();
-        let sampler = Sampler::new(model, settings, 4, None)?;
+        let sampler = Sampler::new(model, settings, zarr_config, 4, None)?;
 
         let mut sampler = match sampler.wait_timeout(Duration::from_nanos(100)) {
-            super::SamplerWaitResult::Trace(trace) => {
+            super::SamplerWaitResult::Trace(_) => {
                 dbg!(start.elapsed());
-                assert!(trace.chains.len() == settings.num_chains);
                 panic!("finished");
             }
             super::SamplerWaitResult::Timeout(sampler) => sampler,
@@ -1204,12 +1225,8 @@ mod tests {
         }
 
         match sampler.wait_timeout(Duration::from_secs(1)) {
-            super::SamplerWaitResult::Trace(trace) => {
+            super::SamplerWaitResult::Trace(_) => {
                 dbg!(start.elapsed());
-                assert!(trace.chains.len() == settings.num_chains);
-                trace.chains.iter().for_each(|chain| {
-                    assert!(chain.draws.len() as u64 == settings.num_tune + settings.num_draws);
-                });
             }
             super::SamplerWaitResult::Timeout(_) => {
                 panic!("timeout")

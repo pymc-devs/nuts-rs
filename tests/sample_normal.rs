@@ -3,18 +3,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-use arrow::{
-    array::{Array, ArrayBuilder, FixedSizeListBuilder, PrimitiveBuilder},
-    datatypes::Float64Type,
-};
+use anyhow::Context;
 use nuts_rs::{
-    CpuLogpFunc, CpuMath, DiagAdaptExpSettings, DiagGradNutsSettings, DrawStorage,
-    EuclideanAdaptOptions, LogpError, LowRankNutsSettings, Model, Sampler, SamplerWaitResult,
-    Settings, Trace,
+    CpuLogpFunc, CpuMath, DiagAdaptExpSettings, DiagGradNutsSettings, EuclideanAdaptOptions,
+    LogpError, LowRankNutsSettings, Model, Sampler, SamplerWaitResult, ZarrConfig,
 };
+use nuts_storable::HasDims;
 use rand::prelude::Rng;
 use rand_distr::{Distribution, StandardNormal};
 use thiserror::Error;
+use zarrs::{
+    array::Array,
+    array_subset::ArraySubset,
+    storage::{ReadableListableStorageTraits, store::MemoryStore},
+};
 
 struct NormalLogp<'a> {
     dim: usize,
@@ -30,9 +32,19 @@ impl LogpError for NormalLogpError {
     }
 }
 
+impl HasDims for NormalLogp<'_> {
+    fn dim_sizes(&self) -> std::collections::HashMap<String, u64> {
+        std::collections::HashMap::from([
+            ("unconstrained_parameter".to_string(), self.dim as u64),
+            ("dim".to_string(), self.dim as u64),
+        ])
+    }
+}
+
 impl<'a> CpuLogpFunc for NormalLogp<'a> {
     type LogpError = NormalLogpError;
-    type TransformParams = ();
+    type FlowParameters = ();
+    type ExpandedVector = Vec<f64>;
 
     fn dim(&self) -> usize {
         self.dim
@@ -55,90 +67,15 @@ impl<'a> CpuLogpFunc for NormalLogp<'a> {
         Ok(logp)
     }
 
-    fn inv_transform_normalize(
-        &mut self,
-        _params: &Self::TransformParams,
-        _untransformed_position: &[f64],
-        _untransofrmed_gradient: &[f64],
-        _transformed_position: &mut [f64],
-        _transformed_gradient: &mut [f64],
-    ) -> Result<f64, Self::LogpError> {
-        todo!()
-    }
-
-    fn init_from_transformed_position(
-        &mut self,
-        _params: &Self::TransformParams,
-        _untransformed_position: &mut [f64],
-        _untransformed_gradient: &mut [f64],
-        _transformed_position: &[f64],
-        _transformed_gradient: &mut [f64],
-    ) -> Result<(f64, f64), Self::LogpError> {
-        todo!()
-    }
-
-    fn init_from_untransformed_position(
-        &mut self,
-        _params: &Self::TransformParams,
-        _untransformed_position: &[f64],
-        _untransformed_gradient: &mut [f64],
-        _transformed_position: &mut [f64],
-        _transformed_gradient: &mut [f64],
-    ) -> Result<(f64, f64), Self::LogpError> {
-        todo!()
-    }
-
-    fn update_transformation<'b, R: rand::Rng + ?Sized>(
-        &'b mut self,
-        _rng: &mut R,
-        _untransformed_positions: impl Iterator<Item = &'b [f64]>,
-        _untransformed_gradients: impl Iterator<Item = &'b [f64]>,
-        _logps: impl Iterator<Item = &'b f64>,
-        _params: &'b mut Self::TransformParams,
-    ) -> Result<(), Self::LogpError> {
-        todo!()
-    }
-
-    fn new_transformation<R: rand::Rng + ?Sized>(
+    fn expand_vector<R>(
         &mut self,
         _rng: &mut R,
-        _untransformed_position: &[f64],
-        _untransfogmed_gradient: &[f64],
-        _chain: u64,
-    ) -> Result<Self::TransformParams, Self::LogpError> {
-        todo!()
-    }
-
-    fn transformation_id(&self, _params: &Self::TransformParams) -> Result<i64, Self::LogpError> {
-        todo!()
-    }
-}
-
-struct Storage {
-    draws: FixedSizeListBuilder<PrimitiveBuilder<Float64Type>>,
-}
-
-impl Storage {
-    fn new(size: usize) -> Storage {
-        let values = PrimitiveBuilder::new();
-        let draws = FixedSizeListBuilder::new(values, size as i32);
-        Storage { draws }
-    }
-}
-
-impl DrawStorage for Storage {
-    fn append_value(&mut self, point: &[f64]) -> anyhow::Result<()> {
-        self.draws.values().append_slice(point);
-        self.draws.append(true);
-        Ok(())
-    }
-
-    fn finalize(mut self) -> anyhow::Result<Arc<dyn Array>> {
-        Ok(ArrayBuilder::finish(&mut self.draws))
-    }
-
-    fn inspect(&self) -> anyhow::Result<Arc<dyn Array>> {
-        Ok(ArrayBuilder::finish_cloned(&self.draws))
+        array: &[f64],
+    ) -> Result<Self::ExpandedVector, nuts_rs::CpuMathError>
+    where
+        R: rand::Rng + ?Sized,
+    {
+        Ok(array.to_vec())
     }
 }
 
@@ -158,20 +95,6 @@ impl Model for NormalModel {
     where
         Self: 'model;
 
-    type DrawStorage<'model, S: Settings>
-        = Storage
-    where
-        Self: 'model;
-
-    fn new_trace<'model, S: Settings, R: Rng + ?Sized>(
-        &'model self,
-        _rng: &mut R,
-        _chain_id: u64,
-        _settings: &'model S,
-    ) -> anyhow::Result<Self::DrawStorage<'model, S>> {
-        Ok(Storage::new(self.mu.len()))
-    }
-
     fn math(&self) -> anyhow::Result<Self::Math<'_>> {
         Ok(CpuMath::new(NormalLogp {
             dim: self.mu.len(),
@@ -190,7 +113,7 @@ impl Model for NormalModel {
     }
 }
 
-fn sample() -> anyhow::Result<Trace> {
+fn sample() -> anyhow::Result<Arc<MemoryStore>> {
     let mu = vec![0.5; 100];
     let model = NormalModel::new(mu.into());
     let settings = DiagGradNutsSettings {
@@ -199,19 +122,21 @@ fn sample() -> anyhow::Result<Trace> {
         ..Default::default()
     };
 
-    let mut sampler = Sampler::new(model, settings, 6, None)?;
+    let store = Arc::new(MemoryStore::new());
+    let trace_config = ZarrConfig::new(store.clone());
+    let mut sampler = Sampler::new(model, settings, trace_config, 6, None)?;
 
-    let trace = loop {
+    let _ = loop {
         match sampler.wait_timeout(Duration::from_secs(1)) {
             SamplerWaitResult::Trace(trace) => break trace,
             SamplerWaitResult::Timeout(new_sampler) => sampler = new_sampler,
             SamplerWaitResult::Err(err, _trace) => return Err(err),
         };
     };
-    Ok(trace)
+    Ok(store)
 }
 
-fn sample_debug_stats() -> anyhow::Result<Trace> {
+fn sample_debug_stats() -> anyhow::Result<Arc<dyn ReadableListableStorageTraits>> {
     let mu = vec![0.5; 100];
     let model = NormalModel::new(mu.into());
     let settings = DiagGradNutsSettings {
@@ -231,19 +156,43 @@ fn sample_debug_stats() -> anyhow::Result<Trace> {
         ..Default::default()
     };
 
-    let mut sampler = Sampler::new(model, settings, 6, None)?;
+    let store = Arc::new(MemoryStore::new());
+    let trace_config = ZarrConfig::new(store.clone());
+    let mut sampler = Sampler::new(model, settings, trace_config, 6, None)?;
 
-    let trace = loop {
+    let _ = loop {
         match sampler.wait_timeout(Duration::from_secs(1)) {
             SamplerWaitResult::Trace(trace) => break trace,
             SamplerWaitResult::Timeout(new_sampler) => sampler = new_sampler,
             SamplerWaitResult::Err(err, _trace) => return Err(err),
         };
     };
-    Ok(trace)
+
+    let store_dyn: Arc<dyn ReadableListableStorageTraits> = store.clone();
+
+    let diverging = Array::open(store_dyn.clone(), "/sample_stats/diverging")
+        .context("Could not read diverging array")?;
+    assert!(
+        diverging.dimension_names().as_ref().unwrap()
+            == &[Some("chain".to_string()), Some("draw".to_string())]
+    );
+
+    let _: Vec<bool> = diverging
+        .retrieve_array_subset_elements(&ArraySubset::new_with_shape(diverging.shape().to_vec()))?;
+
+    let logp = Array::open(store_dyn.clone(), "/sample_stats/logp")
+        .context("Could not read logp array")?;
+    assert!(
+        logp.dimension_names().as_ref().unwrap()
+            == &[Some("chain".to_string()), Some("draw".to_string())]
+    );
+    let _: Vec<f64> =
+        logp.retrieve_array_subset_elements(&ArraySubset::new_with_shape(logp.shape().to_vec()))?;
+
+    Ok(store)
 }
 
-fn sample_eigs_debug_stats() -> anyhow::Result<Trace> {
+fn sample_eigs_debug_stats() -> anyhow::Result<Arc<MemoryStore>> {
     let mu = vec![0.5; 10];
     let model = NormalModel::new(mu.into());
     let settings = LowRankNutsSettings {
@@ -264,9 +213,11 @@ fn sample_eigs_debug_stats() -> anyhow::Result<Trace> {
         ..Default::default()
     };
 
-    let mut sampler = Sampler::new(model, settings, 6, None)?;
+    let store = Arc::new(MemoryStore::new());
+    let trace_config = ZarrConfig::new(store.clone());
+    let mut sampler = Sampler::new(model, settings, trace_config, 1, None)?;
 
-    let trace = loop {
+    let _trace = loop {
         match sampler.wait_timeout(Duration::from_secs(1)) {
             SamplerWaitResult::Trace(trace) => break trace,
             SamplerWaitResult::Timeout(new_sampler) => sampler = new_sampler,
@@ -274,14 +225,13 @@ fn sample_eigs_debug_stats() -> anyhow::Result<Trace> {
         };
     };
 
-    Ok(trace)
+    Ok(store)
 }
 
 #[test]
 fn run() -> anyhow::Result<()> {
     let start = Instant::now();
-    let trace = sample()?;
-    assert!(trace.chains.len() == 6);
+    let _ = sample()?;
     dbg!(start.elapsed());
     Ok(())
 }
@@ -289,8 +239,7 @@ fn run() -> anyhow::Result<()> {
 #[test]
 fn run_debug_stats() -> anyhow::Result<()> {
     let start = Instant::now();
-    let trace = sample_debug_stats()?;
-    assert!(trace.chains.len() == 6);
+    let _ = sample_debug_stats()?;
     dbg!(start.elapsed());
     Ok(())
 }
@@ -298,8 +247,7 @@ fn run_debug_stats() -> anyhow::Result<()> {
 #[test]
 fn run_debug_stats_eigs() -> anyhow::Result<()> {
     let start = Instant::now();
-    let trace = sample_eigs_debug_stats()?;
-    assert!(trace.chains.len() == 1);
+    let _ = sample_eigs_debug_stats()?;
     dbg!(start.elapsed());
     Ok(())
 }
