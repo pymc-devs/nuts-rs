@@ -98,8 +98,9 @@ mod nuts;
 mod sampler;
 mod sampler_stats;
 mod state;
-mod stepsize;
+mod stepsize_adam;
 mod stepsize_adapt;
+mod stepsize_dual_avg;
 mod transform_adapt_strategy;
 mod transformed_hamiltonian;
 
@@ -117,5 +118,6 @@ pub use sampler::{
 
 pub use low_rank_mass_matrix::LowRankSettings;
 pub use mass_matrix_adapt::DiagAdaptExpSettings;
-pub use stepsize_adapt::DualAverageSettings;
+pub use stepsize_adam::AdamOptions;
+pub use stepsize_adapt::{StepSizeAdaptMethod, StepSizeAdaptOptions, StepSizeSettings};
 pub use transform_adapt_strategy::TransformedSettings;

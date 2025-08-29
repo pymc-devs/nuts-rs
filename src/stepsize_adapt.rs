@@ -2,6 +2,7 @@ use arrow::{
     array::{ArrayBuilder, PrimitiveBuilder, StructArray},
     datatypes::{DataType, Field, Float64Type, UInt64Type},
 };
+use itertools::Either;
 use rand::Rng;
 use rand_distr::Uniform;
 
@@ -9,23 +10,69 @@ use crate::{
     hamiltonian::{Direction, Hamiltonian, LeapfrogResult, Point},
     nuts::{Collector, NutsOptions},
     sampler_stats::{SamplerStats, StatTraceBuilder},
-    stepsize::{AcceptanceRateCollector, DualAverage, DualAverageOptions},
+    stepsize_adam::{Adam, AdamOptions},
+    stepsize_dual_avg::{AcceptanceRateCollector, DualAverage, DualAverageOptions},
     Math, NutsError, Settings,
 };
+use std::fmt::Debug;
 
+/// Method used for step size adaptation
+#[derive(Debug, Clone, Copy)]
+pub enum StepSizeAdaptMethod {
+    /// Use dual averaging for step size adaptation (default)
+    DualAverage,
+    /// Use Adam optimizer for step size adaptation
+    Adam,
+    Fixed(f64),
+}
+
+impl Default for StepSizeAdaptMethod {
+    fn default() -> Self {
+        StepSizeAdaptMethod::Adam
+    }
+}
+
+/// Options for step size adaptation
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StepSizeAdaptOptions {
+    pub method: StepSizeAdaptMethod,
+    /// Dual averaging adaptation options
+    pub dual_average: DualAverageOptions,
+    /// Adam optimizer adaptation options
+    pub adam: AdamOptions,
+}
+
+/// Step size adaptation strategy
 pub struct Strategy {
-    step_size_adapt: DualAverage,
-    options: DualAverageSettings,
+    /// The step size adaptation method being used
+    adaptation: Option<Either<DualAverage, Adam>>,
+    /// Settings for step size adaptation
+    options: StepSizeSettings,
+    /// Last mean tree accept rate
     pub last_mean_tree_accept: f64,
+    /// Last symmetric mean tree accept rate
     pub last_sym_mean_tree_accept: f64,
+    /// Last number of steps
     pub last_n_steps: u64,
 }
 
 impl Strategy {
-    pub fn new(options: DualAverageSettings) -> Self {
+    pub fn new(options: StepSizeSettings) -> Self {
+        let adaptation = match options.adapt_options.method {
+            StepSizeAdaptMethod::DualAverage => Some(Either::Left(DualAverage::new(
+                options.adapt_options.dual_average,
+                options.initial_step,
+            ))),
+            StepSizeAdaptMethod::Adam => Some(Either::Right(Adam::new(
+                options.adapt_options.adam,
+                options.initial_step,
+            ))),
+            StepSizeAdaptMethod::Fixed(_) => None,
+        };
+
         Self {
+            adaptation,
             options,
-            step_size_adapt: DualAverage::new(options.params, options.initial_step),
             last_n_steps: 0,
             last_sym_mean_tree_accept: 0.0,
             last_mean_tree_accept: 0.0,
@@ -40,10 +87,10 @@ impl Strategy {
         position: &[f64],
         rng: &mut R,
     ) -> Result<(), NutsError> {
-        if let Some(step_size) = self.options.fixed_step_size {
+        if let StepSizeAdaptMethod::Fixed(step_size) = self.options.adapt_options.method {
             *hamiltonian.step_size_mut() = step_size;
             return Ok(());
-        }
+        };
         let mut state = hamiltonian.init_state(math, position)?;
         hamiltonian.initialize_trajectory(math, &mut state, rng)?;
 
@@ -79,8 +126,20 @@ impl Strategy {
                 Direction::Forward => {
                     if (accept_stat <= self.options.target_accept) | (hamiltonian.step_size() > 1e5)
                     {
-                        self.step_size_adapt =
-                            DualAverage::new(self.options.params, hamiltonian.step_size());
+                        match self.adaptation.as_mut().expect("Adaptation must be set") {
+                            Either::Left(adapt) => {
+                                *adapt = DualAverage::new(
+                                    self.options.adapt_options.dual_average,
+                                    hamiltonian.step_size(),
+                                );
+                            }
+                            Either::Right(adapt) => {
+                                *adapt = Adam::new(
+                                    self.options.adapt_options.adam,
+                                    hamiltonian.step_size(),
+                                );
+                            }
+                        }
                         return Ok(());
                     }
                     *hamiltonian.step_size_mut() *= 2.;
@@ -89,8 +148,20 @@ impl Strategy {
                     if (accept_stat >= self.options.target_accept)
                         | (hamiltonian.step_size() < 1e-10)
                     {
-                        self.step_size_adapt =
-                            DualAverage::new(self.options.params, hamiltonian.step_size());
+                        match self.adaptation.as_mut().expect("Adaptation must be set") {
+                            Either::Left(adapt) => {
+                                *adapt = DualAverage::new(
+                                    self.options.adapt_options.dual_average,
+                                    hamiltonian.step_size(),
+                                );
+                            }
+                            Either::Right(adapt) => {
+                                *adapt = Adam::new(
+                                    self.options.adapt_options.adam,
+                                    hamiltonian.step_size(),
+                                );
+                            }
+                        }
                         return Ok(());
                     }
                     *hamiltonian.step_size_mut() /= 2.;
@@ -112,13 +183,27 @@ impl Strategy {
     }
 
     pub fn update_estimator_early(&mut self) {
-        self.step_size_adapt
-            .advance(self.last_mean_tree_accept, self.options.target_accept);
+        match self.adaptation.as_mut() {
+            None => {}
+            Some(Either::Left(ref mut adapt)) => {
+                adapt.advance(self.last_mean_tree_accept, self.options.target_accept);
+            }
+            Some(Either::Right(ref mut adapt)) => {
+                adapt.advance(self.last_mean_tree_accept, self.options.target_accept);
+            }
+        }
     }
 
     pub fn update_estimator_late(&mut self) {
-        self.step_size_adapt
-            .advance(self.last_sym_mean_tree_accept, self.options.target_accept);
+        match self.adaptation.as_mut() {
+            None => {}
+            Some(Either::Left(ref mut adapt)) => {
+                adapt.advance(self.last_sym_mean_tree_accept, self.options.target_accept);
+            }
+            Some(Either::Right(ref mut adapt)) => {
+                adapt.advance(self.last_sym_mean_tree_accept, self.options.target_accept);
+            }
+        }
     }
 
     pub fn update_stepsize<M: Math, R: Rng + ?Sized>(
@@ -127,12 +212,22 @@ impl Strategy {
         hamiltonian: &mut impl Hamiltonian<M>,
         use_best_guess: bool,
     ) {
-        let step_size = if let Some(step_size) = self.options.fixed_step_size {
-            step_size
-        } else if use_best_guess {
-            self.step_size_adapt.current_step_size_adapted()
-        } else {
-            self.step_size_adapt.current_step_size()
+        let step_size = match self.adaptation {
+            None => {
+                if let StepSizeAdaptMethod::Fixed(val) = self.options.adapt_options.method {
+                    val
+                } else {
+                    panic!("Adaptation method must be Fixed if adaptation is None")
+                }
+            }
+            Some(Either::Left(ref adapt)) => {
+                if use_best_guess {
+                    adapt.current_step_size_adapted()
+                } else {
+                    adapt.current_step_size()
+                }
+            }
+            Some(Either::Right(ref adapt)) => adapt.current_step_size(),
         };
 
         if let Some(jitter) = self.options.jitter {
@@ -159,8 +254,18 @@ pub struct StatsBuilder {
 
 impl<M: Math> StatTraceBuilder<M, Strategy> for StatsBuilder {
     fn append_value(&mut self, _math: Option<&mut M>, value: &Strategy) {
-        self.step_size_bar
-            .append_value(value.step_size_adapt.current_step_size_adapted());
+        let step_size_adapted = match value.adaptation {
+            None => {
+                if let StepSizeAdaptMethod::Fixed(val) = value.options.adapt_options.method {
+                    val
+                } else {
+                    panic!("Adaptation method must be Fixed if adaptation is None")
+                }
+            }
+            Some(Either::Left(ref adapt)) => adapt.current_step_size_adapted(),
+            Some(Either::Right(ref adapt)) => adapt.current_step_size(),
+        };
+        self.step_size_bar.append_value(step_size_adapted);
         self.mean_tree_accept
             .append_value(value.last_mean_tree_accept);
         self.mean_tree_accept_sym
@@ -239,22 +344,24 @@ impl<M: Math> SamplerStats<M> for Strategy {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct DualAverageSettings {
+pub struct StepSizeSettings {
+    /// Target acceptance rate
     pub target_accept: f64,
+    /// Initial step size
     pub initial_step: f64,
-    pub params: DualAverageOptions,
-    pub fixed_step_size: Option<f64>,
+    /// Optional jitter to add to step size (randomization)
     pub jitter: Option<f64>,
+    /// Adaptation options specific to the chosen method
+    pub adapt_options: StepSizeAdaptOptions,
 }
 
-impl Default for DualAverageSettings {
+impl Default for StepSizeSettings {
     fn default() -> Self {
         Self {
             target_accept: 0.8,
             initial_step: 0.1,
-            params: DualAverageOptions::default(),
-            fixed_step_size: None,
             jitter: Some(0.1),
+            adapt_options: StepSizeAdaptOptions::default(),
         }
     }
 }

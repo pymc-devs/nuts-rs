@@ -24,10 +24,6 @@ pub trait MassMatrix<M: Math>: SamplerStats<M> {
     );
 }
 
-pub struct NullCollector {}
-
-impl<M: Math, P: Point<M>> Collector<M, P> for NullCollector {}
-
 #[derive(Debug)]
 pub struct DiagMassMatrix<M: Math> {
     inv_stds: M::Vector,

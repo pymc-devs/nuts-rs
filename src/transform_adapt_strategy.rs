@@ -6,17 +6,19 @@ use crate::hamiltonian::{Hamiltonian, Point};
 use crate::nuts::{Collector, NutsOptions, SampleInfo};
 use crate::sampler_stats::{SamplerStats, StatTraceBuilder};
 use crate::state::State;
-use crate::stepsize::AcceptanceRateCollector;
-use crate::stepsize_adapt::{StatsBuilder as StepSizeStatsBuilder, Strategy as StepSizeStrategy};
+use crate::stepsize_adapt::{
+    StatsBuilder as StepSizeStatsBuilder, StepSizeSettings, Strategy as StepSizeStrategy,
+};
+use crate::stepsize_dual_avg::AcceptanceRateCollector;
 use crate::transformed_hamiltonian::TransformedHamiltonian;
-use crate::{DualAverageSettings, Math, NutsError, Settings};
+use crate::{Math, NutsError, Settings};
 
 #[derive(Clone, Copy, Debug)]
 pub struct TransformedSettings {
     pub step_size_window: f64,
     pub transform_update_freq: u64,
     pub use_orbit_for_training: bool,
-    pub dual_average_options: DualAverageSettings,
+    pub step_size_settings: StepSizeSettings,
     pub transform_train_max_energy_error: f64,
 }
 
@@ -27,7 +29,7 @@ impl Default for TransformedSettings {
             transform_update_freq: 128,
             use_orbit_for_training: false,
             transform_train_max_energy_error: 20f64,
-            dual_average_options: Default::default(),
+            step_size_settings: Default::default(),
         }
     }
 }
@@ -172,7 +174,7 @@ impl<M: Math> AdaptStrategy<M> for TransformAdaptation {
     type Options = TransformedSettings;
 
     fn new(_math: &mut M, options: Self::Options, num_tune: u64, chain: u64) -> Self {
-        let step_size = StepSizeStrategy::new(options.dual_average_options);
+        let step_size = StepSizeStrategy::new(options.step_size_settings);
         let final_window_size =
             ((num_tune as f64) * (1f64 - options.step_size_window)).floor() as u64;
         Self {
