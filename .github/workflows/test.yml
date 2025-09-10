@@ -2,36 +2,10 @@ on: [push, pull_request]
 
 name: Run tests
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  check:
-    name: Check
-    strategy:
-      matrix:
-        rust:
-          - stable
-          - nightly
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v2
-
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: ${{ matrix.rust }}
-          override: true
-
-      - name: Run cargo check nightly features
-        if: ${{ matrix.rust == 'nightly' }}
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
-      - name: Run cargo check
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
-
   test:
     name: Test Suite
     runs-on: ubuntu-latest
@@ -42,21 +16,7 @@ jobs:
           - nightly
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v2
-
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: nightly
-          override: true
-
-      - name: Run cargo test with nightly features
-        if: ${{ matrix.rust == 'nightly' }}
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-      - name: Run cargo test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
+        uses: actions/checkout@v4
+      - run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
+      - run: cargo build --verbose --all-features
+      - run: cargo test --verbose --all-features
