@@ -150,7 +150,7 @@ pub use stepsize_adapt::{StepSizeAdaptMethod, StepSizeAdaptOptions, StepSizeSett
 pub use transform_adapt_strategy::TransformedSettings;
 
 #[cfg(feature = "zarr")]
-pub use zarr_storage::{ZarrConfig, ZarrTraceStorage};
+pub use zarr_storage::{ZarrAsyncConfig, ZarrAsyncTraceStorage, ZarrConfig, ZarrTraceStorage};
 
 pub use csv_storage::{CsvConfig, CsvTraceStorage};
 pub use hashmap_storage::{HashMapConfig, HashMapValue};
