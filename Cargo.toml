@@ -31,12 +31,14 @@ zarrs = { version = "0.21.0", features = [
   "filesystem",
   "gzip",
   "sharding",
+  "async",
 ], optional = true }
 ndarray = { version = "0.16.1", optional = true }
 nuts-derive = { path = "./nuts-derive" }
 nuts-storable = { path = "./nuts-storable" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0"
+tokio = { version = "1.0", features = ["rt"], optional = true }
 
 [dev-dependencies]
 proptest = "1.6.0"
@@ -48,9 +50,12 @@ equator = "0.4.2"
 serde_json = "1.0"
 ndarray = "0.16.1"
 tempfile = "3.0"
+zarrs_object_store = "0.4.3"
+object_store = "0.12.0"
+tokio = { version = "1.0", features = ["rt", "rt-multi-thread"] }
 
 [features]
-zarr = ["dep:zarrs"]
+zarr = ["dep:zarrs", "dep:tokio"]
 ndarray = ["dep:ndarray"]
 
 [[bench]]
