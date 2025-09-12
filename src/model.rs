@@ -27,7 +27,7 @@ pub trait Model: Send + Sync + 'static {
         Self: 'model;
 
     /// Returns the math backend for this model.
-    fn math(&self) -> Result<Self::Math<'_>>;
+    fn math<R: Rng + ?Sized>(&self, rng: &mut R) -> Result<Self::Math<'_>>;
 
     /// Initializes the starting position for MCMC sampling.
     ///

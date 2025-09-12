@@ -563,7 +563,7 @@ impl<T: TraceStorage> ChainProcess<T> {
         let (stop_marker_tx, stop_marker_rx) = channel();
 
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        rng.set_stream(chain_id);
+        rng.set_stream(chain_id + 1);
 
         let chain_trace = Arc::new(Mutex::new(Some(chain_trace)));
         let progress = Arc::new(Mutex::new(ChainProgress::new(
@@ -578,7 +578,9 @@ impl<T: TraceStorage> ChainProcess<T> {
             let progress = progress_inner;
 
             let mut sample = move || {
-                let logp = model.math().context("Failed to create model density")?;
+                let logp = model
+                    .math(&mut rng)
+                    .context("Failed to create model density")?;
                 let dim = logp.dim();
 
                 let mut sampler = settings.new_chain(chain_id, logp, &mut rng);
@@ -660,7 +662,7 @@ impl<T: TraceStorage> ChainProcess<T> {
 
             let result = sample();
 
-            // We intentially ignore errors here, because this means some other
+            // We intentionally ignore errors here, because this means some other
             // chain already failed, and should have reported the error.
             let _ = results.send(result);
             drop(results);
@@ -748,7 +750,12 @@ impl<F: Send + 'static> Sampler<F> {
                 let results = results_tx;
                 let mut chains = Vec::with_capacity(settings.num_chains());
 
-                let math = model_ref.math().context("Could not create model density")?;
+                let mut rng = ChaCha8Rng::seed_from_u64(settings.seed());
+                rng.set_stream(0);
+
+                let math = model_ref
+                    .math(&mut rng)
+                    .context("Could not create model density")?;
                 let trace = trace_config
                     .new_trace(settings_ref, &math)
                     .context("Could not create trace object")?;
@@ -961,6 +968,7 @@ pub mod test_logps {
     };
     use anyhow::Result;
     use nuts_storable::HasDims;
+    use rand::Rng;
     use thiserror::Error;
 
     #[derive(Clone, Debug)]
@@ -1102,7 +1110,7 @@ pub mod test_logps {
     {
         type Math<'model> = CpuMath<&'model F>;
 
-        fn math(&self) -> Result<Self::Math<'_>> {
+        fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> Result<Self::Math<'_>> {
             Ok(CpuMath::new(&self.logp))
         }
 

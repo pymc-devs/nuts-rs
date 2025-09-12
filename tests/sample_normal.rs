@@ -95,7 +95,7 @@ impl Model for NormalModel {
     where
         Self: 'model;
 
-    fn math(&self) -> anyhow::Result<Self::Math<'_>> {
+    fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> anyhow::Result<Self::Math<'_>> {
         Ok(CpuMath::new(NormalLogp {
             dim: self.mu.len(),
             mu: &self.mu,

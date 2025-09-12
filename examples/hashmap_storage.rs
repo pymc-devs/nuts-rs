@@ -27,6 +27,7 @@ impl MultivariateNormal {
 }
 
 // Custom LogpError implementation
+#[allow(dead_code)]
 #[derive(Debug, Error)]
 enum MyLogpError {
     #[error("Recoverable error in logp calculation: {0}")]
@@ -114,7 +115,7 @@ impl Model for MvnModel {
     where
         Self: 'model;
 
-    fn math(&self) -> Result<Self::Math<'_>> {
+    fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> Result<Self::Math<'_>> {
         Ok(self.math.clone())
     }
 
@@ -227,6 +228,9 @@ fn main() -> Result<()> {
                             }
                             nuts_rs::HashMapValue::U64(vec) => {
                                 println!("    {}: {} u64 draws", name, vec.len());
+                            }
+                            nuts_rs::HashMapValue::String(vec) => {
+                                println!("    {}: {} string draws", name, vec.len());
                             }
                         }
                     }
