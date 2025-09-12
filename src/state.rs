@@ -104,11 +104,10 @@ impl<M: Math, P: Point<M>> State<M, P> {
 impl<M: Math, P: Point<M>> Drop for State<M, P> {
     fn drop(&mut self) {
         let rc = unsafe { std::mem::ManuallyDrop::take(&mut self.inner) };
-        if (Rc::strong_count(&rc) == 1) & (Rc::weak_count(&rc) == 0) {
-            if let Some(storage) = rc.reuser.upgrade() {
+        if (Rc::strong_count(&rc) == 1) & (Rc::weak_count(&rc) == 0)
+            && let Some(storage) = rc.reuser.upgrade() {
                 storage.free_states.borrow_mut().push(rc);
             }
-        }
     }
 }
 
