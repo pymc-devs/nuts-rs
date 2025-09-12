@@ -5,18 +5,18 @@ use nuts_storable::{HasDims, Storable};
 use rand::Rng;
 use serde::Serialize;
 
+use super::mass_matrix::MassMatrixAdaptStrategy;
+use super::stepsize::AcceptanceRateCollector;
+use super::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
 use crate::{
     NutsError,
     chain::AdaptStrategy,
     euclidean_hamiltonian::EuclideanHamiltonian,
     hamiltonian::{DivergenceInfo, Hamiltonian, Point},
-    mass_matrix_adapt::MassMatrixAdaptStrategy,
     math_base::Math,
     nuts::{Collector, NutsOptions},
     sampler_stats::{SamplerStats, StatsDims},
     state::State,
-    stepsize_adapt::{StepSizeSettings, Strategy as StepSizeStrategy},
-    stepsize_dual_avg::AcceptanceRateCollector,
 };
 
 pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
@@ -460,7 +460,7 @@ mod test {
 
     #[test]
     fn instanciate_adaptive_sampler() {
-        use crate::mass_matrix_adapt::Strategy;
+        use crate::mass_matrix::Strategy;
 
         let ndim = 10;
         let func = NormalLogp::new(ndim, 3.);

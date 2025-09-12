@@ -4,13 +4,13 @@ use rand::Rng;
 use rand_distr::Uniform;
 use serde::Serialize;
 
+use super::adam::{Adam, AdamOptions};
+use super::dual_avg::{AcceptanceRateCollector, DualAverage, DualAverageOptions};
 use crate::{
     Math, NutsError,
     hamiltonian::{Direction, Hamiltonian, LeapfrogResult, Point},
     nuts::{Collector, NutsOptions},
     sampler_stats::SamplerStats,
-    stepsize_adam::{Adam, AdamOptions},
-    stepsize_dual_avg::{AcceptanceRateCollector, DualAverage, DualAverageOptions},
 };
 use std::fmt::Debug;
 

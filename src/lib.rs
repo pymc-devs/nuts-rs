@@ -101,30 +101,20 @@
 mod adapt_strategy;
 mod chain;
 mod cpu_math;
-mod csv_storage;
 mod euclidean_hamiltonian;
 mod hamiltonian;
-mod hashmap_storage;
-mod low_rank_mass_matrix;
 mod mass_matrix;
-mod mass_matrix_adapt;
 mod math;
 mod math_base;
 mod model;
-#[cfg(feature = "ndarray")]
-mod ndarray_storage;
 mod nuts;
 mod sampler;
 mod sampler_stats;
 mod state;
-mod stepsize_adam;
-mod stepsize_adapt;
-mod stepsize_dual_avg;
+mod stepsize;
 mod storage;
 mod transform_adapt_strategy;
 mod transformed_hamiltonian;
-#[cfg(feature = "zarr")]
-mod zarr_storage;
 
 pub use nuts_derive::Storable;
 pub use nuts_storable::{HasDims, ItemType, Storable, Value};
@@ -143,16 +133,15 @@ pub use sampler::{
 };
 pub use sampler_stats::SamplerStats;
 
-pub use low_rank_mass_matrix::LowRankSettings;
-pub use mass_matrix_adapt::DiagAdaptExpSettings;
-pub use stepsize_adam::AdamOptions;
-pub use stepsize_adapt::{StepSizeAdaptMethod, StepSizeAdaptOptions, StepSizeSettings};
+pub use mass_matrix::DiagAdaptExpSettings;
+pub use mass_matrix::LowRankSettings;
+pub use stepsize::{AdamOptions, StepSizeAdaptMethod, StepSizeAdaptOptions, StepSizeSettings};
 pub use transform_adapt_strategy::TransformedSettings;
 
 #[cfg(feature = "zarr")]
-pub use zarr_storage::{ZarrAsyncConfig, ZarrAsyncTraceStorage, ZarrConfig, ZarrTraceStorage};
+pub use storage::{ZarrAsyncConfig, ZarrAsyncTraceStorage, ZarrConfig, ZarrTraceStorage};
 
-pub use csv_storage::{CsvConfig, CsvTraceStorage};
-pub use hashmap_storage::{HashMapConfig, HashMapValue};
+pub use storage::{CsvConfig, CsvTraceStorage};
+pub use storage::{HashMapConfig, HashMapValue};
 #[cfg(feature = "ndarray")]
-pub use ndarray_storage::{NdarrayConfig, NdarrayTrace, NdarrayValue};
+pub use storage::{NdarrayConfig, NdarrayTrace, NdarrayValue};

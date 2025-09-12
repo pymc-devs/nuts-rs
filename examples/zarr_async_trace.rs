@@ -24,7 +24,6 @@ use nuts_rs::{
 use nuts_storable::{HasDims, Value};
 use rand::Rng;
 use thiserror::Error;
-use zarrs::filesystem::FilesystemStore;
 use zarrs_object_store::AsyncObjectStore;
 
 /// A multivariate normal distribution model

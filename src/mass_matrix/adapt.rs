@@ -4,11 +4,11 @@ use nuts_derive::Storable;
 use rand::Rng;
 use serde::Serialize;
 
+use super::mass_matrix::{DiagMassMatrix, DrawGradCollector, MassMatrix, RunningVariance};
 use crate::{
     Math, NutsError,
     euclidean_hamiltonian::EuclideanPoint,
     hamiltonian::Point,
-    mass_matrix::{DiagMassMatrix, DrawGradCollector, MassMatrix, RunningVariance},
     nuts::{Collector, NutsOptions},
     sampler_stats::SamplerStats,
 };
