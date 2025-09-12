@@ -123,13 +123,7 @@ fn store_zarr_chunk_sync(
     chain_chunk_index: u64,
 ) -> Result<()> {
     let array = array.clone();
-    handle.block_on(async move {
-        tokio::runtime::Handle::current().block_on(store_zarr_chunk_async(
-            array,
-            data,
-            chain_chunk_index,
-        ))
-    })
+    handle.block_on(async move { store_zarr_chunk_async(array, data, chain_chunk_index).await })
 }
 
 /// Store coordinates in zarr arrays
