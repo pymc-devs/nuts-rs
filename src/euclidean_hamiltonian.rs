@@ -4,13 +4,13 @@ use std::sync::Arc;
 use nuts_derive::Storable;
 use nuts_storable::HasDims;
 
+use crate::LogpError;
 use crate::hamiltonian::{Direction, DivergenceInfo, Hamiltonian, LeapfrogResult, Point};
 use crate::mass_matrix::MassMatrix;
 use crate::math_base::Math;
 use crate::nuts::{Collector, NutsError};
 use crate::sampler_stats::{SamplerStats, StatsDims};
 use crate::state::{State, StatePool};
-use crate::LogpError;
 
 pub struct EuclideanHamiltonian<M: Math, Mass: MassMatrix<M>> {
     pub(crate) mass_matrix: Mass,

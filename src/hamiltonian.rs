@@ -3,10 +3,10 @@ use std::sync::Arc;
 use rand_distr::{Distribution, StandardUniform};
 
 use crate::{
+    Math, NutsError,
     nuts::Collector,
     sampler_stats::SamplerStats,
     state::{State, StatePool},
-    Math, NutsError,
 };
 
 /// Details about a divergence that might have occured during sampling
