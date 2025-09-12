@@ -217,7 +217,6 @@ pub fn create_arrays<TStorage: ?Sized>(
         )
         .dimension_names(Some(dims))
         .build(store.clone(), &format!("{}/{}", group_path, name))?;
-        //array.store_metadata()?;
         arrays.insert(name.to_string(), array);
     }
     Ok(arrays)

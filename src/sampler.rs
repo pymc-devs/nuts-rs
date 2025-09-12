@@ -680,7 +680,8 @@ impl<T: TraceStorage> ChainProcess<T> {
             .lock()
             .map_err(|_| anyhow::anyhow!("Could not lock trace mutex"))
             .context("Could not flush trace")?
-            .as_mut().map(|v| v.flush())
+            .as_mut()
+            .map(|v| v.flush())
             .transpose()?;
         Ok(())
     }
