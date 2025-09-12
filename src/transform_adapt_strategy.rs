@@ -7,8 +7,8 @@ use crate::hamiltonian::{Hamiltonian, Point};
 use crate::nuts::{Collector, NutsOptions, SampleInfo};
 use crate::sampler_stats::SamplerStats;
 use crate::state::State;
-use crate::stepsize_adapt::{StepSizeSettings, Strategy as StepSizeStrategy};
-use crate::stepsize_dual_avg::AcceptanceRateCollector;
+use crate::stepsize::AcceptanceRateCollector;
+use crate::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
 use crate::transformed_hamiltonian::TransformedHamiltonian;
 use crate::{Math, NutsError};
 

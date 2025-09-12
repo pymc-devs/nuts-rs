@@ -442,8 +442,7 @@ fn generate_column_names_and_indices_for_variable<M: Math>(
 
     // Check if we have meaningful coordinate names for all dimensions
     let has_meaningful_coords = var_dims.iter().all(|dim_name| {
-        coords.get(dim_name).map_or(
-            false,
+        coords.get(dim_name).is_some_and(
             |coord_value| matches!(coord_value, Value::Strings(labels) if !labels.is_empty()),
         )
     });

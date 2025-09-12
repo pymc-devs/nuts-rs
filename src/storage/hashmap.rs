@@ -39,11 +39,11 @@ impl HashMapValue {
             (HashMapValue::Bool(vec), Value::ScalarBool(v)) => vec.push(v),
             (HashMapValue::I64(vec), Value::ScalarI64(v)) => vec.push(v),
 
-            (HashMapValue::F64(vec), Value::F64(v)) => vec.extend(v.into_iter()),
-            (HashMapValue::F32(vec), Value::F32(v)) => vec.extend(v.into_iter()),
-            (HashMapValue::U64(vec), Value::U64(v)) => vec.extend(v.into_iter()),
-            (HashMapValue::Bool(vec), Value::Bool(v)) => vec.extend(v.into_iter()),
-            (HashMapValue::I64(vec), Value::I64(v)) => vec.extend(v.into_iter()),
+            (HashMapValue::F64(vec), Value::F64(v)) => vec.extend(v),
+            (HashMapValue::F32(vec), Value::F32(v)) => vec.extend(v),
+            (HashMapValue::U64(vec), Value::U64(v)) => vec.extend(v),
+            (HashMapValue::Bool(vec), Value::Bool(v)) => vec.extend(v),
+            (HashMapValue::I64(vec), Value::I64(v)) => vec.extend(v),
 
             _ => panic!("Mismatched item type"),
         }
@@ -254,6 +254,12 @@ impl ChainStorage for HashMapChainStorage {
 }
 
 pub struct HashMapConfig {}
+
+impl Default for HashMapConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl HashMapConfig {
     pub fn new() -> Self {

@@ -5,12 +5,10 @@ use itertools::Itertools;
 use nuts_derive::Storable;
 use serde::Serialize;
 
+use super::adapt::MassMatrixAdaptStrategy;
+use super::mass_matrix::{DrawGradCollector, MassMatrix};
 use crate::{
-    Math, NutsError,
-    euclidean_hamiltonian::EuclideanPoint,
-    hamiltonian::Point,
-    mass_matrix::{DrawGradCollector, MassMatrix},
-    mass_matrix_adapt::MassMatrixAdaptStrategy,
+    Math, NutsError, euclidean_hamiltonian::EuclideanPoint, hamiltonian::Point,
     sampler_stats::SamplerStats,
 };
 
@@ -330,7 +328,8 @@ impl LowRankMassMatrixStrategy {
 
 fn rescale_points(draws: &mut Mat<f64>, grads: &mut Mat<f64>) -> Col<f64> {
     let (ndim, ndraws) = draws.shape();
-    let stds = Col::from_fn(ndim, |col| {
+    
+    Col::from_fn(ndim, |col| {
         let draw_mean = draws.row(col).sum() / (ndraws as f64);
         let grad_mean = grads.row(col).sum() / (ndraws as f64);
         let draw_std: f64 = draws
@@ -361,8 +360,7 @@ fn rescale_points(draws: &mut Mat<f64>, grads: &mut Mat<f64>) -> Col<f64> {
             .for_each(|val| *val = (*val - grad_mean) * grad_scale);
 
         std
-    });
-    stds
+    })
 }
 
 fn estimate_mass_matrix(
@@ -507,9 +505,7 @@ mod test {
     use rand::{Rng, SeedableRng, rngs::SmallRng};
     use rand_distr::StandardNormal;
 
-    use crate::low_rank_mass_matrix::mat_all_finite;
-
-    use super::{estimate_mass_matrix, spd_mean};
+    use super::{estimate_mass_matrix, mat_all_finite, spd_mean};
 
     #[test]
     fn test_spd_mean() {

@@ -10,8 +10,8 @@ use zarrs::group::GroupBuilder;
 use zarrs::storage::{ReadableWritableListableStorage, ReadableWritableListableStorageTraits};
 
 use super::common::{Chunk, SampleBuffer, SampleBufferValue};
+use super::create_arrays;
 use crate::storage::{ChainStorage, StorageConfig, TraceStorage};
-use crate::zarr_storage::create_arrays;
 use crate::{Math, Progress, Settings};
 
 pub type Array = zarrs::array::Array<dyn ReadableWritableListableStorageTraits>;
