@@ -315,8 +315,8 @@ mod tests {
     use rand::rng;
 
     use crate::{
-        adapt_strategy::test_logps::NormalLogp, cpu_math::CpuMath, sampler::DiagGradNutsSettings,
-        Chain, Settings,
+        Chain, Settings, adapt_strategy::test_logps::NormalLogp, cpu_math::CpuMath,
+        sampler::DiagGradNutsSettings,
     };
 
     #[test]

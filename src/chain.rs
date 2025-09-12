@@ -9,12 +9,12 @@ use nuts_storable::{HasDims, Storable};
 use rand::Rng;
 
 use crate::{
+    Math, NutsError,
     hamiltonian::{Hamiltonian, Point},
-    nuts::{draw, Collector, NutsOptions, SampleInfo},
+    nuts::{Collector, NutsOptions, SampleInfo, draw},
     sampler::Progress,
     sampler_stats::{SamplerStats, StatsDims},
     state::State,
-    Math, NutsError,
 };
 
 use anyhow::Result;
