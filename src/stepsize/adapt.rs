@@ -15,19 +15,14 @@ use crate::{
 use std::fmt::Debug;
 
 /// Method used for step size adaptation
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Default)]
 pub enum StepSizeAdaptMethod {
     /// Use dual averaging for step size adaptation (default)
+    #[default]
     DualAverage,
     /// Use Adam optimizer for step size adaptation
     Adam,
     Fixed(f64),
-}
-
-impl Default for StepSizeAdaptMethod {
-    fn default() -> Self {
-        StepSizeAdaptMethod::Adam
-    }
 }
 
 /// Options for step size adaptation
