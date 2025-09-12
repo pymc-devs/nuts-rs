@@ -197,7 +197,7 @@ impl<M: Math> AdaptStrategy<M> for TransformAdaptation {
 
         if draw < self.final_window_size {
             if draw < 100 {
-                if (draw > 0) & draw.is_multiple_of(10) {
+                if (draw > 0) && draw.is_multiple_of(10) {
                     hamiltonian.update_params(
                         math,
                         rng,
@@ -206,7 +206,7 @@ impl<M: Math> AdaptStrategy<M> for TransformAdaptation {
                         collector.collector2.logps.iter(),
                     )?;
                 }
-            } else if (draw > 0) & draw.is_multiple_of(self.options.transform_update_freq) {
+            } else if (draw > 0) && draw.is_multiple_of(self.options.transform_update_freq) {
                 hamiltonian.update_params(
                     math,
                     rng,

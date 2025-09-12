@@ -328,7 +328,7 @@ impl LowRankMassMatrixStrategy {
 
 fn rescale_points(draws: &mut Mat<f64>, grads: &mut Mat<f64>) -> Col<f64> {
     let (ndim, ndraws) = draws.shape();
-    
+
     Col::from_fn(ndim, |col| {
         let draw_mean = draws.row(col).sum() / (ndraws as f64);
         let grad_mean = grads.row(col).sum() / (ndraws as f64);
