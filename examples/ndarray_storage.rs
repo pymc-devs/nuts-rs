@@ -116,7 +116,7 @@ impl Model for MvnModel {
     where
         Self: 'model;
 
-    fn math(&self) -> Result<Self::Math<'_>> {
+    fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> Result<Self::Math<'_>> {
         Ok(self.math.clone())
     }
 
