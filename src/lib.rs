@@ -145,3 +145,6 @@ pub use storage::{CsvConfig, CsvTraceStorage};
 pub use storage::{HashMapConfig, HashMapValue};
 #[cfg(feature = "ndarray")]
 pub use storage::{NdarrayConfig, NdarrayTrace, NdarrayValue};
+
+#[cfg(feature = "arrow")]
+pub use storage::{ArrowConfig, ArrowTrace, ArrowTraceStorage};

@@ -34,6 +34,10 @@ zarrs = { version = "0.21.0", features = [
   "async",
 ], optional = true }
 ndarray = { version = "0.16.1", optional = true }
+arrow = { version = "56.2.0", optional = true }
+arrow-schema = { version = "56.2.0", features = [
+  "canonical_extension_types",
+], optional = true }
 nuts-derive = { path = "./nuts-derive" }
 nuts-storable = { path = "./nuts-storable" }
 serde = { version = "1.0.219", features = ["derive"] }
@@ -57,6 +61,7 @@ tokio = { version = "1.0", features = ["rt", "rt-multi-thread"] }
 [features]
 zarr = ["dep:zarrs", "dep:tokio"]
 ndarray = ["dep:ndarray"]
+arrow = ["dep:arrow", "dep:arrow-schema"]
 
 [[bench]]
 name = "sample"
