@@ -136,6 +136,7 @@ struct SharedArrays {
 }
 
 /// Main storage for ndarray MCMC traces
+#[derive(Clone)]
 pub struct NdarrayTraceStorage {
     shared_arrays: Arc<Mutex<SharedArrays>>,
 }
@@ -347,5 +348,21 @@ impl TraceStorage for NdarrayTraceStorage {
         };
 
         Ok((first_error, result))
+    }
+
+    fn inspect(
+        &self,
+        traces: Vec<Result<Option<<Self::ChainStorage as ChainStorage>::Finalized>>>,
+    ) -> Result<(Option<anyhow::Error>, Self::Finalized)> {
+        self.clone().finalize(
+            traces
+                .into_iter()
+                .map(|res| match res {
+                    Ok(Some(_)) => Ok(()),
+                    Ok(None) => Ok(()),
+                    Err(err) => Err(err),
+                })
+                .collect(),
+        )
     }
 }

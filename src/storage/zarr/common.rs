@@ -209,14 +209,9 @@ pub fn create_arrays<TStorage: ?Sized>(
             .chain(std::iter::once(draw_chunk_size))
             .chain(extra_shape)
             .collect();
-        let array = ArrayBuilder::new(
-            shape,
-            zarr_type,
-            grid.try_into().expect("Invalid chunk sizes"),
-            fill_value,
-        )
-        .dimension_names(Some(dims))
-        .build(store.clone(), &format!("{}/{}", group_path, name))?;
+        let array = ArrayBuilder::new(shape, grid, zarr_type, fill_value)
+            .dimension_names(Some(dims))
+            .build(store.clone(), &format!("{}/{}", group_path, name))?;
         arrays.insert(name.to_string(), array);
     }
     Ok(arrays)

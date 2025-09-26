@@ -23,6 +23,10 @@ pub trait ChainStorage: Send {
     /// Finalizes the storage and returns processed results.
     fn finalize(self) -> Result<Self::Finalized>;
 
+    fn inspect(&self) -> Result<Option<Self::Finalized>> {
+        Ok(None)
+    }
+
     /// Flush any buffered data to ensure all samples are stored.
     fn flush(&self) -> Result<()>;
 }
@@ -62,5 +66,10 @@ pub trait TraceStorage: Send + Sync + Sized + 'static {
     fn finalize(
         self,
         traces: Vec<Result<<Self::ChainStorage as ChainStorage>::Finalized>>,
+    ) -> Result<(Option<anyhow::Error>, Self::Finalized)>;
+
+    fn inspect(
+        &self,
+        traces: Vec<Result<Option<<Self::ChainStorage as ChainStorage>::Finalized>>>,
     ) -> Result<(Option<anyhow::Error>, Self::Finalized)>;
 }

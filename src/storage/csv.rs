@@ -348,6 +348,12 @@ impl ChainStorage for CsvChainStorage {
         // In practice, the buffer will be flushed when the file is closed
         Ok(())
     }
+
+    fn inspect(&self) -> Result<Option<Self::Finalized>> {
+        // For CSV storage, inspection does not produce a finalized result
+        self.flush()?;
+        Ok(None)
+    }
 }
 
 impl StorageConfig for CsvConfig {
@@ -592,6 +598,19 @@ impl TraceStorage for CsvTraceStorage {
         traces: Vec<Result<<Self::ChainStorage as ChainStorage>::Finalized>>,
     ) -> Result<(Option<anyhow::Error>, Self::Finalized)> {
         // Check for any errors in the chain finalizations
+        for trace_result in traces {
+            if let Err(err) = trace_result {
+                return Ok((Some(err), ()));
+            }
+        }
+        Ok((None, ()))
+    }
+
+    fn inspect(
+        &self,
+        traces: Vec<Result<Option<<Self::ChainStorage as ChainStorage>::Finalized>>>,
+    ) -> Result<(Option<anyhow::Error>, Self::Finalized)> {
+        // Check for any errors in the chain inspections
         for trace_result in traces {
             if let Err(err) = trace_result {
                 return Ok((Some(err), ()));
