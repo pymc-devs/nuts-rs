@@ -134,11 +134,11 @@ impl SampleBuffer {
             (SampleBufferValue::U64(vec), Value::ScalarU64(v)) => vec.push(v),
             (SampleBufferValue::Bool(vec), Value::ScalarBool(v)) => vec.push(v),
             (SampleBufferValue::I64(vec), Value::ScalarI64(v)) => vec.push(v),
-            (SampleBufferValue::F64(vec), Value::F64(v)) => vec.extend(v.into_iter()),
-            (SampleBufferValue::F32(vec), Value::F32(v)) => vec.extend(v.into_iter()),
-            (SampleBufferValue::U64(vec), Value::U64(v)) => vec.extend(v.into_iter()),
-            (SampleBufferValue::Bool(vec), Value::Bool(v)) => vec.extend(v.into_iter()),
-            (SampleBufferValue::I64(vec), Value::I64(v)) => vec.extend(v.into_iter()),
+            (SampleBufferValue::F64(vec), Value::F64(v)) => vec.extend(v),
+            (SampleBufferValue::F32(vec), Value::F32(v)) => vec.extend(v),
+            (SampleBufferValue::U64(vec), Value::U64(v)) => vec.extend(v),
+            (SampleBufferValue::Bool(vec), Value::Bool(v)) => vec.extend(v),
+            (SampleBufferValue::I64(vec), Value::I64(v)) => vec.extend(v),
             _ => panic!("Mismatched item type"),
         }
         self.len += 1;
@@ -181,12 +181,12 @@ pub fn create_arrays<TStorage: ?Sized>(
                         anyhow::anyhow!("Unknown dimension size for dimension {}", dim)
                             .context(format!("Could not write {}/{}", group_path, name))
                     })
-                    .map(|size| *size)
+                    .copied()
             })
             .collect();
         let extra_shape = extra_shape?;
-        let shape: Vec<u64> = std::iter::once(n_chains as u64)
-            .chain(std::iter::once(n_draws as u64))
+        let shape: Vec<u64> = std::iter::once(n_chains)
+            .chain(std::iter::once(n_draws))
             .chain(extra_shape.clone())
             .collect();
         let zarr_type = match item_type {

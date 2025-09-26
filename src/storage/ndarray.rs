@@ -192,6 +192,12 @@ impl NdarrayChainStorage {
 
 pub struct NdarrayConfig {}
 
+impl Default for NdarrayConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NdarrayConfig {
     pub fn new() -> Self {
         Self {}
@@ -322,10 +328,10 @@ impl TraceStorage for NdarrayTraceStorage {
         let mut first_error = None;
 
         for trace in traces {
-            if let Err(err) = trace {
-                if first_error.is_none() {
-                    first_error = Some(err);
-                }
+            if let Err(err) = trace
+                && first_error.is_none()
+            {
+                first_error = Some(err);
             }
         }
 

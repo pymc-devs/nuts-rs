@@ -1,8 +1,8 @@
+mod core;
 mod csv;
 mod hashmap;
 #[cfg(feature = "ndarray")]
 mod ndarray;
-mod storage;
 #[cfg(feature = "zarr")]
 mod zarr;
 
@@ -14,4 +14,4 @@ pub use hashmap::{HashMapConfig, HashMapValue};
 #[cfg(feature = "ndarray")]
 pub use ndarray::{NdarrayConfig, NdarrayTrace, NdarrayValue};
 
-pub use storage::{ChainStorage, StorageConfig, TraceStorage};
+pub use core::{ChainStorage, StorageConfig, TraceStorage};

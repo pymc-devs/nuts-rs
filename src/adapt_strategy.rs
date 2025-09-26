@@ -5,9 +5,9 @@ use nuts_storable::{HasDims, Storable};
 use rand::Rng;
 use serde::Serialize;
 
-use super::mass_matrix::MassMatrixAdaptStrategy;
 use super::stepsize::AcceptanceRateCollector;
 use super::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
+use crate::mass_matrix::MassMatrixAdaptStrategy;
 use crate::{
     NutsError,
     chain::AdaptStrategy,

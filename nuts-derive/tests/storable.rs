@@ -61,7 +61,7 @@ fn test_storable() {
         value2: 8.0,
         draws2: vec![9.0, 2.0, 3.0],
     };
-    let stats = ExampleStats {
+    let mut stats = ExampleStats {
         step_size: 0.1,
         n_steps: 10,
         is_adapting: true,
@@ -72,7 +72,7 @@ fn test_storable() {
         _not_stored: "should not be stored".to_string(),
     };
 
-    let stats2: Example2<Parent, _> = Example2 {
+    let mut stats2: Example2<Parent, _> = Example2 {
         field1: 42,
         field2: stats.clone(),
         _phantom: std::marker::PhantomData,

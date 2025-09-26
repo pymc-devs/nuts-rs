@@ -626,7 +626,7 @@ impl<T: TraceStorage> ChainProcess<T> {
 
                     let now = Instant::now();
                     //let (point, info) = sampler.draw().unwrap();
-                    let (_point, draw_data, stats, info) = sampler.expanded_draw().unwrap();
+                    let (_point, mut draw_data, mut stats, info) = sampler.expanded_draw().unwrap();
 
                     let mut guard = chain_trace
                         .lock()
