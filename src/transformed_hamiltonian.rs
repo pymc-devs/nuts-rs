@@ -26,7 +26,9 @@ pub struct TransformedPoint<M: Math> {
 #[derive(Debug, Storable)]
 pub struct PointStats {
     pub fisher_distance: f64,
+    #[storable(dims("unconstrained_parameter"))]
     pub transformed_position: Option<Vec<f64>>,
+    #[storable(dims("unconstrained_parameter"))]
     pub transformed_gradient: Option<Vec<f64>>,
     pub transformation_index: i64,
 }
