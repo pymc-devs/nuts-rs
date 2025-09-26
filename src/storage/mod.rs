@@ -1,3 +1,5 @@
+#[cfg(feature = "arrow")]
+mod arrow;
 mod core;
 mod csv;
 mod hashmap;
@@ -6,6 +8,8 @@ mod ndarray;
 #[cfg(feature = "zarr")]
 mod zarr;
 
+#[cfg(feature = "arrow")]
+pub use arrow::{ArrowConfig, ArrowTrace, ArrowTraceStorage};
 #[cfg(feature = "zarr")]
 pub use zarr::{ZarrAsyncConfig, ZarrAsyncTraceStorage, ZarrConfig, ZarrTraceStorage};
 
