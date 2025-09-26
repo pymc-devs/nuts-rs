@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::iter::repeat;
 
 use faer::{Col, ColRef, Mat, MatRef, Scale};
 use itertools::Itertools;
@@ -127,15 +128,17 @@ impl Default for LowRankSettings {
         Self {
             store_mass_matrix: false,
             gamma: 1e-5,
-            eigval_cutoff: 100f64,
+            eigval_cutoff: 2f64,
         }
     }
 }
 
 #[derive(Debug, Storable)]
 pub struct MatrixStats {
-    pub eigvals: Option<Vec<f64>>,
-    pub stds: Option<Vec<f64>>,
+    #[storable(dims("unconstrained_parameter"))]
+    pub mass_matrix_eigvals: Option<Vec<f64>>,
+    #[storable(dims("unconstrained_parameter"))]
+    pub mass_matrix_stds: Option<Vec<f64>>,
     pub num_eigenvalues: u64,
 }
 
@@ -145,14 +148,18 @@ impl<M: Math> SamplerStats<M> for LowRankMassMatrix<M> {
 
     fn extract_stats(&self, math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
         if self.settings.store_mass_matrix {
+            let stds = Some(math.box_array(&self.stds));
             let eigvals = self
                 .inner
                 .as_ref()
                 .map(|inner| math.eigs_as_array(&inner.vals));
-            let stds = Some(math.box_array(&self.stds));
+            let mut eigvals = eigvals.map(|x| x.into_vec());
+            if let Some(ref mut eigvals) = eigvals {
+                eigvals.extend(repeat(f64::NAN).take(stds.as_ref().unwrap().len() - eigvals.len()));
+            }
             MatrixStats {
-                eigvals: eigvals.map(|x| x.into_vec()),
-                stds: stds.map(|x| x.into_vec()),
+                mass_matrix_eigvals: eigvals,
+                mass_matrix_stds: stds.map(|x| x.into_vec()),
                 num_eigenvalues: self
                     .inner
                     .as_ref()
@@ -161,9 +168,13 @@ impl<M: Math> SamplerStats<M> for LowRankMassMatrix<M> {
             }
         } else {
             MatrixStats {
-                eigvals: None,
-                stds: None,
-                num_eigenvalues: 0,
+                mass_matrix_eigvals: None,
+                mass_matrix_stds: None,
+                num_eigenvalues: self
+                    .inner
+                    .as_ref()
+                    .map(|inner| inner.num_eigenvalues)
+                    .unwrap_or(0),
             }
         }
     }

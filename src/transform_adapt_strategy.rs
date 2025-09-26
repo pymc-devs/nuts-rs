@@ -43,14 +43,18 @@ pub struct TransformAdaptation {
 }
 
 #[derive(Debug, Storable)]
-pub struct Stats {}
+pub struct Stats {
+    tuning: bool,
+}
 
 impl<M: Math> SamplerStats<M> for TransformAdaptation {
     type Stats = Stats;
     type StatsOptions = ();
 
     fn extract_stats(&self, _math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
-        Stats {}
+        Stats {
+            tuning: self.tuning,
+        }
     }
 }
 

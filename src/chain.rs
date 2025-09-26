@@ -217,7 +217,7 @@ pub struct NutsStats<P: HasDims, H: Storable<P>, A: Storable<P>, D: Storable<P>>
     pub draw: u64,
     pub energy_error: f64,
     #[storable(dims("unconstrained_parameter"))]
-    pub unconstrained: Option<Vec<f64>>,
+    pub unconstrained_draw: Option<Vec<f64>>,
     #[storable(dims("unconstrained_parameter"))]
     pub gradient: Option<Vec<f64>>,
     #[storable(flatten)]
@@ -289,7 +289,7 @@ impl<M: Math, R: rand::Rng, A: AdaptStrategy<M>> SamplerStats<M> for NutsChain<M
             chain: self.chain,
             draw: self.draw_count,
             energy_error: point.energy_error(),
-            unconstrained: Some(math.box_array(point.position()).into_vec()),
+            unconstrained_draw: Some(math.box_array(point.position()).into_vec()),
             gradient: Some(math.box_array(point.gradient()).into_vec()),
             hamiltonian: hamiltonian_stats,
             adapt: adapt_stats,
