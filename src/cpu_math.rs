@@ -28,8 +28,8 @@ impl<F: CpuLogpFunc> CpuMath<F> {
 pub enum CpuMathError {
     #[error("Error during array operation")]
     ArrayError(),
-    #[error("Error during point expansion")]
-    ExpandError(),
+    #[error("Error during point expansion: {0}")]
+    ExpandError(String),
 }
 
 impl<F: CpuLogpFunc> HasDims for CpuMath<F> {
@@ -57,7 +57,10 @@ impl<F: CpuLogpFunc> Storable<CpuMath<F>> for ExpandedVectorWrapper<F> {
         F::ExpandedVector::dims(&parent.logp_func, item)
     }
 
-    fn get_all(&self, parent: &CpuMath<F>) -> Vec<(&str, Option<nuts_storable::Value>)> {
+    fn get_all<'a>(
+        &'a mut self,
+        parent: &'a CpuMath<F>,
+    ) -> Vec<(&'a str, Option<nuts_storable::Value>)> {
         self.0.get_all(&parent.logp_func)
     }
 }
@@ -138,7 +141,9 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
                 rng,
                 array
                     .try_as_col_major()
-                    .ok_or(CpuMathError::ExpandError())?
+                    .ok_or_else(|| {
+                        CpuMathError::ExpandError("Internal vector was not col major".into())
+                    })?
                     .as_slice(),
             )?,
         ))

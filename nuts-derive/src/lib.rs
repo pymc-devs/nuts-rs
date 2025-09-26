@@ -79,17 +79,17 @@ enum StorableField {
 
 // Check if a type is a generic type parameter
 fn is_generic_param(ty: &Type, generics: &syn::Generics) -> bool {
-    if let Type::Path(type_path) = ty {
-        if type_path.path.segments.len() == 1 {
-            let type_name = &type_path.path.segments.first().unwrap().ident;
-            return generics.params.iter().any(|param| {
-                if let GenericParam::Type(type_param) = param {
-                    &type_param.ident == type_name
-                } else {
-                    false
-                }
-            });
-        }
+    if let Type::Path(type_path) = ty
+        && type_path.path.segments.len() == 1
+    {
+        let type_name = &type_path.path.segments.first().unwrap().ident;
+        return generics.params.iter().any(|param| {
+            if let GenericParam::Type(type_param) = param {
+                &type_param.ident == type_name
+            } else {
+                false
+            }
+        });
     }
     false
 }
@@ -97,16 +97,16 @@ fn is_generic_param(ty: &Type, generics: &syn::Generics) -> bool {
 // Check if a type implements Storable trait based on bounds
 fn has_storable_bound(ty: &Ident, generics: &syn::Generics) -> bool {
     for param in &generics.params {
-        if let GenericParam::Type(type_param) = param {
-            if &type_param.ident == ty {
-                for bound in &type_param.bounds {
-                    if let syn::TypeParamBound::Trait(trait_bound) = bound {
-                        let path = &trait_bound.path;
-                        if path.segments.len() == 1
-                            && path.segments.first().unwrap().ident == "Storable"
-                        {
-                            return true;
-                        }
+        if let GenericParam::Type(type_param) = param
+            && &type_param.ident == ty
+        {
+            for bound in &type_param.bounds {
+                if let syn::TypeParamBound::Trait(trait_bound) = bound {
+                    let path = &trait_bound.path;
+                    if path.segments.len() == 1
+                        && path.segments.first().unwrap().ident == "Storable"
+                    {
+                        return true;
                     }
                 }
             }
@@ -165,7 +165,7 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
                     ty_str
                 );
             };
-            let item = if path.segments.first().unwrap().ident.to_string() == "Option" {
+            let item = if path.segments.first().unwrap().ident == "Option" {
                 if let PathArguments::AngleBracketed(AngleBracketedGenericArguments {
                     args, ..
                 }) = &path.segments.first().unwrap().arguments
@@ -539,7 +539,7 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
     });
 
     let get_all_fn = quote! {
-        fn get_all(&self, parent: &P) -> Vec<(&str, Option<nuts_storable::Value>)> {
+        fn get_all<'a>(&'a mut self, parent: &'a P) -> Vec<(&'a str, Option<nuts_storable::Value>)> {
             let mut result = Vec::with_capacity(Self::names(parent).len());
             #(#get_all_exprs)*
             result

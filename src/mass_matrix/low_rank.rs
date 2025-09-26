@@ -6,7 +6,7 @@ use nuts_derive::Storable;
 use serde::Serialize;
 
 use super::adapt::MassMatrixAdaptStrategy;
-use super::mass_matrix::{DrawGradCollector, MassMatrix};
+use super::diagonal::{DrawGradCollector, MassMatrix};
 use crate::{
     Math, NutsError, euclidean_hamiltonian::EuclideanPoint, hamiltonian::Point,
     sampler_stats::SamplerStats,

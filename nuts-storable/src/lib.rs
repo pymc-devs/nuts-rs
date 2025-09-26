@@ -89,107 +89,7 @@ pub trait Storable<P: HasDims + ?Sized>: Send + Sync {
     fn item_type(parent: &P, item: &str) -> ItemType;
     fn dims<'a>(parent: &'a P, item: &str) -> Vec<&'a str>;
 
-    fn get_all(&self, parent: &P) -> Vec<(&str, Option<Value>)>;
-
-    fn get_f64(&self, parent: &P, name: &str) -> Option<f64> {
-        self.get_all(parent)
-            .into_iter()
-            .find(|(item_name, _)| *item_name == name)
-            .and_then(|(_, value)| match value {
-                Some(Value::ScalarF64(v)) => Some(v),
-                _ => None,
-            })
-    }
-
-    fn get_f32(&self, parent: &P, name: &str) -> Option<f32> {
-        self.get_all(parent)
-            .into_iter()
-            .find(|(item_name, _)| *item_name == name)
-            .and_then(|(_, value)| match value {
-                Some(Value::ScalarF32(v)) => Some(v),
-                _ => None,
-            })
-    }
-
-    fn get_u64(&self, parent: &P, name: &str) -> Option<u64> {
-        self.get_all(parent)
-            .into_iter()
-            .find(|(item_name, _)| *item_name == name)
-            .and_then(|(_, value)| match value {
-                Some(Value::ScalarU64(v)) => Some(v),
-                _ => None,
-            })
-    }
-
-    fn get_i64(&self, parent: &P, name: &str) -> Option<i64> {
-        self.get_all(parent)
-            .into_iter()
-            .find(|(item_name, _)| *item_name == name)
-            .and_then(|(_, value)| match value {
-                Some(Value::ScalarI64(v)) => Some(v),
-                _ => None,
-            })
-    }
-
-    fn get_bool(&self, parent: &P, name: &str) -> Option<bool> {
-        self.get_all(parent)
-            .into_iter()
-            .find(|(item_name, _)| *item_name == name)
-            .and_then(|(_, value)| match value {
-                Some(Value::ScalarBool(v)) => Some(v),
-                _ => None,
-            })
-    }
-
-    fn get_vec_f64(&self, parent: &P, name: &str) -> Option<Vec<f64>> {
-        self.get_all(parent)
-            .into_iter()
-            .find(|(item_name, _)| *item_name == name)
-            .and_then(|(_, value)| match value {
-                Some(Value::F64(v)) => Some(v),
-                _ => None,
-            })
-    }
-
-    fn get_vec_f32(&self, parent: &P, name: &str) -> Option<Vec<f32>> {
-        self.get_all(parent)
-            .into_iter()
-            .find(|(item_name, _)| *item_name == name)
-            .and_then(|(_, value)| match value {
-                Some(Value::F32(v)) => Some(v),
-                _ => None,
-            })
-    }
-
-    fn get_vec_u64(&self, parent: &P, name: &str) -> Option<Vec<u64>> {
-        self.get_all(parent)
-            .into_iter()
-            .find(|(item_name, _)| *item_name == name)
-            .and_then(|(_, value)| match value {
-                Some(Value::U64(v)) => Some(v),
-                _ => None,
-            })
-    }
-
-    fn get_vec_i64(&self, parent: &P, name: &str) -> Option<Vec<i64>> {
-        self.get_all(parent)
-            .into_iter()
-            .find(|(item_name, _)| *item_name == name)
-            .and_then(|(_, value)| match value {
-                Some(Value::I64(v)) => Some(v),
-                _ => None,
-            })
-    }
-
-    fn get_vec_bool(&self, parent: &P, name: &str) -> Option<Vec<bool>> {
-        self.get_all(parent)
-            .into_iter()
-            .find(|(item_name, _)| *item_name == name)
-            .and_then(|(_, value)| match value {
-                Some(Value::Bool(v)) => Some(v),
-                _ => None,
-            })
-    }
+    fn get_all<'a>(&'a mut self, parent: &'a P) -> Vec<(&'a str, Option<Value>)>;
 }
 
 impl<P: HasDims> Storable<P> for Vec<f64> {
@@ -205,7 +105,7 @@ impl<P: HasDims> Storable<P> for Vec<f64> {
         vec!["dim"]
     }
 
-    fn get_all(&self, _parent: &P) -> Vec<(&str, Option<Value>)> {
+    fn get_all<'a>(&'a mut self, _parent: &'a P) -> Vec<(&'a str, Option<Value>)> {
         vec![("value", Some(Value::F64(self.clone())))]
     }
 }
@@ -223,7 +123,7 @@ impl<P: HasDims> Storable<P> for () {
         panic!("No items in unit type")
     }
 
-    fn get_all(&self, _parent: &P) -> Vec<(&str, Option<Value>)> {
+    fn get_all(&mut self, _parent: &P) -> Vec<(&str, Option<Value>)> {
         vec![]
     }
 }
