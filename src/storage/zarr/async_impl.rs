@@ -143,14 +143,10 @@ async fn store_coords(
             _ => panic!("Unsupported coordinate type for {}", name),
         };
         let name: &String = name;
-        let coord_array = ArrayBuilder::new(
-            vec![len as u64],
-            data_type,
-            vec![len as u64].try_into().expect("Invalid chunk size"),
-            fill_value,
-        )
-        .dimension_names(Some(vec![name.to_string()]))
-        .build(store.clone(), &format!("{}/{}", group, name))?;
+        let coord_array =
+            ArrayBuilder::new(vec![len as u64], vec![len as u64], data_type, fill_value)
+                .dimension_names(Some(vec![name.to_string()]))
+                .build(store.clone(), &format!("{}/{}", group, name))?;
         let subset = vec![0];
         match coord {
             &Value::F64(ref v) => {
@@ -645,6 +641,18 @@ impl TraceStorage for ZarrAsyncTraceStorage {
             if let Err(err) = trace {
                 return Ok((Some(err), ()));
             }
+        }
+        Ok((None, ()))
+    }
+
+    fn inspect(
+        &self,
+        traces: Vec<Result<Option<<Self::ChainStorage as ChainStorage>::Finalized>>>,
+    ) -> Result<(Option<anyhow::Error>, Self::Finalized)> {
+        for trace in traces {
+            if let Err(err) = trace {
+                return Ok((Some(err), ()));
+            };
         }
         Ok((None, ()))
     }

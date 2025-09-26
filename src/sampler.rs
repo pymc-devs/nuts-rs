@@ -693,11 +693,13 @@ enum SamplerCommand {
     Continue,
     Progress,
     Flush,
+    Inspect,
 }
 
-enum SamplerResponse {
+enum SamplerResponse<T: Send + 'static> {
     Ok(),
     Progress(Box<[ChainProgress]>),
+    Inspect(T),
 }
 
 pub enum SamplerWaitResult<F: Send + 'static> {
@@ -709,7 +711,7 @@ pub enum SamplerWaitResult<F: Send + 'static> {
 pub struct Sampler<F: Send + 'static> {
     main_thread: JoinHandle<Result<(Option<anyhow::Error>, F)>>,
     commands: SyncSender<SamplerCommand>,
-    responses: Receiver<SamplerResponse>,
+    responses: Receiver<SamplerResponse<(Option<anyhow::Error>, F)>>,
     results: Receiver<Result<()>>,
 }
 
@@ -827,7 +829,11 @@ impl<F: Send + 'static> Sampler<F> {
                                     pause_start = Instant::now();
                                 }
                                 is_paused = true;
-                                responses_tx.send(SamplerResponse::Ok())?;
+                                responses_tx.send(SamplerResponse::Ok()).map_err(|e| {
+                                    anyhow::anyhow!(
+                                        "Could not send pause response to controller thread: {e}"
+                                    )
+                                })?;
                             }
                             Ok(SamplerCommand::Continue) => {
                                 for chain in chains.iter() {
@@ -837,18 +843,50 @@ impl<F: Send + 'static> Sampler<F> {
                                 }
                                 pause_time += pause_start.elapsed();
                                 is_paused = false;
-                                responses_tx.send(SamplerResponse::Ok())?;
+                                responses_tx.send(SamplerResponse::Ok()).map_err(|e| {
+                                    anyhow::anyhow!(
+                                        "Could not send continue response to controller thread: {e}"
+                                    )
+                                })?;
                             }
                             Ok(SamplerCommand::Progress) => {
                                 let progress =
                                     chains.iter().map(|chain| chain.progress()).collect_vec();
-                                responses_tx.send(SamplerResponse::Progress(progress.into()))?;
+                                responses_tx.send(SamplerResponse::Progress(progress.into())).map_err(|e| {
+                                    anyhow::anyhow!(
+                                        "Could not send progress response to controller thread: {e}"
+                                    )
+                                })?;
+                            }
+                            Ok(SamplerCommand::Inspect) => {
+                                let traces = chains
+                                    .iter()
+                                    .map(|chain| {
+                                        chain
+                                            .trace
+                                            .lock()
+                                            .expect("Poisoned lock")
+                                            .as_ref()
+                                            .map(|v| v.inspect())
+                                    })
+                                    .flatten()
+                                    .collect_vec();
+                                let finalized_trace = trace.inspect(traces)?;
+                                responses_tx.send(SamplerResponse::Inspect(finalized_trace)).map_err(|e| {
+                                    anyhow::anyhow!(
+                                        "Could not send inspect response to controller thread: {e}"
+                                    )
+                                })?;
                             }
                             Ok(SamplerCommand::Flush) => {
                                 for chain in chains.iter() {
                                     chain.flush()?;
                                 }
-                                responses_tx.send(SamplerResponse::Ok())?;
+                                responses_tx.send(SamplerResponse::Ok()).map_err(|e| {
+                                    anyhow::anyhow!(
+                                        "Could not send flush response to controller thread: {e}"
+                                    )
+                                })?;
                             }
                             Err(RecvTimeoutError::Timeout) => {}
                             Err(RecvTimeoutError::Disconnected) => {
@@ -917,6 +955,18 @@ impl<F: Send + 'static> Sampler<F> {
             bail!("Got invalid response from sample controller thread");
         };
         Ok(())
+    }
+
+    pub fn inspect(&mut self) -> Result<(Option<anyhow::Error>, F)> {
+        self.commands.send(SamplerCommand::Inspect)?;
+        let response = self
+            .responses
+            .recv()
+            .context("Could not recieve inspect response from controller thread")?;
+        let SamplerResponse::Inspect(trace) = response else {
+            bail!("Got invalid response from sample controller thread");
+        };
+        Ok(trace)
     }
 
     pub fn abort(self) -> Result<(Option<anyhow::Error>, F)> {

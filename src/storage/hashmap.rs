@@ -51,12 +51,14 @@ impl HashMapValue {
 }
 
 /// Main storage for HashMap MCMC traces
+#[derive(Clone)]
 pub struct HashMapTraceStorage {
     draw_types: Vec<(String, ItemType)>,
     param_types: Vec<(String, ItemType)>,
 }
 
 /// Per-chain storage for HashMap MCMC traces
+#[derive(Clone)]
 pub struct HashMapChainStorage {
     warmup_stats: HashMap<String, HashMapValue>,
     sample_stats: HashMap<String, HashMapValue>,
@@ -251,6 +253,10 @@ impl ChainStorage for HashMapChainStorage {
     fn flush(&self) -> Result<()> {
         Ok(())
     }
+
+    fn inspect(&self) -> Result<Option<Self::Finalized>> {
+        self.clone().finalize().map(Some)
+    }
 }
 
 pub struct HashMapConfig {}
@@ -313,5 +319,13 @@ impl TraceStorage for HashMapTraceStorage {
         }
 
         Ok((first_error, results))
+    }
+
+    fn inspect(
+        &self,
+        traces: Vec<Result<Option<<Self::ChainStorage as ChainStorage>::Finalized>>>,
+    ) -> Result<(Option<anyhow::Error>, Self::Finalized)> {
+        self.clone()
+            .finalize(traces.into_iter().map(|r| r.map(|o| o.unwrap())).collect())
     }
 }
