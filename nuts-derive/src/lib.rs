@@ -514,7 +514,7 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
             let name = &field.name;
             if field.is_option {
                 quote! {
-                    if let Some(inner) = &self.#name {
+                    if let Some(inner) = &mut self.#name {
                         result.extend(inner.get_all(parent));
                     }
                 }
@@ -526,7 +526,7 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
             let name = &field.name;
             if field.is_option {
                 quote! {
-                    if let Some(inner) = &self.#name {
+                    if let Some(inner) = &mut self.#name {
                         result.push((#name.to_string().as_str(), Some(nuts_storable::Value::Generic(Box::new(inner.clone())))));
                     } else {
                         result.push((#name.to_string().as_str(), None));
