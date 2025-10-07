@@ -57,27 +57,33 @@ impl CpuLogpFunc for PosteriorDensity {
     }
 }
 
-// We get the default sampler arguments
-let mut settings = DiagGradNutsSettings::default();
 
-// and modify as we like
-settings.num_tune = 1000;
-settings.maxdepth = 3;  // small value just for testing...
+fn main() {
+    // We get the default sampler arguments
+    let mut settings = DiagGradNutsSettings::default();
 
-// We instanciate our posterior density function
-let logp_func = PosteriorDensity {};
-let math = CpuMath::new(logp_func);
+    // and modify as we like
+    settings.num_tune = 1000;
+    settings.maxdepth = 3; // small value just for testing...
 
-let chain = 0;
-let mut rng = thread_rng();
-let mut sampler = settings.new_chain(0, math, &mut rng);
+    // We instanciate our posterior density function
+    let logp_func = PosteriorDensity {};
+    let math = CpuMath::new(logp_func);
 
-// Set to some initial position and start drawing samples.
-sampler.set_position(&vec![0f64; 10]).expect("Unrecoverable error during init");
-let mut trace = vec![];  // Collection of all draws
-for _ in 0..2000 {
-    let (draw, info) = sampler.draw().expect("Unrecoverable error during sampling");
-    trace.push(draw);
+    let chain = 0;
+    let mut rng = thread_rng();
+    let mut sampler = settings.new_chain(0, math, &mut rng);
+
+    // Set to some initial position and start drawing samples.
+    sampler
+        .set_position(&vec![0f64; 10])
+        .expect("Unrecoverable error during init");
+    let mut trace = vec![]; // Collection of all draws
+    for _ in 0..2000 {
+        let (draw, info) = sampler.draw().expect("Unrecoverable error during sampling");
+        trace.push(draw.clone());
+        println!("Draw: {:?}", draw);
+    }
 }
 ```
 
