@@ -2,12 +2,15 @@
 name = "nuts-derive"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "Derive macros for nuts-rs"
+repository = "https://github.com/pymc-devs/nuts-rs"
 
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "1.0", features = ["full"] }
-nuts-storable = { path = "../nuts-storable" }
+nuts-storable = { path = "../nuts-storable", version = "0.1.0" }
 
 [lib]
 proc-macro = true

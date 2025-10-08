@@ -2,5 +2,8 @@
 name = "nuts-storable"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "Traits for serializing and deserializing NUTS models and states in nuts-rs"
+repository = "https://github.com/pymc-devs/nuts-rs"
 
 [lib]
