@@ -14,6 +14,7 @@ use crate::{
     nuts::{Collector, NutsOptions},
     sampler_stats::SamplerStats,
 };
+use std::f64;
 use std::fmt::Debug;
 
 /// Method used for step size adaptation
