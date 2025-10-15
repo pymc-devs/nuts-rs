@@ -151,6 +151,30 @@ pub trait Math: HasDims {
         vecs: &Self::EigVectors,
         vals: &Self::EigValues,
     );
+
+    fn std_norm_flow(
+        &mut self,
+        pos: &Self::Vector,
+        pos_out: &mut Self::Vector,
+        vel: &mut Self::Vector,
+        epsilon: f64,
+    );
+    fn std_norm_grad_flow(
+        &mut self,
+        pos: &Self::Vector,
+        grad: &Self::Vector,
+        vel: &Self::Vector,
+        vel_out: &mut Self::Vector,
+        epsilon: f64,
+    );
+    fn std_norm_grad_flow_inplace(
+        &mut self,
+        pos: &Self::Vector,
+        grad: &Self::Vector,
+        vel: &mut Self::Vector,
+        epsilon: f64,
+    );
+
     fn array_vector_dot(&mut self, array1: &Self::Vector, array2: &Self::Vector) -> f64;
     fn array_gaussian<R: rand::Rng + ?Sized>(
         &mut self,

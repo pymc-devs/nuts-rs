@@ -82,26 +82,60 @@ impl<M: Math> SamplerStats<M> for TransformedPoint<M> {
 }
 
 impl<M: Math> TransformedPoint<M> {
-    fn first_velocity_halfstep(&self, math: &mut M, out: &mut Self, epsilon: f64) {
-        math.axpy_out(
-            &self.transformed_gradient,
-            &self.velocity,
-            epsilon / 2.,
-            &mut out.velocity,
-        );
+    fn first_velocity_halfstep(
+        &self,
+        math: &mut M,
+        out: &mut Self,
+        epsilon: f64,
+        exact_normal: bool,
+    ) {
+        if exact_normal {
+            math.std_norm_grad_flow(
+                &self.transformed_position,
+                &self.transformed_gradient,
+                &self.velocity,
+                &mut out.velocity,
+                epsilon / 2.,
+            );
+        } else {
+            math.axpy_out(
+                &self.transformed_gradient,
+                &self.velocity,
+                epsilon / 2.,
+                &mut out.velocity,
+            );
+        }
     }
 
-    fn position_step(&self, math: &mut M, out: &mut Self, epsilon: f64) {
-        math.axpy_out(
-            &out.velocity,
-            &self.transformed_position,
-            epsilon,
-            &mut out.transformed_position,
-        );
+    fn position_step(&self, math: &mut M, out: &mut Self, epsilon: f64, exact_normal: bool) {
+        if exact_normal {
+            math.std_norm_flow(
+                &self.transformed_position,
+                &mut out.transformed_position,
+                &mut out.velocity,
+                epsilon,
+            );
+        } else {
+            math.axpy_out(
+                &out.velocity,
+                &self.transformed_position,
+                epsilon,
+                &mut out.transformed_position,
+            );
+        }
     }
 
-    fn second_velocity_halfstep(&mut self, math: &mut M, epsilon: f64) {
-        math.axpy(&self.transformed_gradient, &mut self.velocity, epsilon / 2.);
+    fn second_velocity_halfstep(&mut self, math: &mut M, epsilon: f64, exact_normal: bool) {
+        if exact_normal {
+            return math.std_norm_grad_flow_inplace(
+                &self.transformed_position,
+                &self.transformed_gradient,
+                &mut self.velocity,
+                epsilon / 2.,
+            );
+        } else {
+            math.axpy(&self.transformed_gradient, &mut self.velocity, epsilon / 2.);
+        }
     }
 
     fn update_kinetic_energy(&mut self, math: &mut M) {
@@ -247,11 +281,12 @@ pub struct TransformedHamiltonian<M: Math, T: Transformation<M>> {
     step_size: f64,
     transformation: T,
     max_energy_error: f64,
+    exact_normal: bool,
     pool: StatePool<M, TransformedPoint<M>>,
 }
 
 impl<M: Math, T: Transformation<M>> TransformedHamiltonian<M, T> {
-    pub fn new(math: &mut M, max_energy_error: f64, transformation: T) -> Self {
+    pub fn new(math: &mut M, max_energy_error: f64, transformation: T, exact_normal: bool) -> Self {
         let mut ones = math.new_array();
         math.fill_array(&mut ones, 1f64);
         let mut zeros = math.new_array();
@@ -263,6 +298,7 @@ impl<M: Math, T: Transformation<M>> TransformedHamiltonian<M, T> {
             zeros,
             transformation,
             max_energy_error,
+            exact_normal,
             pool,
         }
     }
@@ -360,9 +396,11 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
 
         start
             .point()
-            .first_velocity_halfstep(math, out_point, epsilon);
+            .first_velocity_halfstep(math, out_point, epsilon, self.exact_normal);
 
-        start.point().position_step(math, out_point, epsilon);
+        start
+            .point()
+            .position_step(math, out_point, epsilon, self.exact_normal);
 
         let transformation = self.transformation();
         if let Err(logp_error) = out_point.init_from_transformed_position(transformation, math) {
@@ -383,7 +421,7 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
             return LeapfrogResult::Divergence(div_info);
         }
 
-        out_point.second_velocity_halfstep(math, epsilon);
+        out_point.second_velocity_halfstep(math, epsilon, self.exact_normal);
 
         out_point.update_kinetic_energy(math);
         out_point.index_in_trajectory = start.index_in_trajectory() + sign;

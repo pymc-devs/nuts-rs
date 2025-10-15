@@ -14,7 +14,10 @@ use crate::math::util::multiply_inplace;
 
 use super::{
     math::{LogpError, Math},
-    util::{axpy, axpy_out, multiply, scalar_prods2, scalar_prods3, vector_dot},
+    util::{
+        axpy, axpy_out, multiply, scalar_prods2, scalar_prods3, std_norm_flow, std_norm_grad_flow,
+        std_norm_grad_flow_inplace, vector_dot,
+    },
 };
 
 #[derive(Debug)]
@@ -435,6 +438,59 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         let scaled = stds.as_diagonal() * inner_prod;
 
         let _ = replace(dest, scaled);
+    }
+
+    /// The exponential map of the Hamiltonian flow for the standard normal distribution.
+    ///
+    /// This is the harmonic oscillator with unit mass and unit frequency.
+    fn std_norm_flow(
+        &mut self,
+        pos: &Self::Vector,
+        pos_out: &mut Self::Vector,
+        vel: &mut Self::Vector,
+        epsilon: f64,
+    ) {
+        std_norm_flow(
+            self.arch,
+            pos.try_as_col_major().unwrap().as_slice(),
+            pos_out.try_as_col_major_mut().unwrap().as_slice_mut(),
+            vel.try_as_col_major_mut().unwrap().as_slice_mut(),
+            epsilon,
+        );
+    }
+
+    fn std_norm_grad_flow(
+        &mut self,
+        pos: &Self::Vector,
+        grad: &Self::Vector,
+        vel: &Self::Vector,
+        vel_out: &mut Self::Vector,
+        epsilon: f64,
+    ) {
+        std_norm_grad_flow(
+            self.arch,
+            pos.try_as_col_major().unwrap().as_slice(),
+            grad.try_as_col_major().unwrap().as_slice(),
+            vel.try_as_col_major().unwrap().as_slice(),
+            vel_out.try_as_col_major_mut().unwrap().as_slice_mut(),
+            epsilon,
+        );
+    }
+
+    fn std_norm_grad_flow_inplace(
+        &mut self,
+        pos: &Self::Vector,
+        grad: &Self::Vector,
+        vel: &mut Self::Vector,
+        epsilon: f64,
+    ) {
+        std_norm_grad_flow_inplace(
+            self.arch,
+            pos.try_as_col_major().unwrap().as_slice(),
+            grad.try_as_col_major().unwrap().as_slice(),
+            vel.try_as_col_major_mut().unwrap().as_slice_mut(),
+            epsilon,
+        );
     }
 
     fn array_vector_dot(&mut self, array1: &Self::Vector, array2: &Self::Vector) -> f64 {

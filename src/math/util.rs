@@ -504,6 +504,244 @@ pub fn axpy_out(arch: Arch, x: &[f64], y: &[f64], a: f64, out: &mut [f64]) {
     arch.dispatch(AxpyOut { x, y, out, a });
 }
 
+/// Exponential map of the harmonic oscillator flow for the standard normal distribution.
+///
+/// Computes per-element:
+///   `pos_out[i] = pos[i] * cos(ε) + vel[i] * sin(ε)`
+///   `vel[i]     = -pos[i] * sin(ε) + vel[i] * cos(ε)`
+struct StdNormFlow<'a> {
+    pos: &'a [f64],
+    pos_out: &'a mut [f64],
+    vel: &'a mut [f64],
+    eps_sin: f64,
+    eps_cos: f64,
+}
+
+impl<'a> WithSimd for StdNormFlow<'a> {
+    type Output = ();
+
+    #[inline(always)]
+    fn with_simd<S: pulp::Simd>(self, simd: S) -> Self::Output {
+        let Self {
+            pos,
+            pos_out,
+            vel,
+            eps_sin,
+            eps_cos,
+        } = self;
+
+        let s = simd.splat_f64s(eps_sin);
+        let c = simd.splat_f64s(eps_cos);
+        let neg_s = simd.splat_f64s(-eps_sin);
+
+        let (p_head, p_tail) = S::as_simd_f64s(pos);
+        let (po_head, po_tail) = S::as_mut_simd_f64s(pos_out);
+        let (v_head, v_tail) = S::as_mut_simd_f64s(vel);
+
+        let (p_arrays, p_simd_tail) = pulp::as_arrays::<4, _>(p_head);
+        let (po_arrays, po_simd_tail) = pulp::as_arrays_mut::<4, _>(po_head);
+        let (v_arrays, v_simd_tail) = pulp::as_arrays_mut::<4, _>(v_head);
+
+        izip!(p_arrays, po_arrays, v_arrays).for_each(
+            |([p0, p1, p2, p3], [po0, po1, po2, po3], [v0, v1, v2, v3])| {
+                // pos_out = p*cos + v*sin
+                *po0 = simd.mul_add_f64s(*p0, c, simd.mul_f64s(*v0, s));
+                *po1 = simd.mul_add_f64s(*p1, c, simd.mul_f64s(*v1, s));
+                *po2 = simd.mul_add_f64s(*p2, c, simd.mul_f64s(*v2, s));
+                *po3 = simd.mul_add_f64s(*p3, c, simd.mul_f64s(*v3, s));
+                // vel = -p*sin + v*cos  =  p*(-sin) + v*cos
+                *v0 = simd.mul_add_f64s(*p0, neg_s, simd.mul_f64s(*v0, c));
+                *v1 = simd.mul_add_f64s(*p1, neg_s, simd.mul_f64s(*v1, c));
+                *v2 = simd.mul_add_f64s(*p2, neg_s, simd.mul_f64s(*v2, c));
+                *v3 = simd.mul_add_f64s(*p3, neg_s, simd.mul_f64s(*v3, c));
+            },
+        );
+
+        izip!(p_simd_tail, po_simd_tail, v_simd_tail).for_each(|(&p, po, v)| {
+            let new_po = simd.mul_add_f64s(p, c, simd.mul_f64s(*v, s));
+            *v = simd.mul_add_f64s(p, neg_s, simd.mul_f64s(*v, c));
+            *po = new_po;
+        });
+
+        izip!(p_tail, po_tail, v_tail).for_each(|(&p, po, v)| {
+            let new_po = p * eps_cos + *v * eps_sin;
+            *v = p * (-eps_sin) + *v * eps_cos;
+            *po = new_po;
+        });
+    }
+}
+
+#[inline(never)]
+pub fn std_norm_flow(arch: Arch, pos: &[f64], pos_out: &mut [f64], vel: &mut [f64], epsilon: f64) {
+    let n = pos.len();
+    assert!(pos_out.len() == n);
+    assert!(vel.len() == n);
+
+    let eps_sin = epsilon.sin();
+    let eps_cos = epsilon.cos();
+
+    arch.dispatch(StdNormFlow {
+        pos,
+        pos_out,
+        vel,
+        eps_sin,
+        eps_cos,
+    });
+}
+
+/// Gradient flow step for the standard normal distribution (out-of-place).
+///
+/// Computes per-element:
+///   `vel_out[i] = vel[i] + ε * (pos[i] + grad[i])`
+struct StdNormGradFlow<'a> {
+    pos: &'a [f64],
+    grad: &'a [f64],
+    vel: &'a [f64],
+    vel_out: &'a mut [f64],
+    epsilon: f64,
+}
+
+impl<'a> WithSimd for StdNormGradFlow<'a> {
+    type Output = ();
+
+    #[inline(always)]
+    fn with_simd<S: pulp::Simd>(self, simd: S) -> Self::Output {
+        let Self {
+            pos,
+            grad,
+            vel,
+            vel_out,
+            epsilon,
+        } = self;
+
+        let eps = simd.splat_f64s(epsilon);
+
+        let (p_head, p_tail) = S::as_simd_f64s(pos);
+        let (g_head, g_tail) = S::as_simd_f64s(grad);
+        let (v_head, v_tail) = S::as_simd_f64s(vel);
+        let (vo_head, vo_tail) = S::as_mut_simd_f64s(vel_out);
+
+        let (p_arrays, p_simd_tail) = pulp::as_arrays::<4, _>(p_head);
+        let (g_arrays, g_simd_tail) = pulp::as_arrays::<4, _>(g_head);
+        let (v_arrays, v_simd_tail) = pulp::as_arrays::<4, _>(v_head);
+        let (vo_arrays, vo_simd_tail) = pulp::as_arrays_mut::<4, _>(vo_head);
+
+        izip!(p_arrays, g_arrays, v_arrays, vo_arrays).for_each(
+            |([p0, p1, p2, p3], [g0, g1, g2, g3], [v0, v1, v2, v3], [vo0, vo1, vo2, vo3])| {
+                // vel_out = vel + eps * (pos + grad)
+                *vo0 = simd.mul_add_f64s(eps, simd.add_f64s(*p0, *g0), *v0);
+                *vo1 = simd.mul_add_f64s(eps, simd.add_f64s(*p1, *g1), *v1);
+                *vo2 = simd.mul_add_f64s(eps, simd.add_f64s(*p2, *g2), *v2);
+                *vo3 = simd.mul_add_f64s(eps, simd.add_f64s(*p3, *g3), *v3);
+            },
+        );
+
+        izip!(p_simd_tail, g_simd_tail, v_simd_tail, vo_simd_tail).for_each(|(&p, &g, &v, vo)| {
+            *vo = simd.mul_add_f64s(eps, simd.add_f64s(p, g), v);
+        });
+
+        izip!(p_tail, g_tail, v_tail, vo_tail).for_each(|(p, g, v, vo)| {
+            *vo = v + epsilon * (p + g);
+        });
+    }
+}
+
+#[inline(never)]
+pub fn std_norm_grad_flow(
+    arch: Arch,
+    pos: &[f64],
+    grad: &[f64],
+    vel: &[f64],
+    vel_out: &mut [f64],
+    epsilon: f64,
+) {
+    let n = pos.len();
+    assert!(grad.len() == n);
+    assert!(vel.len() == n);
+    assert!(vel_out.len() == n);
+
+    arch.dispatch(StdNormGradFlow {
+        pos,
+        grad,
+        vel,
+        vel_out,
+        epsilon,
+    });
+}
+
+/// Gradient flow step for the standard normal distribution (in-place).
+///
+/// Computes per-element:
+///   `vel[i] += ε * (pos[i] + grad[i])`
+struct StdNormGradFlowInplace<'a> {
+    pos: &'a [f64],
+    grad: &'a [f64],
+    vel: &'a mut [f64],
+    epsilon: f64,
+}
+
+impl<'a> WithSimd for StdNormGradFlowInplace<'a> {
+    type Output = ();
+
+    #[inline(always)]
+    fn with_simd<S: pulp::Simd>(self, simd: S) -> Self::Output {
+        let Self {
+            pos,
+            grad,
+            vel,
+            epsilon,
+        } = self;
+
+        let eps = simd.splat_f64s(epsilon);
+
+        let (p_head, p_tail) = S::as_simd_f64s(pos);
+        let (g_head, g_tail) = S::as_simd_f64s(grad);
+        let (v_head, v_tail) = S::as_mut_simd_f64s(vel);
+
+        let (p_arrays, p_simd_tail) = pulp::as_arrays::<4, _>(p_head);
+        let (g_arrays, g_simd_tail) = pulp::as_arrays::<4, _>(g_head);
+        let (v_arrays, v_simd_tail) = pulp::as_arrays_mut::<4, _>(v_head);
+
+        izip!(p_arrays, g_arrays, v_arrays).for_each(
+            |([p0, p1, p2, p3], [g0, g1, g2, g3], [v0, v1, v2, v3])| {
+                // vel += eps * (pos + grad)
+                *v0 = simd.mul_add_f64s(eps, simd.add_f64s(*p0, *g0), *v0);
+                *v1 = simd.mul_add_f64s(eps, simd.add_f64s(*p1, *g1), *v1);
+                *v2 = simd.mul_add_f64s(eps, simd.add_f64s(*p2, *g2), *v2);
+                *v3 = simd.mul_add_f64s(eps, simd.add_f64s(*p3, *g3), *v3);
+            },
+        );
+
+        izip!(p_simd_tail, g_simd_tail, v_simd_tail).for_each(|(&p, &g, v)| {
+            *v = simd.mul_add_f64s(eps, simd.add_f64s(p, g), *v);
+        });
+
+        izip!(p_tail, g_tail, v_tail).for_each(|(p, g, v)| {
+            *v += epsilon * (p + g);
+        });
+    }
+}
+
+#[inline(never)]
+pub fn std_norm_grad_flow_inplace(
+    arch: Arch,
+    pos: &[f64],
+    grad: &[f64],
+    vel: &mut [f64],
+    epsilon: f64,
+) {
+    let n = pos.len();
+    assert!(grad.len() == n);
+    assert!(vel.len() == n);
+
+    arch.dispatch(StdNormGradFlowInplace {
+        pos,
+        grad,
+        vel,
+        epsilon,
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,6 +806,76 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn test_std_norm_flow(
+            (pos, vel) in array2(32),
+            epsilon in -10f64..10f64,
+        ) {
+            let arch = Arch::default();
+            let mut pos_out_simd = vec![0f64; pos.len()];
+            let mut vel_simd = vel.clone();
+            std_norm_flow(arch, &pos[..], &mut pos_out_simd[..], &mut vel_simd[..], epsilon);
+
+            // Reference: verbatim translation of the original faer::zip! scalar code
+            let mut pos_out_ref = vec![0f64; pos.len()];
+            let mut vel_ref = vel.clone();
+            izip!(pos.iter(), pos_out_ref.iter_mut(), vel_ref.iter_mut()).for_each(|(&p, p_out, v)| {
+                let eps_sin = epsilon.sin();
+                let eps_cos = epsilon.cos();
+                let new_p = p * eps_cos + *v * eps_sin;
+                let new_v = -(p) * eps_sin + *v * eps_cos;
+                *p_out = new_p;
+                *v = new_v;
+            });
+
+            for ((po_simd, vo_simd), (po_ref, vo_ref)) in
+                pos_out_simd.iter().zip(vel_simd.iter()).zip(pos_out_ref.iter().zip(vel_ref.iter()))
+            {
+                assert_approx_eq(*po_simd, *po_ref);
+                assert_approx_eq(*vo_simd, *vo_ref);
+            }
+        }
+
+        #[test]
+        fn test_std_norm_grad_flow(
+            (pos, grad, vel) in array3(32),
+            epsilon in -10f64..10f64,
+        ) {
+            let arch = Arch::default();
+            let mut vel_out_simd = vec![0f64; pos.len()];
+            std_norm_grad_flow(arch, &pos[..], &grad[..], &vel[..], &mut vel_out_simd[..], epsilon);
+
+            // Reference: verbatim translation of the original faer::zip! scalar code
+            let mut vel_out_ref = vec![0f64; pos.len()];
+            izip!(pos.iter(), grad.iter(), vel.iter(), vel_out_ref.iter_mut()).for_each(|(&p, &g, &v, v_out)| {
+                *v_out = v + epsilon * (p + g);
+            });
+
+            for (vo_simd, vo_ref) in vel_out_simd.iter().zip(vel_out_ref.iter()) {
+                assert_approx_eq(*vo_simd, *vo_ref);
+            }
+        }
+
+        #[test]
+        fn test_std_norm_grad_flow_inplace(
+            (pos, grad, vel) in array3(32),
+            epsilon in -10f64..10f64,
+        ) {
+            let arch = Arch::default();
+            let mut vel_simd = vel.clone();
+            std_norm_grad_flow_inplace(arch, &pos[..], &grad[..], &mut vel_simd[..], epsilon);
+
+            // Reference: verbatim translation of the original faer::zip! scalar code
+            let mut vel_ref = vel.clone();
+            izip!(pos.iter(), grad.iter(), vel_ref.iter_mut()).for_each(|(&p, &g, v)| {
+                *v = *v + epsilon * (p + g);
+            });
+
+            for (vi_simd, vi_ref) in vel_simd.iter().zip(vel_ref.iter()) {
+                assert_approx_eq(*vi_simd, *vi_ref);
+            }
+        }
+
         #[test]
         fn check_logaddexp(x in -10f64..10f64, y in -10f64..10f64) {
             let a = (x.exp() + y.exp()).ln();
