@@ -1,11 +1,12 @@
 use nuts_derive::Storable;
+use nuts_storable::{HasDims, Storable};
 use serde::Serialize;
 
 use crate::adapt_strategy::CombinedCollector;
 use crate::chain::AdaptStrategy;
 use crate::hamiltonian::{Hamiltonian, Point};
 use crate::nuts::{Collector, NutsOptions, SampleInfo};
-use crate::sampler_stats::SamplerStats;
+use crate::sampler_stats::{SamplerStats, StatsDims};
 use crate::state::State;
 use crate::stepsize::AcceptanceRateCollector;
 use crate::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
@@ -43,17 +44,23 @@ pub struct TransformAdaptation {
 }
 
 #[derive(Debug, Storable)]
-pub struct Stats {
+pub struct Stats<P: HasDims, S: Storable<P>> {
     tuning: bool,
+    #[storable(flatten)]
+    pub step_size: S,
+    #[storable(ignore)]
+    _phantom: std::marker::PhantomData<fn() -> P>,
 }
 
 impl<M: Math> SamplerStats<M> for TransformAdaptation {
-    type Stats = Stats;
+    type Stats = Stats<StatsDims, <StepSizeStrategy as SamplerStats<M>>::Stats>;
     type StatsOptions = ();
 
-    fn extract_stats(&self, _math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
+    fn extract_stats(&self, math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
         Stats {
             tuning: self.tuning,
+            step_size: { self.step_size.extract_stats(math, ()) },
+            _phantom: std::marker::PhantomData,
         }
     }
 }
