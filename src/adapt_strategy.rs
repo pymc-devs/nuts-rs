@@ -412,7 +412,7 @@ mod test {
         let max_energy_error = 1000f64;
 
         let hamiltonian: TransformedHamiltonian<_, DiagMassMatrix<CpuMath<NormalLogp>>> =
-            TransformedHamiltonian::new(&mut math, max_energy_error, mass_matrix);
+            TransformedHamiltonian::new(&mut math, max_energy_error, mass_matrix, false);
 
         let options = NutsOptions {
             maxdepth: 10u64,
@@ -422,6 +422,7 @@ mod test {
             check_turning: true,
             store_divergences: false,
             target_integration_time: None,
+            extra_doublings: 0,
         };
 
         let rng = {

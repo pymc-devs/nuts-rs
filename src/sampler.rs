@@ -186,7 +186,7 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     pub adapt_options: A,
     pub check_turning: bool,
     pub target_integration_time: Option<f64>,
-
+    pub exact_normal_trajectory: bool,
     pub num_chains: usize,
     pub seed: u64,
 }
@@ -212,6 +212,7 @@ impl Default for DiagGradNutsSettings {
             seed: 0,
             num_chains: 6,
             target_integration_time: None,
+            exact_normal_trajectory: false,
         }
     }
 }
@@ -233,6 +234,7 @@ impl Default for LowRankNutsSettings {
             seed: 0,
             num_chains: 6,
             target_integration_time: None,
+            exact_normal_trajectory: false,
         };
         vals.adapt_options.mass_matrix_update_freq = 10;
         vals
@@ -256,6 +258,7 @@ impl Default for TransformedNutsSettings {
             seed: 0,
             num_chains: 1,
             target_integration_time: None,
+            exact_normal_trajectory: false,
         }
     }
 }
@@ -276,7 +279,12 @@ impl Settings for LowRankNutsSettings {
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
         let mass_matrix = LowRankMassMatrix::new(&mut math, self.adapt_options.mass_matrix_options);
         let max_energy_error = self.max_energy_error;
-        let hamiltonian = TransformedHamiltonian::new(&mut math, max_energy_error, mass_matrix);
+        let hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            max_energy_error,
+            mass_matrix,
+            self.exact_normal_trajectory,
+        );
 
         let options = NutsOptions {
             maxdepth: self.maxdepth,
@@ -347,7 +355,12 @@ impl Settings for DiagGradNutsSettings {
             self.adapt_options.mass_matrix_options.store_mass_matrix,
         );
         let max_energy_error = self.max_energy_error;
-        let potential = TransformedHamiltonian::new(&mut math, max_energy_error, mass_matrix);
+        let potential = TransformedHamiltonian::new(
+            &mut math,
+            max_energy_error,
+            mass_matrix,
+            self.exact_normal_trajectory,
+        );
 
         let options = NutsOptions {
             maxdepth: self.maxdepth,
@@ -420,7 +433,12 @@ impl Settings for TransformedNutsSettings {
             .new_transformation(rng, math.dim(), chain)
             .expect("Failed to create external transformation");
         let transform = ExternalTransformation::new(params);
-        let hamiltonian = TransformedHamiltonian::new(&mut math, max_energy_error, transform);
+        let hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            max_energy_error,
+            transform,
+            self.exact_normal_trajectory,
+        );
 
         let options = NutsOptions {
             maxdepth: self.maxdepth,

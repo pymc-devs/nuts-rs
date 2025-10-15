@@ -8,6 +8,9 @@ use crate::{
     nuts::{Collector, NutsOptions},
 };
 
+// log(pi)
+const MAX_LOG_STEP_SIZE: f64 = 1.1447298858494002;
+
 /// Settings for step size adaptation
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct DualAverageOptions {
@@ -52,6 +55,7 @@ impl DualAverage {
         let w = 1. / (self.count as f64 + self.settings.t0);
         self.hbar = (1. - w) * self.hbar + w * (target - accept_stat);
         self.log_step = self.mu - self.hbar * (self.count as f64).sqrt() / self.settings.gamma;
+        self.log_step = self.log_step.min(MAX_LOG_STEP_SIZE);
         let mk = (self.count as f64).powf(-self.settings.k);
         self.log_step_adapted = mk * self.log_step + (1. - mk) * self.log_step_adapted;
         self.count += 1;
