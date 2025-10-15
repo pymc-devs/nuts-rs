@@ -189,6 +189,10 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     pub exact_normal_trajectory: bool,
     pub num_chains: usize,
     pub seed: u64,
+    /// Number of extra doublings to perform after reaching maxdepth. This can
+    /// be used to increase the effective sample size at the cost of more
+    /// expensive sampling.
+    pub extra_doublings: u64,
 }
 
 pub type DiagGradNutsSettings = NutsSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
@@ -213,6 +217,7 @@ impl Default for DiagGradNutsSettings {
             num_chains: 6,
             target_integration_time: None,
             exact_normal_trajectory: false,
+            extra_doublings: 0,
         }
     }
 }
@@ -235,8 +240,9 @@ impl Default for LowRankNutsSettings {
             num_chains: 6,
             target_integration_time: None,
             exact_normal_trajectory: false,
+            extra_doublings: 0,
         };
-        vals.adapt_options.mass_matrix_update_freq = 10;
+        vals.adapt_options.mass_matrix_update_freq = 20;
         vals
     }
 }
@@ -259,6 +265,7 @@ impl Default for TransformedNutsSettings {
             num_chains: 1,
             target_integration_time: None,
             exact_normal_trajectory: false,
+            extra_doublings: 0,
         }
     }
 }
@@ -294,6 +301,7 @@ impl Settings for LowRankNutsSettings {
             store_unconstrained: self.store_unconstrained,
             check_turning: self.check_turning,
             target_integration_time: self.target_integration_time,
+            extra_doublings: self.extra_doublings,
         };
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
@@ -370,6 +378,7 @@ impl Settings for DiagGradNutsSettings {
             store_unconstrained: self.store_unconstrained,
             check_turning: self.check_turning,
             target_integration_time: self.target_integration_time,
+            extra_doublings: self.extra_doublings,
         };
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
@@ -448,6 +457,7 @@ impl Settings for TransformedNutsSettings {
             store_unconstrained: self.store_unconstrained,
             check_turning: self.check_turning,
             target_integration_time: self.target_integration_time,
+            extra_doublings: self.extra_doublings,
         };
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");

@@ -258,6 +258,7 @@ pub struct NutsOptions {
     pub check_turning: bool,
     pub store_divergences: bool,
     pub target_integration_time: Option<f64>,
+    pub extra_doublings: u64,
 }
 
 impl Default for NutsOptions {
@@ -270,6 +271,7 @@ impl Default for NutsOptions {
             check_turning: true,
             store_divergences: false,
             target_integration_time: None,
+            extra_doublings: 0,
         }
     }
 }
@@ -342,7 +344,28 @@ where
             current_options,
         ) {
             ExtendResult::Ok(tree) => tree,
-            ExtendResult::Turning(tree) => {
+            ExtendResult::Turning(mut tree) => {
+                for _ in 0..options.extra_doublings {
+                    tree = match tree.extend(
+                        math,
+                        rng,
+                        hamiltonian,
+                        direction,
+                        collector,
+                        &options_no_check,
+                    ) {
+                        ExtendResult::Ok(tree) => tree,
+                        ExtendResult::Turning(tree) => tree,
+                        ExtendResult::Diverging(tree, info) => {
+                            let info = tree.info(false, Some(info));
+                            collector.register_draw(math, &tree.draw, &info);
+                            return Ok((tree.draw, info));
+                        }
+                        ExtendResult::Err(error) => {
+                            return Err(error);
+                        }
+                    }
+                }
                 let info = tree.info(false, None);
                 collector.register_draw(math, &tree.draw, &info);
                 return Ok((tree.draw, info));
