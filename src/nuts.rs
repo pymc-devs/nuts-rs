@@ -257,6 +257,19 @@ pub struct NutsOptions {
     pub store_divergences: bool,
 }
 
+impl Default for NutsOptions {
+    fn default() -> Self {
+        NutsOptions {
+            maxdepth: 10,
+            mindepth: 0,
+            store_gradient: false,
+            store_unconstrained: false,
+            check_turning: true,
+            store_divergences: false,
+        }
+    }
+}
+
 pub(crate) fn draw<M, H, R, C>(
     math: &mut M,
     init: &mut State<M, H::Point>,
@@ -282,18 +295,31 @@ where
         return Ok((init.clone(), info));
     }
 
+    let options_no_check = NutsOptions {
+        check_turning: false,
+        ..*options
+    };
+
     while tree.depth < options.maxdepth {
         let direction: Direction = rng.random();
-        tree = match tree.extend(math, rng, hamiltonian, direction, collector, options) {
+        let current_options = if tree.depth < options.mindepth {
+            &options_no_check
+        } else {
+            options
+        };
+        tree = match tree.extend(
+            math,
+            rng,
+            hamiltonian,
+            direction,
+            collector,
+            current_options,
+        ) {
             ExtendResult::Ok(tree) => tree,
             ExtendResult::Turning(tree) => {
-                if tree.depth < options.mindepth {
-                    tree
-                } else {
-                    let info = tree.info(false, None);
-                    collector.register_draw(math, &tree.draw, &info);
-                    return Ok((tree.draw, info));
-                }
+                let info = tree.info(false, None);
+                collector.register_draw(math, &tree.draw, &info);
+                return Ok((tree.draw, info));
             }
             ExtendResult::Diverging(tree, info) => {
                 let info = tree.info(false, Some(info));
