@@ -26,6 +26,7 @@ impl HashMapValue {
             ItemType::I64 => HashMapValue::I64(Vec::new()),
             ItemType::U64 => HashMapValue::U64(Vec::new()),
             ItemType::String => HashMapValue::String(Vec::new()),
+            ItemType::DateTime64(_) | ItemType::TimeDelta64(_) => HashMapValue::I64(Vec::new()),
         }
     }
 
@@ -44,6 +45,11 @@ impl HashMapValue {
             (HashMapValue::U64(vec), Value::U64(v)) => vec.extend(v),
             (HashMapValue::Bool(vec), Value::Bool(v)) => vec.extend(v),
             (HashMapValue::I64(vec), Value::I64(v)) => vec.extend(v),
+
+            (HashMapValue::String(vec), Value::Strings(v)) => vec.extend(v),
+            (HashMapValue::String(vec), Value::ScalarString(v)) => vec.push(v),
+            (HashMapValue::I64(vec), Value::DateTime64(_, v)) => vec.extend(v),
+            (HashMapValue::I64(vec), Value::TimeDelta64(_, v)) => vec.extend(v),
 
             _ => panic!("Mismatched item type"),
         }

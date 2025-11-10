@@ -117,7 +117,7 @@ mod transform_adapt_strategy;
 mod transformed_hamiltonian;
 
 pub use nuts_derive::Storable;
-pub use nuts_storable::{HasDims, ItemType, Storable, Value};
+pub use nuts_storable::{DateTimeUnit, HasDims, ItemType, Storable, Value};
 
 pub use adapt_strategy::EuclideanAdaptOptions;
 pub use chain::Chain;

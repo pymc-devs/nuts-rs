@@ -32,6 +32,12 @@ impl ArrowBuilder {
             ItemType::I64 => Box::new(Int64Builder::with_capacity(capacity)),
             ItemType::U64 => Box::new(UInt64Builder::with_capacity(capacity)),
             ItemType::String => Box::new(StringBuilder::with_capacity(capacity, capacity)),
+            ItemType::DateTime64(_) => {
+                panic!("DateTime values not supported as values in arrow storage")
+            }
+            ItemType::TimeDelta64(_) => {
+                panic!("TimeDelta values not supported as values in arrow storage")
+            }
         };
 
         if shape.is_empty() {
@@ -100,6 +106,12 @@ impl ArrowBuilder {
                         string_builder.append_value(&item);
                     }
                 }
+                Value::DateTime64(_, _) => {
+                    panic!("DateTime64 scalar values not supported in arrow storage")
+                }
+                Value::TimeDelta64(_, _) => {
+                    panic!("TimeDelta64 scalar values not supported in arrow storage")
+                }
             },
             ArrowBuilder::Tensor(list_builder) => {
                 match value {
@@ -153,6 +165,12 @@ impl ArrowBuilder {
                     Value::ScalarBool(val) => {
                         downcast_builder!(list_builder.values(), BooleanBuilder, ScalarBool)?
                             .append_value(val);
+                    }
+                    Value::DateTime64(_, _) => {
+                        panic!("DateTime64 scalar values not supported in arrow storage")
+                    }
+                    Value::TimeDelta64(_, _) => {
+                        panic!("TimeDelta64 scalar values not supported in arrow storage")
                     }
                 }
                 list_builder.append(true);
@@ -211,6 +229,12 @@ fn item_type_to_arrow_type(item_type: ItemType) -> DataType {
         ItemType::I64 => DataType::Int64,
         ItemType::Bool => DataType::Boolean,
         ItemType::String => DataType::Utf8,
+        ItemType::DateTime64(_) => {
+            panic!("DateTime64 scalar values not supported in arrow storage")
+        }
+        ItemType::TimeDelta64(_) => {
+            panic!("TimeDelta64 scalar values not supported in arrow storage")
+        }
     }
 }
 

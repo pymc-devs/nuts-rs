@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::iter::once;
+use std::num::NonZero;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -7,6 +8,7 @@ use nuts_storable::{ItemType, Value};
 use zarrs::array::{ArrayBuilder, DataType, FillValue};
 use zarrs::array_subset::ArraySubset;
 use zarrs::group::GroupBuilder;
+use zarrs::metadata_ext::data_type::NumpyTimeUnit;
 use zarrs::storage::{ReadableWritableListableStorage, ReadableWritableListableStorageTraits};
 
 use super::common::{Chunk, SampleBuffer, SampleBufferValue};
@@ -37,7 +39,38 @@ pub fn store_coords(
             &Value::I64(ref v) => (DataType::Int64, v.len(), FillValue::from(0i64)),
             &Value::Bool(ref v) => (DataType::Bool, v.len(), FillValue::from(false)),
             &Value::Strings(ref v) => (DataType::String, v.len(), FillValue::from("")),
-            _ => panic!("Unsupported coordinate type for {}", name),
+            &Value::DateTime64(ref unit, ref data) => (
+                DataType::NumpyDateTime64 {
+                    unit: match unit {
+                        nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
+                        nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
+                        nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
+                        nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
+                    },
+                    scale_factor: NonZero::new(1).unwrap(),
+                },
+                data.len(),
+                FillValue::new_null(),
+            ),
+            &Value::TimeDelta64(ref unit, ref data) => (
+                DataType::NumpyTimeDelta64 {
+                    unit: match unit {
+                        nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
+                        nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
+                        nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
+                        nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
+                    },
+                    scale_factor: NonZero::new(1).unwrap(),
+                },
+                data.len(),
+                FillValue::new_null(),
+            ),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Unsupported coordinate type for coordinate {}",
+                    name
+                ));
+            }
         };
         let name: &String = name;
 
@@ -53,6 +86,12 @@ pub fn store_coords(
             &Value::I64(ref v) => coord_array.store_chunk_elements::<i64>(&subset, v)?,
             &Value::Bool(ref v) => coord_array.store_chunk_elements::<bool>(&subset, v)?,
             &Value::Strings(ref v) => coord_array.store_chunk_elements::<String>(&subset, v)?,
+            &Value::DateTime64(_, ref data) => {
+                coord_array.store_chunk_elements::<i64>(&subset, data)?
+            }
+            &Value::TimeDelta64(_, ref data) => {
+                coord_array.store_chunk_elements::<i64>(&subset, data)?
+            }
             _ => unreachable!(),
         }
         coord_array.store_metadata()?;
