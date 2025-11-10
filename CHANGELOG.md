@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.1] - 2025-11-13
+
+### Bug Fixes
+
+- Store step size info in transform_adapt_strategy (Adrian Seyboldt)
+
+- Mindepth when check_turning=True was misbehaving (Adrian Seyboldt)
+
+
+### Features
+
+- Support datetime coordinates (Adrian Seyboldt)
+
+
+### Miscellaneous Tasks
+
+- Update dependencies (Adrian Seyboldt)
+
+
 ## [0.17.0] - 2025-10-08
 
 ### Bug Fixes
@@ -51,6 +70,10 @@ All notable changes to this project will be documented in this file.
 - Prepare bugfix release (Adrian Seyboldt)
 
 - Update dependencies (Adrian Seyboldt)
+
+- Prepare 0.17.0 (Adrian Seyboldt)
+
+- Correctly specify dependencies in workspace (Adrian Seyboldt)
 
 
 ### Performance
