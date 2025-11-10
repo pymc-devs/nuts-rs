@@ -1,6 +1,7 @@
 //! Implement the recursive doubling tree expansion that is the heart of the NUTS algorithm.
 
 use rand::RngExt;
+use rand_distr::num_traits::ToPrimitive;
 use thiserror::Error;
 
 use std::{fmt::Debug, marker::PhantomData};
@@ -256,6 +257,7 @@ pub struct NutsOptions {
     pub store_unconstrained: bool,
     pub check_turning: bool,
     pub store_divergences: bool,
+    pub target_integration_time: Option<f64>,
 }
 
 impl Default for NutsOptions {
@@ -267,6 +269,7 @@ impl Default for NutsOptions {
             store_unconstrained: false,
             check_turning: true,
             store_divergences: false,
+            target_integration_time: None,
         }
     }
 }
@@ -290,6 +293,28 @@ where
 
     let mut tree = NutsTree::new(init.clone());
 
+    let (mindepth, maxdepth) = if let Some(target_time) = options.target_integration_time {
+        let step_size = hamiltonian.step_size();
+        let max_steps = (target_time / step_size).ceil() as u64;
+        let mindepth = (max_steps as f64)
+            .log2()
+            .floor()
+            .to_u64()
+            .unwrap()
+            .max(options.mindepth);
+        let maxdepth = (max_steps as f64)
+            .log2()
+            .ceil()
+            .to_u64()
+            .unwrap()
+            .max(mindepth)
+            .min(options.maxdepth);
+
+        (mindepth, maxdepth)
+    } else {
+        (options.mindepth, options.maxdepth)
+    };
+
     if math.dim() == 0 {
         let info = tree.info(false, None);
         collector.register_draw(math, init, &info);
@@ -301,9 +326,9 @@ where
         ..*options
     };
 
-    while tree.depth < options.maxdepth {
+    while tree.depth < maxdepth {
         let direction: Direction = rng.random();
-        let current_options = if tree.depth < options.mindepth {
+        let current_options = if tree.depth < mindepth {
             &options_no_check
         } else {
             options

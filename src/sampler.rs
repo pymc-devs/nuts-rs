@@ -185,6 +185,7 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     /// Settings for mass matrix adaptation.
     pub adapt_options: A,
     pub check_turning: bool,
+    pub target_integration_time: Option<f64>,
 
     pub num_chains: usize,
     pub seed: u64,
@@ -210,6 +211,7 @@ impl Default for DiagGradNutsSettings {
             check_turning: true,
             seed: 0,
             num_chains: 6,
+            target_integration_time: None,
         }
     }
 }
@@ -230,6 +232,7 @@ impl Default for LowRankNutsSettings {
             check_turning: true,
             seed: 0,
             num_chains: 6,
+            target_integration_time: None,
         };
         vals.adapt_options.mass_matrix_update_freq = 10;
         vals
@@ -252,6 +255,7 @@ impl Default for TransformedNutsSettings {
             check_turning: true,
             seed: 0,
             num_chains: 1,
+            target_integration_time: None,
         }
     }
 }
@@ -281,6 +285,7 @@ impl Settings for LowRankNutsSettings {
             store_divergences: self.store_divergences,
             store_unconstrained: self.store_unconstrained,
             check_turning: self.check_turning,
+            target_integration_time: self.target_integration_time,
         };
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
@@ -351,6 +356,7 @@ impl Settings for DiagGradNutsSettings {
             store_divergences: self.store_divergences,
             store_unconstrained: self.store_unconstrained,
             check_turning: self.check_turning,
+            target_integration_time: self.target_integration_time,
         };
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
@@ -423,6 +429,7 @@ impl Settings for TransformedNutsSettings {
             store_divergences: self.store_divergences,
             store_unconstrained: self.store_unconstrained,
             check_turning: self.check_turning,
+            target_integration_time: self.target_integration_time,
         };
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");

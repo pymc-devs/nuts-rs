@@ -421,6 +421,7 @@ mod test {
             store_unconstrained: true,
             check_turning: true,
             store_divergences: false,
+            target_integration_time: None,
         };
 
         let rng = {
