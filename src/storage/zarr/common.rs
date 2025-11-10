@@ -1,10 +1,11 @@
-use std::collections::HashMap;
 use std::mem::replace;
 use std::sync::Arc;
+use std::{collections::HashMap, num::NonZero};
 
 use anyhow::Result;
 use nuts_storable::{ItemType, Value};
 use zarrs::array::{Array, ArrayBuilder, DataType, FillValue};
+use zarrs::metadata_ext::data_type::NumpyTimeUnit;
 
 /// Container for different types of sample values
 #[derive(Clone, Debug)]
@@ -51,6 +52,8 @@ impl SampleBuffer {
             ItemType::Bool => SampleBufferValue::Bool(Vec::with_capacity(chunk_size)),
             ItemType::I64 => SampleBufferValue::I64(Vec::with_capacity(chunk_size)),
             ItemType::String => panic!("String type not supported in SampleBuffer"),
+            ItemType::DateTime64(_) => panic!("DateTime64 type not supported in SampleBuffer"),
+            ItemType::TimeDelta64(_) => panic!("TimeDelta64 type not supported in SampleBuffer"),
         };
         Self {
             items: inner,
@@ -196,6 +199,24 @@ pub fn create_arrays<TStorage: ?Sized>(
             ItemType::I64 => DataType::Int64,
             ItemType::Bool => DataType::Bool,
             ItemType::String => DataType::String,
+            ItemType::DateTime64(unit) => DataType::NumpyDateTime64 {
+                unit: match unit {
+                    nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
+                    nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
+                    nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
+                    nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
+                },
+                scale_factor: NonZero::new(1).unwrap(),
+            },
+            ItemType::TimeDelta64(unit) => DataType::NumpyTimeDelta64 {
+                unit: match unit {
+                    nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
+                    nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
+                    nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
+                    nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
+                },
+                scale_factor: NonZero::new(1).unwrap(),
+            },
         };
         let fill_value = match item_type {
             ItemType::F64 => FillValue::from(f64::NAN),
@@ -204,6 +225,8 @@ pub fn create_arrays<TStorage: ?Sized>(
             ItemType::I64 => FillValue::from(0i64),
             ItemType::Bool => FillValue::from(false),
             ItemType::String => FillValue::from(""),
+            ItemType::DateTime64(_) => FillValue::new_null(),
+            ItemType::TimeDelta64(_) => FillValue::new_null(),
         };
         let grid: Vec<u64> = std::iter::once(1)
             .chain(std::iter::once(draw_chunk_size))

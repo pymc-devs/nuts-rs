@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::iter::once;
+use std::num::NonZero;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
@@ -8,6 +9,7 @@ use nuts_storable::{ItemType, Value};
 use zarrs::array::{ArrayBuilder, DataType, FillValue};
 use zarrs::array_subset::ArraySubset;
 use zarrs::group::GroupBuilder;
+use zarrs::metadata_ext::data_type::NumpyTimeUnit;
 use zarrs::storage::{
     AsyncReadableWritableListableStorage, AsyncReadableWritableListableStorageTraits,
 };
@@ -140,6 +142,38 @@ async fn store_coords(
             &Value::I64(ref v) => (DataType::Int64, v.len(), FillValue::from(0i64)),
             &Value::Bool(ref v) => (DataType::Bool, v.len(), FillValue::from(false)),
             &Value::Strings(ref v) => (DataType::String, v.len(), FillValue::from("")),
+            &Value::DateTime64(unit, ref v) => {
+                let unit = match unit {
+                    nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
+                    nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
+                    nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
+                    nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
+                };
+                (
+                    DataType::NumpyDateTime64 {
+                        unit,
+                        scale_factor: NonZero::new(1).unwrap(),
+                    },
+                    v.len(),
+                    FillValue::from(0i64),
+                )
+            }
+            &Value::TimeDelta64(unit, ref v) => {
+                let unit = match unit {
+                    nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
+                    nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
+                    nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
+                    nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
+                };
+                (
+                    DataType::NumpyTimeDelta64 {
+                        unit,
+                        scale_factor: NonZero::new(1).unwrap(),
+                    },
+                    v.len(),
+                    FillValue::from(0i64),
+                )
+            }
             _ => panic!("Unsupported coordinate type for {}", name),
         };
         let name: &String = name;
@@ -177,6 +211,16 @@ async fn store_coords(
             &Value::Strings(ref v) => {
                 coord_array
                     .async_store_chunk_elements::<String>(&subset, v)
+                    .await?
+            }
+            &Value::DateTime64(_, ref data) => {
+                coord_array
+                    .async_store_chunk_elements::<i64>(&subset, data)
+                    .await?
+            }
+            &Value::TimeDelta64(_, ref data) => {
+                coord_array
+                    .async_store_chunk_elements::<i64>(&subset, data)
                     .await?
             }
             _ => unreachable!(),

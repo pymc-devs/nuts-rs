@@ -1,6 +1,14 @@
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DateTimeUnit {
+    Seconds,
+    Milliseconds,
+    Microseconds,
+    Nanoseconds,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemType {
     U64,
     I64,
@@ -8,6 +16,8 @@ pub enum ItemType {
     F32,
     Bool,
     String,
+    DateTime64(DateTimeUnit),
+    TimeDelta64(DateTimeUnit),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +28,8 @@ pub enum Value {
     F32(Vec<f32>),
     Bool(Vec<bool>),
     ScalarString(String),
+    DateTime64(DateTimeUnit, Vec<i64>),
+    TimeDelta64(DateTimeUnit, Vec<i64>),
     ScalarU64(u64),
     ScalarI64(i64),
     ScalarF64(f64),

@@ -220,6 +220,8 @@ impl CsvChainStorage {
                     vec[0].clone()
                 }
             }
+            Value::DateTime64(_, _) => panic!("DateTime64 not supported in CSV output"),
+            Value::TimeDelta64(_, _) => panic!("TimeDelta64 not supported in CSV output"),
         }
     }
 

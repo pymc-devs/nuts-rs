@@ -30,6 +30,9 @@ impl NdarrayValue {
             ItemType::String => {
                 NdarrayValue::String(ArrayD::from_elem(IxDyn(shape), String::new()))
             }
+            ItemType::DateTime64(_) | ItemType::TimeDelta64(_) => {
+                NdarrayValue::I64(ArrayD::zeros(IxDyn(shape)))
+            }
         }
     }
 
