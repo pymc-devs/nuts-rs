@@ -33,9 +33,9 @@ zarrs = { version = "0.22.0", features = [
   "sharding",
   "async",
 ], optional = true }
-ndarray = { version = "0.16.1", optional = true }
-arrow = { version = "56.2.0", optional = true }
-arrow-schema = { version = "56.2.0", features = [
+ndarray = { version = "0.17.1", optional = true }
+arrow = { version = "57.0.0", optional = true }
+arrow-schema = { version = "57.0.0", features = [
   "canonical_extension_types",
 ], optional = true }
 nuts-derive = { path = "./nuts-derive", version = "0.1.0" }
@@ -50,9 +50,9 @@ pretty_assertions = "1.4.0"
 criterion = "0.7.0"
 nix = { version = "0.30.0", features = ["sched"] }
 approx = "0.5.1"
-equator = "0.4.2"
+equator = "0.4.0"
 serde_json = "1.0"
-ndarray = "0.16.1"
+ndarray = "0.17.1"
 tempfile = "3.0"
 zarrs_object_store = "0.5.0"
 object_store = "0.12.0"
