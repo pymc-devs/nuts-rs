@@ -10,7 +10,7 @@ repository = "https://github.com/pymc-devs/nuts-rs"
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "1.0", features = ["full"] }
-nuts-storable = { path = "../nuts-storable", version = "0.1.0" }
+nuts-storable = { path = "../nuts-storable", version = "0.2.0" }
 
 [lib]
 proc-macro = true
