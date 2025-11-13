@@ -39,7 +39,7 @@ arrow-schema = { version = "57.0.0", features = [
   "canonical_extension_types",
 ], optional = true }
 nuts-derive = { path = "./nuts-derive", version = "0.1.0" }
-nuts-storable = { path = "./nuts-storable", version = "0.1.0" }
+nuts-storable = { path = "./nuts-storable", version = "0.2.0" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["rt"], optional = true }
