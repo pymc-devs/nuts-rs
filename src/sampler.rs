@@ -20,17 +20,17 @@ use std::{
 };
 
 use crate::{
-    DiagAdaptExpSettings,
+    DiagAdaptExpSettings, Model, SamplerStats,
     adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy, GlobalStrategyStatsOptions},
     chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
     euclidean_hamiltonian::EuclideanHamiltonian,
-    mass_matrix::DiagMassMatrix,
-    mass_matrix::Strategy as DiagMassMatrixStrategy,
-    mass_matrix::{LowRankMassMatrix, LowRankMassMatrixStrategy, LowRankSettings},
+    mass_matrix::{
+        DiagMassMatrix, LowRankMassMatrix, LowRankMassMatrixStrategy, LowRankSettings,
+        Strategy as DiagMassMatrixStrategy,
+    },
     math_base::Math,
-    model::Model,
-    nuts::NutsOptions,
-    sampler_stats::{SamplerStats, StatsDims},
+    nuts::{NutsOptions, WalnutsOptions},
+    sampler_stats::StatsDims,
     storage::{ChainStorage, StorageConfig, TraceStorage},
     transform_adapt_strategy::{TransformAdaptation, TransformedSettings},
     transformed_hamiltonian::{TransformedHamiltonian, TransformedPointStatsOptions},
@@ -185,6 +185,7 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
 
     pub num_chains: usize,
     pub seed: u64,
+    pub walnuts_options: Option<WalnutsOptions>,
 }
 
 pub type DiagGradNutsSettings = NutsSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
@@ -206,6 +207,7 @@ impl Default for DiagGradNutsSettings {
             check_turning: true,
             seed: 0,
             num_chains: 6,
+            walnuts_options: None,
         }
     }
 }
@@ -225,6 +227,7 @@ impl Default for LowRankNutsSettings {
             check_turning: true,
             seed: 0,
             num_chains: 6,
+            walnuts_options: None,
         };
         vals.adapt_options.mass_matrix_update_freq = 10;
         vals
@@ -246,6 +249,7 @@ impl Default for TransformedNutsSettings {
             check_turning: true,
             seed: 0,
             num_chains: 1,
+            walnuts_options: None,
         }
     }
 }
@@ -278,6 +282,7 @@ impl Settings for LowRankNutsSettings {
             store_divergences: self.store_divergences,
             store_unconstrained: self.store_unconstrained,
             check_turning: self.check_turning,
+            walnuts_options: self.walnuts_options,
         };
 
         let rng = rand::rngs::SmallRng::try_from_rng(&mut rng).expect("Could not seed rng");
@@ -346,6 +351,7 @@ impl Settings for DiagGradNutsSettings {
             store_divergences: self.store_divergences,
             store_unconstrained: self.store_unconstrained,
             check_turning: self.check_turning,
+            walnuts_options: self.walnuts_options,
         };
 
         let rng = rand::rngs::SmallRng::try_from_rng(&mut rng).expect("Could not seed rng");
@@ -411,6 +417,7 @@ impl Settings for TransformedNutsSettings {
             store_divergences: self.store_divergences,
             store_unconstrained: self.store_unconstrained,
             check_turning: self.check_turning,
+            walnuts_options: self.walnuts_options,
         };
 
         let rng = rand::rngs::SmallRng::try_from_rng(&mut rng).expect("Could not seed rng");

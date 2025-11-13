@@ -92,6 +92,7 @@ impl<M: Math, P: Point<M>> Collector<M, P> for DrawCollector<M> {
         _start: &State<M, P>,
         end: &State<M, P>,
         divergence_info: Option<&crate::DivergenceInfo>,
+        num_substeps: u64,
     ) {
         if divergence_info.is_some() {
             return;
