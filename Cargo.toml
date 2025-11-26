@@ -25,7 +25,7 @@ thiserror = "2.0.3"
 rand_chacha = "0.9.0"
 anyhow = "1.0.72"
 faer = { version = "0.23.2", default-features = false, features = ["linalg"] }
-pulp = "0.21.4"
+pulp = "0.22.2"
 rayon = "1.10.0"
 zarrs = { version = "0.22.0", features = [
   "filesystem",
