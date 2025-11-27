@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.3] - 2025-11-27
+
+### Features
+
+- Compress zarr traces with zstd (Adrian Seyboldt)
+
+
 ## [0.17.2] - 2025-11-27
 
 ### Bug Fixes
@@ -12,6 +19,8 @@ All notable changes to this project will be documented in this file.
 ### Miscellaneous Tasks
 
 - Update pulp dependency (Adrian Seyboldt)
+
+- Prepare release (Adrian Seyboldt)
 
 
 ## [0.17.1] - 2025-11-13
