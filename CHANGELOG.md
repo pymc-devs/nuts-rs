@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.2] - 2025-11-27
+
+### Bug Fixes
+
+- Handle backpressure in async zarr storage (Adrian Seyboldt)
+
+
+### Miscellaneous Tasks
+
+- Update pulp dependency (Adrian Seyboldt)
+
+
 ## [0.17.1] - 2025-11-13
 
 ### Bug Fixes
@@ -19,6 +31,10 @@ All notable changes to this project will be documented in this file.
 ### Miscellaneous Tasks
 
 - Update dependencies (Adrian Seyboldt)
+
+- Bump version (Adrian Seyboldt)
+
+- Bump nuts-storable version (Adrian Seyboldt)
 
 
 ## [0.17.0] - 2025-10-08
