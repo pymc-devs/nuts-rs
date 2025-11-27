@@ -4,6 +4,7 @@ use std::{collections::HashMap, num::NonZero};
 
 use anyhow::Result;
 use nuts_storable::{ItemType, Value};
+use zarrs::array::codec::{BloscCodec, BloscCodecConfiguration, BloscCodecConfigurationV1};
 use zarrs::array::{Array, ArrayBuilder, DataType, FillValue};
 use zarrs::metadata_ext::data_type::NumpyTimeUnit;
 
@@ -232,7 +233,30 @@ pub fn create_arrays<TStorage: ?Sized>(
             .chain(std::iter::once(draw_chunk_size))
             .chain(extra_shape)
             .collect();
+
+        let codec = {
+            if let Some(typesize) = zarr_type.fixed_size() {
+                let config = BloscCodecConfiguration::V1(BloscCodecConfigurationV1 {
+                    cname: zarrs::array::codec::BloscCompressor::Zstd,
+                    clevel: 3u8.try_into().unwrap(),
+                    shuffle: zarrs::array::codec::BloscShuffleMode::Shuffle,
+                    blocksize: 0,
+                    typesize: Some(typesize),
+                });
+                BloscCodec::new_with_configuration(&config)?
+            } else {
+                let config = BloscCodecConfiguration::V1(BloscCodecConfigurationV1 {
+                    cname: zarrs::array::codec::BloscCompressor::Zstd,
+                    clevel: 3u8.try_into().unwrap(),
+                    shuffle: zarrs::array::codec::BloscShuffleMode::NoShuffle,
+                    blocksize: 0,
+                    typesize: None,
+                });
+                BloscCodec::new_with_configuration(&config)?
+            }
+        };
         let array = ArrayBuilder::new(shape, grid, zarr_type, fill_value)
+            .bytes_to_bytes_codecs(vec![Arc::new(codec)])
             .dimension_names(Some(dims))
             .build(store.clone(), &format!("{}/{}", group_path, name))?;
         arrays.insert(name.to_string(), array);
