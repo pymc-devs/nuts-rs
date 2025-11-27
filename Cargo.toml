@@ -1,6 +1,6 @@
 [package]
 name = "nuts-rs"
-version = "0.17.1"
+version = "0.17.2"
 authors = [
   "Adrian Seyboldt <adrian.seyboldt@gmail.com>",
   "PyMC Developers <pymc.devs@gmail.com>",
