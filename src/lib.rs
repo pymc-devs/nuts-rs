@@ -118,6 +118,7 @@ mod transformed_hamiltonian;
 
 pub use nuts_derive::Storable;
 pub use nuts_storable::{DateTimeUnit, HasDims, ItemType, Storable, Value};
+pub use rand;
 
 pub use adapt_strategy::EuclideanAdaptOptions;
 pub use chain::Chain;
