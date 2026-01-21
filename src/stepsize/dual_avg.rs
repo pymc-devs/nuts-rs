@@ -126,6 +126,7 @@ impl<M: Math, P: Point<M>> Collector<M, P> for AcceptanceRateCollector {
         _start: &State<M, P>,
         end: &State<M, P>,
         divergence_info: Option<&DivergenceInfo>,
+        _num_substeps: u64,
     ) {
         match divergence_info {
             Some(_) => {

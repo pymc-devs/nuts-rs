@@ -305,6 +305,7 @@ impl<M: Math> Hamiltonian<M> for TransformedHamiltonian<M> {
         math: &mut M,
         start: &State<M, Self::Point>,
         dir: Direction,
+        step_size_splits: u64,
         collector: &mut C,
     ) -> LeapfrogResult<M, Self::Point> {
         let mut out = self.pool().new_state(math);
@@ -318,7 +319,7 @@ impl<M: Math> Hamiltonian<M> for TransformedHamiltonian<M> {
             Direction::Backward => -1,
         };
 
-        let epsilon = (sign as f64) * self.step_size;
+        let epsilon = (sign as f64) * self.step_size / (step_size_splits as f64);
 
         start
             .point()
@@ -329,17 +330,9 @@ impl<M: Math> Hamiltonian<M> for TransformedHamiltonian<M> {
             if !logp_error.is_recoverable() {
                 return LeapfrogResult::Err(logp_error);
             }
-            let div_info = DivergenceInfo {
-                logp_function_error: Some(Arc::new(Box::new(logp_error))),
-                start_location: Some(math.box_array(start.point().position())),
-                start_gradient: Some(math.box_array(start.point().gradient())),
-                start_momentum: None,
-                end_location: None,
-                start_idx_in_trajectory: Some(start.point().index_in_trajectory()),
-                end_idx_in_trajectory: None,
-                energy_error: None,
-            };
-            collector.register_leapfrog(math, start, &out, Some(&div_info));
+            let logp_error = Arc::new(Box::new(logp_error));
+            let div_info = DivergenceInfo::new_logp_function_error(math, start, logp_error);
+            collector.register_leapfrog(math, start, &out, Some(&div_info), step_size_splits);
             return LeapfrogResult::Divergence(div_info);
         }
 
@@ -350,21 +343,18 @@ impl<M: Math> Hamiltonian<M> for TransformedHamiltonian<M> {
 
         let energy_error = out_point.energy_error();
         if (energy_error > self.max_energy_error) | !energy_error.is_finite() {
-            let divergence_info = DivergenceInfo {
-                logp_function_error: None,
-                start_location: Some(math.box_array(start.point().position())),
-                start_gradient: Some(math.box_array(start.point().gradient())),
-                end_location: Some(math.box_array(out_point.position())),
-                start_momentum: None,
-                start_idx_in_trajectory: Some(start.index_in_trajectory()),
-                end_idx_in_trajectory: Some(out.index_in_trajectory()),
-                energy_error: Some(energy_error),
-            };
-            collector.register_leapfrog(math, start, &out, Some(&divergence_info));
+            let divergence_info = DivergenceInfo::new_energy_error_too_large(math, start, &out);
+            collector.register_leapfrog(
+                math,
+                start,
+                &out,
+                Some(&divergence_info),
+                step_size_splits,
+            );
             return LeapfrogResult::Divergence(divergence_info);
         }
 
-        collector.register_leapfrog(math, start, &out, None);
+        collector.register_leapfrog(math, start, &out, None, step_size_splits);
 
         LeapfrogResult::Ok(out)
     }
@@ -465,5 +455,9 @@ impl<M: Math> Hamiltonian<M> for TransformedHamiltonian<M> {
 
     fn step_size_mut(&mut self) -> &mut f64 {
         &mut self.step_size
+    }
+
+    fn max_energy_error(&self) -> f64 {
+        self.max_energy_error
     }
 }

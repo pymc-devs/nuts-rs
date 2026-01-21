@@ -157,6 +157,7 @@ where
             &mut self.hamiltonian,
             &self.options,
             &mut self.collector,
+            self.draw_count < 70,
         )?;
         let mut position: Box<[f64]> = vec![0f64; math.dim()].into();
         state.write_position(math, &mut position);
@@ -235,6 +236,7 @@ pub struct NutsStats<P: HasDims, H: Storable<P>, A: Storable<P>, D: Storable<P>>
     pub divergence_end: Option<Vec<f64>>,
     #[storable(dims("unconstrained_parameter"))]
     pub divergence_momentum: Option<Vec<f64>>,
+    non_reversible: Option<bool>,
     //pub divergence_message: Option<String>,
     #[storable(ignore)]
     _phantom: PhantomData<fn() -> P>,
@@ -303,7 +305,7 @@ impl<M: Math, R: rand::Rng, A: AdaptStrategy<M>> SamplerStats<M> for NutsChain<M
                 .and_then(|d| d.end_location.as_ref().map(|v| v.as_ref().to_vec())),
             divergence_momentum: div_info
                 .and_then(|d| d.start_momentum.as_ref().map(|v| v.as_ref().to_vec())),
-            //divergence_message: self.divergence_msg.clone(),
+            non_reversible: div_info.and_then(|d| Some(d.non_reversible)),
             _phantom: PhantomData,
         }
     }

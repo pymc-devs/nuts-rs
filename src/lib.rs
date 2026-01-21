@@ -126,7 +126,7 @@ pub use cpu_math::{CpuLogpFunc, CpuMath, CpuMathError};
 pub use hamiltonian::DivergenceInfo;
 pub use math_base::{LogpError, Math};
 pub use model::Model;
-pub use nuts::NutsError;
+pub use nuts::{NutsError, WalnutsOptions};
 pub use sampler::{
     ChainProgress, DiagGradNutsSettings, LowRankNutsSettings, NutsSettings, Progress,
     ProgressCallback, Sampler, SamplerWaitResult, Settings, TransformedNutsSettings,

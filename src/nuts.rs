@@ -1,3 +1,4 @@
+use serde::Serialize;
 use thiserror::Error;
 
 use std::{fmt::Debug, marker::PhantomData};
@@ -34,6 +35,7 @@ pub trait Collector<M: Math, P: Point<M>> {
         _start: &State<M, P>,
         _end: &State<M, P>,
         _divergence_info: Option<&DivergenceInfo>,
+        _num_substeps: u64,
     ) {
     }
     fn register_draw(&mut self, _math: &mut M, _state: &State<M, P>, _info: &SampleInfo) {}
@@ -59,22 +61,41 @@ pub struct SampleInfo {
 }
 
 /// A part of the trajectory tree during NUTS sampling.
+///
+/// Corresponds to SpanW in walnuts C++ code
 struct NutsTree<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> {
     /// The left position of the tree.
     ///
     /// The left side always has the smaller index_in_trajectory.
     /// Leapfrogs in backward direction will replace the left.
+    ///
+    /// theta_bk_, rho_bk_, grad_theta_bk_, logp_bk_ in C++ code
     left: State<M, H::Point>,
+
+    /// The right position of the tree.
+    ///
+    /// theta_fw_, rho_fw_, grad_theta_fw_, logp_fw_ in C++ code
     right: State<M, H::Point>,
 
     /// A draw from the trajectory between left and right using
     /// multinomial sampling.
+    ///
+    /// theta_select_ in C++ code
     draw: State<M, H::Point>,
+
+    /// Constant for acceptance probability
+    ///
+    /// logp_ in C++ code
     log_size: f64,
+
+    /// The depth of the tree
     depth: u64,
 
     /// A tree is the main tree if it contains the initial point
     /// of the trajectory.
+    ///
+    /// This is used to determine whether to use Metropolis
+    /// accptance or Barker
     is_main: bool,
     _phantom2: PhantomData<C>,
 }
@@ -115,20 +136,23 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         direction: Direction,
         collector: &mut C,
         options: &NutsOptions,
+        early: bool,
     ) -> ExtendResult<M, H, C>
     where
         H: Hamiltonian<M>,
         R: rand::Rng + ?Sized,
     {
-        let mut other = match self.single_step(math, hamiltonian, direction, collector) {
-            Ok(Ok(tree)) => tree,
-            Ok(Err(info)) => return ExtendResult::Diverging(self, info),
-            Err(err) => return ExtendResult::Err(err),
-        };
+        let mut other =
+            match self.single_step(math, hamiltonian, direction, options, collector, early) {
+                Ok(Ok(tree)) => tree,
+                Ok(Err(info)) => return ExtendResult::Diverging(self, info),
+                Err(err) => return ExtendResult::Err(err),
+            };
 
         while other.depth < self.depth {
             use ExtendResult::*;
-            other = match other.extend(math, rng, hamiltonian, direction, collector, options) {
+            other = match other.extend(math, rng, hamiltonian, direction, collector, options, early)
+            {
                 Ok(tree) => tree,
                 Turning(_) => {
                     return Turning(self);
@@ -171,6 +195,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         }
     }
 
+    // `combine` in C++ code
     fn merge_into<R: rand::Rng + ?Sized>(
         &mut self,
         _math: &mut M,
@@ -208,24 +233,109 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         self.log_size = log_size;
     }
 
+    // Corresponds to `build_leaf` in C++ code
     fn single_step(
         &self,
         math: &mut M,
         hamiltonian: &mut H,
         direction: Direction,
+        options: &NutsOptions,
         collector: &mut C,
+        early: bool,
     ) -> Result<std::result::Result<NutsTree<M, H, C>, DivergenceInfo>> {
         let start = match direction {
             Direction::Forward => &self.right,
             Direction::Backward => &self.left,
         };
-        let end = match hamiltonian.leapfrog(math, start, direction, collector) {
-            LeapfrogResult::Divergence(info) => return Ok(Err(info)),
-            LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
-            LeapfrogResult::Ok(end) => end,
+
+        let (log_size, end) = match options.walnuts_options {
+            Some(ref options) => {
+                // Walnuts implementation
+                // TODO: Shouldn't all be in this one big function...
+                let mut num_steps = 1;
+                let mut current = start.clone();
+
+                let mut last_divergence = None;
+
+                for _ in 0..options.max_step_size_halvings {
+                    current = match hamiltonian.split_leapfrog(
+                        math,
+                        start,
+                        direction,
+                        num_steps,
+                        collector,
+                        options.max_energy_error,
+                    ) {
+                        LeapfrogResult::Ok(state) => {
+                            last_divergence = None;
+                            state
+                        }
+                        LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
+                        LeapfrogResult::Divergence(info) => {
+                            num_steps *= 2;
+                            last_divergence = Some(info);
+                            continue;
+                        }
+                    };
+                    break;
+                }
+
+                if let Some(info) = last_divergence {
+                    let info = DivergenceInfo::new_max_step_size_halvings(math, num_steps, info);
+                    return Ok(Err(info));
+                }
+
+                let back = direction.reverse();
+                let mut reversible = true;
+
+                while num_steps >= 2 {
+                    num_steps /= 2;
+
+                    match hamiltonian.split_leapfrog(
+                        math,
+                        &current,
+                        back,
+                        num_steps,
+                        collector,
+                        options.max_energy_error,
+                    ) {
+                        LeapfrogResult::Ok(_) => (),
+                        LeapfrogResult::Divergence(_) => {
+                            // We also reject in the backward direction, all is good so far...
+                            continue;
+                        }
+                        LeapfrogResult::Err(err) => {
+                            return Err(NutsError::LogpFailure(err.into()));
+                        }
+                    };
+
+                    // We did not reject in the backward direction, so we are not reversible
+                    reversible = false;
+                    break;
+                }
+
+                if reversible || early {
+                    let log_size = -current.point().energy_error();
+                    (log_size, current)
+                } else {
+                    return Ok(Err(DivergenceInfo::new_not_reversible(math, start)));
+                }
+            }
+            None => {
+                // Classical NUTS.
+                // TODO Is equivalent to walnuts with max_step_size_halvings = 0?
+                let end = match hamiltonian.leapfrog(math, start, direction, 1, collector) {
+                    LeapfrogResult::Divergence(info) => return Ok(Err(info)),
+                    LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
+                    LeapfrogResult::Ok(end) => end,
+                };
+
+                let log_size = -end.point().energy_error();
+
+                (log_size, end)
+            }
         };
 
-        let log_size = -end.point().energy_error();
         Ok(Ok(NutsTree {
             right: end.clone(),
             left: end.clone(),
@@ -248,6 +358,23 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
     }
 }
 
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct WalnutsOptions {
+    pub max_step_size_halvings: u64,
+    pub max_energy_error: f64,
+}
+
+impl Default for WalnutsOptions {
+    fn default() -> Self {
+        WalnutsOptions {
+            max_step_size_halvings: 10,
+            max_energy_error: 5.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct NutsOptions {
     pub maxdepth: u64,
     pub mindepth: u64,
@@ -255,6 +382,7 @@ pub struct NutsOptions {
     pub store_unconstrained: bool,
     pub check_turning: bool,
     pub store_divergences: bool,
+    pub walnuts_options: Option<WalnutsOptions>,
 }
 
 impl Default for NutsOptions {
@@ -266,6 +394,7 @@ impl Default for NutsOptions {
             store_unconstrained: false,
             check_turning: true,
             store_divergences: false,
+            walnuts_options: None,
         }
     }
 }
@@ -277,6 +406,7 @@ pub(crate) fn draw<M, H, R, C>(
     hamiltonian: &mut H,
     options: &NutsOptions,
     collector: &mut C,
+    early: bool,
 ) -> Result<(State<M, H::Point>, SampleInfo)>
 where
     M: Math,
@@ -314,6 +444,7 @@ where
             direction,
             collector,
             current_options,
+            early,
         ) {
             ExtendResult::Ok(tree) => tree,
             ExtendResult::Turning(tree) => {
