@@ -1,20 +1,22 @@
 use std::collections::HashMap;
 use std::iter::once;
-use std::num::NonZero;
+
 use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::task::JoinSet;
 
 use anyhow::{Context, Result};
 use nuts_storable::{ItemType, Value};
-use zarrs::array::{ArrayBuilder, ArraySubset, FillValue, data_type};
+use zarrs::array::{ArrayBuilder, ArraySubset};
 use zarrs::group::GroupBuilder;
-use zarrs::metadata_ext::data_type::NumpyTimeUnit;
+
 use zarrs::storage::{
     AsyncReadableWritableListableStorage, AsyncReadableWritableListableStorageTraits,
 };
 
-use super::common::{Chunk, SampleBuffer, SampleBufferValue, create_arrays};
+use super::common::{
+    Chunk, SampleBuffer, SampleBufferValue, create_arrays, value_to_zarr_coord_params,
+};
 use crate::storage::{ChainStorage, StorageConfig, TraceStorage};
 use crate::{Math, Progress, Settings};
 
@@ -58,6 +60,10 @@ async fn store_zarr_chunk_async(array: Array, data: Chunk, chain_chunk_index: u6
         .chain(once(0).cycle().take(rank - 2))
         .collect();
     let chunk = &chunk_vec[..];
+
+    if data.values.len() == 0 {
+        return Ok(());
+    }
 
     let result = if data.is_full() {
         match data.values {
@@ -107,12 +113,14 @@ async fn store_zarr_chunk_async(array: Array, data: Chunk, chain_chunk_index: u6
         }
     };
 
-    result.context(format!(
-        "Failed to store chunk for variable {} at chunk {} with length {}",
-        array.path(),
-        data.chunk_idx,
-        data.len
-    ))?;
+    result.with_context(|| {
+        format!(
+            "Failed to store chunk for variable {} at chunk {} with length {}",
+            array.path(),
+            data.chunk_idx,
+            data.len
+        )
+    })?;
     Ok(())
 }
 
@@ -134,63 +142,107 @@ async fn store_coords(
     coords: &HashMap<String, Value>,
 ) -> Result<()> {
     for (name, coord) in coords {
-        let (data_type, len, fill_value) = match coord {
-            &Value::F64(ref v) => (data_type::float64(), v.len(), FillValue::from(f64::NAN)),
-            &Value::F32(ref v) => (data_type::float32(), v.len(), FillValue::from(f32::NAN)),
-            &Value::U64(ref v) => (data_type::uint64(), v.len(), FillValue::from(0u64)),
-            &Value::I64(ref v) => (data_type::int64(), v.len(), FillValue::from(0i64)),
-            &Value::Bool(ref v) => (data_type::bool(), v.len(), FillValue::from(false)),
-            &Value::Strings(ref v) => (data_type::string(), v.len(), FillValue::from("")),
-            &Value::DateTime64(unit, ref v) => {
-                let unit = match unit {
-                    nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
-                    nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
-                    nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
-                    nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
-                };
-                let scale_factor = NonZero::new(1).unwrap();
-                (
-                    data_type::numpy_datetime64(unit, scale_factor),
-                    v.len(),
-                    FillValue::from(0i64),
-                )
-            }
-            &Value::TimeDelta64(unit, ref v) => {
-                let unit = match unit {
-                    nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
-                    nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
-                    nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
-                    nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
-                };
-                let scale_factor = NonZero::new(1).unwrap();
-                (
-                    data_type::numpy_timedelta64(unit, scale_factor),
-                    v.len(),
-                    FillValue::from(0i64),
-                )
-            }
-            _ => panic!("Unsupported coordinate type for {}", name),
-        };
+        let (data_type, len, fill_value) = value_to_zarr_coord_params(coord);
         let name: &String = name;
-        let coord_array =
-            ArrayBuilder::new(vec![len as u64], vec![len as u64], data_type, fill_value)
-                .dimension_names(Some(vec![name.to_string()]))
-                .build(store.clone(), &format!("{}/{}", group, name))?;
-        let subset = vec![0];
-        match coord {
-            &Value::F64(ref v) => coord_array.async_store_chunk(&subset, v).await?,
-            &Value::F32(ref v) => coord_array.async_store_chunk(&subset, v).await?,
-            &Value::U64(ref v) => coord_array.async_store_chunk(&subset, v).await?,
-            &Value::I64(ref v) => coord_array.async_store_chunk(&subset, v).await?,
-            &Value::Bool(ref v) => coord_array.async_store_chunk(&subset, v).await?,
-            &Value::Strings(ref v) => coord_array.async_store_chunk(&subset, v).await?,
-            &Value::DateTime64(_, ref data) => coord_array.async_store_chunk(&subset, data).await?,
-            &Value::TimeDelta64(_, ref data) => {
-                coord_array.async_store_chunk(&subset, data).await?
+        let coord_array = ArrayBuilder::new(
+            vec![len as u64],
+            vec![(len as u64).max(1)],
+            data_type,
+            fill_value,
+        )
+        .dimension_names(Some(vec![name.to_string()]))
+        .build(store.clone(), &format!("{}/{}", group, name))
+        .with_context(|| {
+            format!(
+                "Failed to create coordinate array for {} in group {}",
+                name, group
+            )
+        })?;
+
+        if len > 0 {
+            let subset = vec![0];
+            match coord {
+                &Value::F64(ref v) => coord_array
+                    .async_store_chunk(&subset, v)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to store chunk for float64 coordinate {} in group {}",
+                            name, group
+                        )
+                    })?,
+                &Value::F32(ref v) => coord_array
+                    .async_store_chunk(&subset, v)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to store chunk for float32 coordinate {} in group {}",
+                            name, group
+                        )
+                    })?,
+                &Value::U64(ref v) => coord_array
+                    .async_store_chunk(&subset, v)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to store chunk for uint64 coordinate {} in group {}",
+                            name, group
+                        )
+                    })?,
+                &Value::I64(ref v) => coord_array
+                    .async_store_chunk(&subset, v)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to store chunk for int64 coordinate {} in group {}",
+                            name, group
+                        )
+                    })?,
+                &Value::Bool(ref v) => coord_array
+                    .async_store_chunk(&subset, v)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to store chunk for bool coordinate {} in group {}",
+                            name, group
+                        )
+                    })?,
+                &Value::Strings(ref v) => coord_array
+                    .async_store_chunk(&subset, v)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to store chunk for string coordinate {} in group {}",
+                            name, group
+                        )
+                    })?,
+                &Value::DateTime64(_, ref data) => coord_array
+                    .async_store_chunk(&subset, data)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to store chunk for datetime coordinate {} in group {}",
+                            name, group
+                        )
+                    })?,
+                &Value::TimeDelta64(_, ref data) => coord_array
+                    .async_store_chunk(&subset, data)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to store chunk for time delta coordinate {} in group {}",
+                            name, group
+                        )
+                    })?,
+                _ => unreachable!(),
             }
-            _ => unreachable!(),
         }
-        coord_array.async_store_metadata().await?;
+        coord_array.async_store_metadata().await.with_context(|| {
+            format!(
+                "Failed to write metadata for coordinate {} in group {}",
+                name, group
+            )
+        })?;
     }
     Ok(())
 }
@@ -581,19 +633,23 @@ impl StorageConfig for ZarrAsyncConfig {
             root.async_store_metadata().await?;
 
             GroupBuilder::new()
-                .build(store.clone(), &format!("{}warmup_posterior", group_path))?
+                .build(store.clone(), &format!("{}warmup_posterior", group_path))
+                .context("Failed to create warmup_posterior group")?
                 .async_store_metadata()
                 .await?;
             GroupBuilder::new()
-                .build(store.clone(), &format!("{}warmup_sample_stats", group_path))?
+                .build(store.clone(), &format!("{}warmup_sample_stats", group_path))
+                .context("Failed to create warmup_sample_stats group")?
                 .async_store_metadata()
                 .await?;
             GroupBuilder::new()
-                .build(store.clone(), &format!("{}posterior", group_path))?
+                .build(store.clone(), &format!("{}posterior", group_path))
+                .context("Failed to create posterior group")?
                 .async_store_metadata()
                 .await?;
             GroupBuilder::new()
-                .build(store.clone(), &format!("{}sample_stats", group_path))?
+                .build(store.clone(), &format!("{}sample_stats", group_path))
+                .context("Failed to create sample_stats group")?
                 .async_store_metadata()
                 .await?;
 
@@ -606,7 +662,8 @@ impl StorageConfig for ZarrAsyncConfig {
                 n_tune,
                 &stat_dim_sizes,
                 self.draw_chunk_size,
-            )?;
+            )
+            .context("Failed to create warmup_param_arrays")?;
             let sample_param_arrays = create_arrays(
                 store.clone(),
                 &format!("{}sample_stats", group_path),
@@ -616,7 +673,8 @@ impl StorageConfig for ZarrAsyncConfig {
                 n_draws,
                 &stat_dim_sizes,
                 self.draw_chunk_size,
-            )?;
+            )
+            .context("Failed to create sample_param_arrays")?;
             let warmup_draw_arrays = create_arrays(
                 store.clone(),
                 &format!("{}warmup_posterior", group_path),
@@ -626,7 +684,8 @@ impl StorageConfig for ZarrAsyncConfig {
                 n_tune,
                 &draw_dim_sizes,
                 self.draw_chunk_size,
-            )?;
+            )
+            .context("Failed to create warmup_draw_arrays")?;
             let sample_draw_arrays = create_arrays(
                 store.clone(),
                 &format!("{}posterior", group_path),
@@ -636,7 +695,8 @@ impl StorageConfig for ZarrAsyncConfig {
                 n_draws,
                 &draw_dim_sizes,
                 self.draw_chunk_size,
-            )?;
+            )
+            .context("Failed to create sample_draw_arrays")?;
             // add arc around each value
             let warmup_param_arrays: HashMap<_, _> = warmup_param_arrays
                 .into_iter()
@@ -677,25 +737,29 @@ impl StorageConfig for ZarrAsyncConfig {
                 format!("{}posterior", &group_path),
                 &draw_coords,
             )
-            .await?;
+            .await
+            .context("Failed to store posterior coordinates")?;
             store_coords(
                 store.clone(),
                 format!("{}warmup_posterior", &group_path),
                 &draw_coords,
             )
-            .await?;
+            .await
+            .context("Failed to store warmup_posterior coordinates")?;
             store_coords(
                 store.clone(),
                 format!("{}sample_stats", &group_path),
                 &stat_coords,
             )
-            .await?;
+            .await
+            .context("Failed to store sample_stats coordinates")?;
             store_coords(
                 store.clone(),
                 format!("{}warmup_sample_stats", &group_path),
                 &stat_coords,
             )
-            .await?;
+            .await
+            .context("Failed to store warmup_sample_stats coordinates")?;
             Ok(ZarrAsyncTraceStorage {
                 arrays: Arc::new(trace_storage),
                 param_types,

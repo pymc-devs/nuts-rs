@@ -81,6 +81,8 @@ impl HasDims for MvnLogp {
         HashMap::from([
             // Dimension for the actual parameter vector x
             ("x".to_string(), self.model.mean.len() as u64),
+            // Dimension for empty vector
+            ("empty".to_string(), 0),
         ])
     }
 
@@ -104,6 +106,9 @@ struct ExpandedDraw {
     prec: Vec<f64>,
     /// A scalar derived quantity (difference between first two parameters)
     diff: f64,
+    /// An empty vector to demonstrate zero-length expanded variables
+    #[storable(dims("empty"))]
+    empty: Vec<f64>,
 }
 
 impl CpuLogpFunc for MvnLogp {
@@ -162,6 +167,7 @@ impl CpuLogpFunc for MvnLogp {
         Ok(ExpandedDraw {
             prec: array.to_vec(),
             diff: array[1] - array[0], // Example: difference between first two parameters
+            empty: vec![],
         })
     }
 

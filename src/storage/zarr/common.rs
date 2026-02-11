@@ -5,7 +5,7 @@ use std::{collections::HashMap, num::NonZero};
 use anyhow::{Context, Result};
 use nuts_storable::{ItemType, Value};
 use zarrs::array::codec::{BloscCodec, BloscCodecConfiguration, BloscCodecConfigurationV1};
-use zarrs::array::{Array, ArrayBuilder, FillValue, data_type};
+use zarrs::array::{Array, ArrayBuilder, DataType, FillValue, data_type};
 use zarrs::metadata_ext::data_type::NumpyTimeUnit;
 
 /// Container for different types of sample values
@@ -16,6 +16,19 @@ pub enum SampleBufferValue {
     Bool(Vec<bool>),
     I64(Vec<i64>),
     U64(Vec<u64>),
+}
+
+impl SampleBufferValue {
+    /// Get the number of items currently stored in the buffer
+    pub fn len(&self) -> usize {
+        match self {
+            SampleBufferValue::F64(vec) => vec.len(),
+            SampleBufferValue::F32(vec) => vec.len(),
+            SampleBufferValue::Bool(vec) => vec.len(),
+            SampleBufferValue::I64(vec) => vec.len(),
+            SampleBufferValue::U64(vec) => vec.len(),
+        }
+    }
 }
 
 /// Buffer for collecting samples before writing to storage
@@ -152,6 +165,49 @@ impl SampleBuffer {
         } else {
             None
         }
+    }
+}
+
+/// Convert a Value to Zarr data type, length, and fill value for coordinate arrays
+///
+/// Returns a tuple of (data_type, length, fill_value) extracted from the Value
+pub fn value_to_zarr_coord_params(coord: &Value) -> (DataType, usize, FillValue) {
+    match coord {
+        Value::F64(v) => (data_type::float64(), v.len(), FillValue::from(f64::NAN)),
+        Value::F32(v) => (data_type::float32(), v.len(), FillValue::from(f32::NAN)),
+        Value::U64(v) => (data_type::uint64(), v.len(), FillValue::from(0u64)),
+        Value::I64(v) => (data_type::int64(), v.len(), FillValue::from(0i64)),
+        Value::Bool(v) => (data_type::bool(), v.len(), FillValue::from(false)),
+        Value::Strings(v) => (data_type::string(), v.len(), FillValue::from("")),
+        Value::DateTime64(unit, v) => {
+            let unit = match unit {
+                nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
+                nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
+                nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
+                nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
+            };
+            let scale_factor = NonZero::new(1).unwrap();
+            (
+                data_type::numpy_datetime64(unit, scale_factor),
+                v.len(),
+                FillValue::from(i64::MIN),
+            )
+        }
+        Value::TimeDelta64(unit, v) => {
+            let unit = match unit {
+                nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
+                nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
+                nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
+                nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
+            };
+            let scale_factor = NonZero::new(1).unwrap();
+            (
+                data_type::numpy_timedelta64(unit, scale_factor),
+                v.len(),
+                FillValue::from(i64::MIN),
+            )
+        }
+        _ => panic!("Unsupported coordinate type"),
     }
 }
 
