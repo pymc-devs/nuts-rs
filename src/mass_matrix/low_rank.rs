@@ -543,7 +543,7 @@ mod test {
         };
 
         faer::zip!(&out, &expected).for_each(|faer::unzip!(out, expected)| {
-            comp.test(out, expected).unwrap();
+            assert!(comp.test(out, expected));
         });
     }
 
@@ -570,7 +570,7 @@ mod test {
         let expected = Col::full(20, 1.);
 
         faer::zip!(&vals, &expected).for_each(|faer::unzip!(out, expected)| {
-            comp.test(out, expected).unwrap();
+            assert!(comp.test(out, expected));
         });
     }
 }

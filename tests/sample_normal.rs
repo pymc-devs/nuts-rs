@@ -13,8 +13,7 @@ use rand::prelude::Rng;
 use rand_distr::{Distribution, StandardNormal};
 use thiserror::Error;
 use zarrs::{
-    array::Array,
-    array_subset::ArraySubset,
+    array::{Array, ArraySubset},
     storage::{ReadableListableStorageTraits, store::MemoryStore},
 };
 
@@ -178,7 +177,7 @@ fn sample_debug_stats() -> anyhow::Result<Arc<dyn ReadableListableStorageTraits>
     );
 
     let _: Vec<bool> = diverging
-        .retrieve_array_subset_elements(&ArraySubset::new_with_shape(diverging.shape().to_vec()))?;
+        .retrieve_array_subset(&ArraySubset::new_with_shape(diverging.shape().to_vec()))?;
 
     let logp = Array::open(store_dyn.clone(), "/sample_stats/logp")
         .context("Could not read logp array")?;
@@ -187,7 +186,7 @@ fn sample_debug_stats() -> anyhow::Result<Arc<dyn ReadableListableStorageTraits>
             == &[Some("chain".to_string()), Some("draw".to_string())]
     );
     let _: Vec<f64> =
-        logp.retrieve_array_subset_elements(&ArraySubset::new_with_shape(logp.shape().to_vec()))?;
+        logp.retrieve_array_subset(&ArraySubset::new_with_shape(logp.shape().to_vec()))?;
 
     Ok(store)
 }

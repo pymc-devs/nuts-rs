@@ -2,10 +2,10 @@ use std::mem::replace;
 use std::sync::Arc;
 use std::{collections::HashMap, num::NonZero};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use nuts_storable::{ItemType, Value};
 use zarrs::array::codec::{BloscCodec, BloscCodecConfiguration, BloscCodecConfigurationV1};
-use zarrs::array::{Array, ArrayBuilder, DataType, FillValue};
+use zarrs::array::{Array, ArrayBuilder, FillValue, data_type};
 use zarrs::metadata_ext::data_type::NumpyTimeUnit;
 
 /// Container for different types of sample values
@@ -194,30 +194,32 @@ pub fn create_arrays<TStorage: ?Sized>(
             .chain(extra_shape.clone())
             .collect();
         let zarr_type = match item_type {
-            ItemType::F64 => DataType::Float64,
-            ItemType::F32 => DataType::Float32,
-            ItemType::U64 => DataType::UInt64,
-            ItemType::I64 => DataType::Int64,
-            ItemType::Bool => DataType::Bool,
-            ItemType::String => DataType::String,
-            ItemType::DateTime64(unit) => DataType::NumpyDateTime64 {
-                unit: match unit {
+            ItemType::F64 => data_type::float64(),
+            ItemType::F32 => data_type::float32(),
+            ItemType::U64 => data_type::uint64(),
+            ItemType::I64 => data_type::int64(),
+            ItemType::Bool => data_type::bool(),
+            ItemType::String => data_type::optional(data_type::string()),
+            ItemType::DateTime64(unit) => {
+                let unit = match unit {
                     nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
                     nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
                     nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
                     nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
-                },
-                scale_factor: NonZero::new(1).unwrap(),
-            },
-            ItemType::TimeDelta64(unit) => DataType::NumpyTimeDelta64 {
-                unit: match unit {
+                };
+                let scale_factor = NonZero::new(1).unwrap();
+                data_type::numpy_datetime64(unit, scale_factor)
+            }
+            ItemType::TimeDelta64(unit) => {
+                let unit = match unit {
                     nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
                     nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
                     nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
                     nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
-                },
-                scale_factor: NonZero::new(1).unwrap(),
-            },
+                };
+                let scale_factor = NonZero::new(1).unwrap();
+                data_type::numpy_timedelta64(unit, scale_factor)
+            }
         };
         let fill_value = match item_type {
             ItemType::F64 => FillValue::from(f64::NAN),
@@ -226,12 +228,13 @@ pub fn create_arrays<TStorage: ?Sized>(
             ItemType::I64 => FillValue::from(0i64),
             ItemType::Bool => FillValue::from(false),
             ItemType::String => FillValue::from(""),
-            ItemType::DateTime64(_) => FillValue::new_null(),
-            ItemType::TimeDelta64(_) => FillValue::new_null(),
+            ItemType::DateTime64(_) => FillValue::new_optional_null(),
+            ItemType::TimeDelta64(_) => FillValue::new_optional_null(),
         };
         let grid: Vec<u64> = std::iter::once(1)
             .chain(std::iter::once(draw_chunk_size))
             .chain(extra_shape)
+            .map(|size| size.max(1))
             .collect();
 
         let codec = {
@@ -252,13 +255,15 @@ pub fn create_arrays<TStorage: ?Sized>(
                     blocksize: 0,
                     typesize: None,
                 });
-                BloscCodec::new_with_configuration(&config)?
+                BloscCodec::new_with_configuration(&config)
+                    .context("Failed to create Blosc codec")?
             }
         };
         let array = ArrayBuilder::new(shape, grid, zarr_type, fill_value)
             .bytes_to_bytes_codecs(vec![Arc::new(codec)])
             .dimension_names(Some(dims))
-            .build(store.clone(), &format!("{}/{}", group_path, name))?;
+            .build(store.clone(), &format!("{}/{}", group_path, name))
+            .context("Failed to build Zarr array")?;
         arrays.insert(name.to_string(), array);
     }
     Ok(arrays)
