@@ -7,8 +7,7 @@ use tokio::task::JoinSet;
 
 use anyhow::{Context, Result};
 use nuts_storable::{ItemType, Value};
-use zarrs::array::{ArrayBuilder, DataType, FillValue};
-use zarrs::array_subset::ArraySubset;
+use zarrs::array::{ArrayBuilder, ArraySubset, FillValue, data_type};
 use zarrs::group::GroupBuilder;
 use zarrs::metadata_ext::data_type::NumpyTimeUnit;
 use zarrs::storage::{
@@ -62,13 +61,11 @@ async fn store_zarr_chunk_async(array: Array, data: Chunk, chain_chunk_index: u6
 
     let result = if data.is_full() {
         match data.values {
-            SampleBufferValue::F64(v) => array.async_store_chunk_elements::<f64>(&chunk, &v).await,
-            SampleBufferValue::F32(v) => array.async_store_chunk_elements::<f32>(&chunk, &v).await,
-            SampleBufferValue::U64(v) => array.async_store_chunk_elements::<u64>(&chunk, &v).await,
-            SampleBufferValue::I64(v) => array.async_store_chunk_elements::<i64>(&chunk, &v).await,
-            SampleBufferValue::Bool(v) => {
-                array.async_store_chunk_elements::<bool>(&chunk, &v).await
-            }
+            SampleBufferValue::F64(v) => array.async_store_chunk(&chunk, &v).await,
+            SampleBufferValue::F32(v) => array.async_store_chunk(&chunk, &v).await,
+            SampleBufferValue::U64(v) => array.async_store_chunk(&chunk, &v).await,
+            SampleBufferValue::I64(v) => array.async_store_chunk(&chunk, &v).await,
+            SampleBufferValue::Bool(v) => array.async_store_chunk(&chunk, &v).await,
         }
     } else {
         let mut shape: Vec<_> = array.shape().iter().cloned().collect();
@@ -80,31 +77,31 @@ async fn store_zarr_chunk_async(array: Array, data: Chunk, chain_chunk_index: u6
             SampleBufferValue::F64(v) => {
                 assert!(v.len() == chunk_subset.num_elements_usize());
                 array
-                    .async_store_chunk_subset_elements(&chunk, &chunk_subset, &v)
+                    .async_store_chunk_subset(&chunk, &chunk_subset, &v)
                     .await
             }
             SampleBufferValue::F32(v) => {
                 assert!(v.len() == chunk_subset.num_elements_usize());
                 array
-                    .async_store_chunk_subset_elements(&chunk, &chunk_subset, &v)
+                    .async_store_chunk_subset(&chunk, &chunk_subset, &v)
                     .await
             }
             SampleBufferValue::U64(v) => {
                 assert!(v.len() == chunk_subset.num_elements_usize());
                 array
-                    .async_store_chunk_subset_elements(&chunk, &chunk_subset, &v)
+                    .async_store_chunk_subset(&chunk, &chunk_subset, &v)
                     .await
             }
             SampleBufferValue::I64(v) => {
                 assert!(v.len() == chunk_subset.num_elements_usize());
                 array
-                    .async_store_chunk_subset_elements(&chunk, &chunk_subset, &v)
+                    .async_store_chunk_subset(&chunk, &chunk_subset, &v)
                     .await
             }
             SampleBufferValue::Bool(v) => {
                 assert!(v.len() == chunk_subset.num_elements_usize());
                 array
-                    .async_store_chunk_subset_elements(&chunk, &chunk_subset, &v)
+                    .async_store_chunk_subset(&chunk, &chunk_subset, &v)
                     .await
             }
         }
@@ -138,12 +135,12 @@ async fn store_coords(
 ) -> Result<()> {
     for (name, coord) in coords {
         let (data_type, len, fill_value) = match coord {
-            &Value::F64(ref v) => (DataType::Float64, v.len(), FillValue::from(f64::NAN)),
-            &Value::F32(ref v) => (DataType::Float32, v.len(), FillValue::from(f32::NAN)),
-            &Value::U64(ref v) => (DataType::UInt64, v.len(), FillValue::from(0u64)),
-            &Value::I64(ref v) => (DataType::Int64, v.len(), FillValue::from(0i64)),
-            &Value::Bool(ref v) => (DataType::Bool, v.len(), FillValue::from(false)),
-            &Value::Strings(ref v) => (DataType::String, v.len(), FillValue::from("")),
+            &Value::F64(ref v) => (data_type::float64(), v.len(), FillValue::from(f64::NAN)),
+            &Value::F32(ref v) => (data_type::float32(), v.len(), FillValue::from(f32::NAN)),
+            &Value::U64(ref v) => (data_type::uint64(), v.len(), FillValue::from(0u64)),
+            &Value::I64(ref v) => (data_type::int64(), v.len(), FillValue::from(0i64)),
+            &Value::Bool(ref v) => (data_type::bool(), v.len(), FillValue::from(false)),
+            &Value::Strings(ref v) => (data_type::string(), v.len(), FillValue::from("")),
             &Value::DateTime64(unit, ref v) => {
                 let unit = match unit {
                     nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
@@ -151,11 +148,9 @@ async fn store_coords(
                     nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
                     nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
                 };
+                let scale_factor = NonZero::new(1).unwrap();
                 (
-                    DataType::NumpyDateTime64 {
-                        unit,
-                        scale_factor: NonZero::new(1).unwrap(),
-                    },
+                    data_type::numpy_datetime64(unit, scale_factor),
                     v.len(),
                     FillValue::from(0i64),
                 )
@@ -167,11 +162,9 @@ async fn store_coords(
                     nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
                     nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
                 };
+                let scale_factor = NonZero::new(1).unwrap();
                 (
-                    DataType::NumpyTimeDelta64 {
-                        unit,
-                        scale_factor: NonZero::new(1).unwrap(),
-                    },
+                    data_type::numpy_timedelta64(unit, scale_factor),
                     v.len(),
                     FillValue::from(0i64),
                 )
@@ -185,45 +178,15 @@ async fn store_coords(
                 .build(store.clone(), &format!("{}/{}", group, name))?;
         let subset = vec![0];
         match coord {
-            &Value::F64(ref v) => {
-                coord_array
-                    .async_store_chunk_elements::<f64>(&subset, v)
-                    .await?
-            }
-            &Value::F32(ref v) => {
-                coord_array
-                    .async_store_chunk_elements::<f32>(&subset, v)
-                    .await?
-            }
-            &Value::U64(ref v) => {
-                coord_array
-                    .async_store_chunk_elements::<u64>(&subset, v)
-                    .await?
-            }
-            &Value::I64(ref v) => {
-                coord_array
-                    .async_store_chunk_elements::<i64>(&subset, v)
-                    .await?
-            }
-            &Value::Bool(ref v) => {
-                coord_array
-                    .async_store_chunk_elements::<bool>(&subset, v)
-                    .await?
-            }
-            &Value::Strings(ref v) => {
-                coord_array
-                    .async_store_chunk_elements::<String>(&subset, v)
-                    .await?
-            }
-            &Value::DateTime64(_, ref data) => {
-                coord_array
-                    .async_store_chunk_elements::<i64>(&subset, data)
-                    .await?
-            }
+            &Value::F64(ref v) => coord_array.async_store_chunk(&subset, v).await?,
+            &Value::F32(ref v) => coord_array.async_store_chunk(&subset, v).await?,
+            &Value::U64(ref v) => coord_array.async_store_chunk(&subset, v).await?,
+            &Value::I64(ref v) => coord_array.async_store_chunk(&subset, v).await?,
+            &Value::Bool(ref v) => coord_array.async_store_chunk(&subset, v).await?,
+            &Value::Strings(ref v) => coord_array.async_store_chunk(&subset, v).await?,
+            &Value::DateTime64(_, ref data) => coord_array.async_store_chunk(&subset, data).await?,
             &Value::TimeDelta64(_, ref data) => {
-                coord_array
-                    .async_store_chunk_elements::<i64>(&subset, data)
-                    .await?
+                coord_array.async_store_chunk(&subset, data).await?
             }
             _ => unreachable!(),
         }

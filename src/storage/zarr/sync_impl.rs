@@ -5,8 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use nuts_storable::{ItemType, Value};
-use zarrs::array::{ArrayBuilder, DataType, FillValue};
-use zarrs::array_subset::ArraySubset;
+use zarrs::array::{ArrayBuilder, ArraySubset, FillValue, data_type};
 use zarrs::group::GroupBuilder;
 use zarrs::metadata_ext::data_type::NumpyTimeUnit;
 use zarrs::storage::{ReadableWritableListableStorage, ReadableWritableListableStorageTraits};
@@ -33,38 +32,42 @@ pub fn store_coords(
 ) -> Result<()> {
     for (name, coord) in coords {
         let (data_type, len, fill_value) = match coord {
-            &Value::F64(ref v) => (DataType::Float64, v.len(), FillValue::from(f64::NAN)),
-            &Value::F32(ref v) => (DataType::Float32, v.len(), FillValue::from(f32::NAN)),
-            &Value::U64(ref v) => (DataType::UInt64, v.len(), FillValue::from(0u64)),
-            &Value::I64(ref v) => (DataType::Int64, v.len(), FillValue::from(0i64)),
-            &Value::Bool(ref v) => (DataType::Bool, v.len(), FillValue::from(false)),
-            &Value::Strings(ref v) => (DataType::String, v.len(), FillValue::from("")),
-            &Value::DateTime64(ref unit, ref data) => (
-                DataType::NumpyDateTime64 {
-                    unit: match unit {
-                        nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
-                        nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
-                        nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
-                        nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
-                    },
-                    scale_factor: NonZero::new(1).unwrap(),
-                },
-                data.len(),
-                FillValue::new_null(),
-            ),
-            &Value::TimeDelta64(ref unit, ref data) => (
-                DataType::NumpyTimeDelta64 {
-                    unit: match unit {
-                        nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
-                        nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
-                        nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
-                        nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
-                    },
-                    scale_factor: NonZero::new(1).unwrap(),
-                },
-                data.len(),
-                FillValue::new_null(),
-            ),
+            &Value::F64(ref v) => (data_type::float64(), v.len(), FillValue::from(f64::NAN)),
+            &Value::F32(ref v) => (data_type::float32(), v.len(), FillValue::from(f32::NAN)),
+            &Value::U64(ref v) => (data_type::uint64(), v.len(), FillValue::from(0u64)),
+            &Value::I64(ref v) => (data_type::int64(), v.len(), FillValue::from(0i64)),
+            &Value::Bool(ref v) => (data_type::bool(), v.len(), FillValue::from(false)),
+            &Value::Strings(ref v) => (data_type::string(), v.len(), FillValue::from("")),
+            &Value::DateTime64(ref unit, ref data) => {
+                let unit = match unit {
+                    nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
+                    nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
+                    nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
+                    nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
+                };
+                let scale_factor = NonZero::new(1).unwrap();
+
+                (
+                    data_type::numpy_datetime64(unit, scale_factor),
+                    data.len(),
+                    FillValue::new_optional_null(),
+                )
+            }
+            &Value::TimeDelta64(ref unit, ref data) => {
+                let unit = match unit {
+                    nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
+                    nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
+                    nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
+                    nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
+                };
+                let scale_factor = NonZero::new(1).unwrap();
+
+                (
+                    data_type::numpy_timedelta64(unit, scale_factor),
+                    data.len(),
+                    FillValue::new_optional_null(),
+                )
+            }
             _ => {
                 return Err(anyhow::anyhow!(
                     "Unsupported coordinate type for coordinate {}",
@@ -80,18 +83,15 @@ pub fn store_coords(
                 .build(store.clone(), &format!("{}/{}", group, name))?;
         let subset = vec![0];
         match coord {
-            &Value::F64(ref v) => coord_array.store_chunk_elements::<f64>(&subset, v)?,
-            &Value::F32(ref v) => coord_array.store_chunk_elements::<f32>(&subset, v)?,
-            &Value::U64(ref v) => coord_array.store_chunk_elements::<u64>(&subset, v)?,
-            &Value::I64(ref v) => coord_array.store_chunk_elements::<i64>(&subset, v)?,
-            &Value::Bool(ref v) => coord_array.store_chunk_elements::<bool>(&subset, v)?,
-            &Value::Strings(ref v) => coord_array.store_chunk_elements::<String>(&subset, v)?,
-            &Value::DateTime64(_, ref data) => {
-                coord_array.store_chunk_elements::<i64>(&subset, data)?
-            }
-            &Value::TimeDelta64(_, ref data) => {
-                coord_array.store_chunk_elements::<i64>(&subset, data)?
-            }
+            //&Value::F64(ref v) => coord_array.store_chunk_elements::<f64>(&subset, v)?,
+            &Value::F64(ref v) => coord_array.store_chunk(&subset, v)?,
+            &Value::F32(ref v) => coord_array.store_chunk(&subset, v)?,
+            &Value::U64(ref v) => coord_array.store_chunk(&subset, v)?,
+            &Value::I64(ref v) => coord_array.store_chunk(&subset, v)?,
+            &Value::Bool(ref v) => coord_array.store_chunk(&subset, v)?,
+            &Value::Strings(ref v) => coord_array.store_chunk(&subset, v)?,
+            &Value::DateTime64(_, ref data) => coord_array.store_chunk(&subset, data)?,
+            &Value::TimeDelta64(_, ref data) => coord_array.store_chunk(&subset, data)?,
             _ => unreachable!(),
         }
         coord_array.store_metadata()?;
@@ -129,11 +129,11 @@ fn store_zarr_chunk(array: &Array, data: Chunk, chain_chunk_index: u64) -> Resul
 
     let result = if data.is_full() {
         match data.values {
-            SampleBufferValue::F64(v) => array.store_chunk_elements::<f64>(&chunk, &v),
-            SampleBufferValue::F32(v) => array.store_chunk_elements::<f32>(&chunk, &v),
-            SampleBufferValue::U64(v) => array.store_chunk_elements::<u64>(&chunk, &v),
-            SampleBufferValue::I64(v) => array.store_chunk_elements::<i64>(&chunk, &v),
-            SampleBufferValue::Bool(v) => array.store_chunk_elements::<bool>(&chunk, &v),
+            SampleBufferValue::F64(v) => array.store_chunk(&chunk, &v),
+            SampleBufferValue::F32(v) => array.store_chunk(&chunk, &v),
+            SampleBufferValue::U64(v) => array.store_chunk(&chunk, &v),
+            SampleBufferValue::I64(v) => array.store_chunk(&chunk, &v),
+            SampleBufferValue::Bool(v) => array.store_chunk(&chunk, &v),
         }
     } else {
         let mut shape: Vec<_> = array.shape().iter().cloned().collect();
@@ -144,23 +144,23 @@ fn store_zarr_chunk(array: &Array, data: Chunk, chain_chunk_index: u64) -> Resul
         match data.values {
             SampleBufferValue::F64(v) => {
                 assert!(v.len() == chunk_subset.num_elements_usize());
-                array.store_chunk_subset_elements(&chunk, &chunk_subset, &v)
+                array.store_chunk_subset(&chunk, &chunk_subset, &v)
             }
             SampleBufferValue::F32(v) => {
                 assert!(v.len() == chunk_subset.num_elements_usize());
-                array.store_chunk_subset_elements(&chunk, &chunk_subset, &v)
+                array.store_chunk_subset(&chunk, &chunk_subset, &v)
             }
             SampleBufferValue::U64(v) => {
                 assert!(v.len() == chunk_subset.num_elements_usize());
-                array.store_chunk_subset_elements(&chunk, &chunk_subset, &v)
+                array.store_chunk_subset(&chunk, &chunk_subset, &v)
             }
             SampleBufferValue::I64(v) => {
                 assert!(v.len() == chunk_subset.num_elements_usize());
-                array.store_chunk_subset_elements(&chunk, &chunk_subset, &v)
+                array.store_chunk_subset(&chunk, &chunk_subset, &v)
             }
             SampleBufferValue::Bool(v) => {
                 assert!(v.len() == chunk_subset.num_elements_usize());
-                array.store_chunk_subset_elements(&chunk, &chunk_subset, &v)
+                array.store_chunk_subset(&chunk, &chunk_subset, &v)
             }
         }
     };
