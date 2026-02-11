@@ -22,7 +22,7 @@ use nuts_rs::{
     SamplerWaitResult, Storable, ZarrConfig,
 };
 use nuts_storable::{HasDims, Value};
-use rand::Rng;
+use rand::{Rng, RngExt};
 use thiserror::Error;
 use zarrs::filesystem::FilesystemStore;
 

@@ -513,7 +513,7 @@ mod test {
 
     use equator::Cmp;
     use faer::{Col, Mat, utils::approx::ApproxEq};
-    use rand::{Rng, SeedableRng, rngs::SmallRng};
+    use rand::{RngExt, SeedableRng, rngs::SmallRng};
     use rand_distr::StandardNormal;
 
     use super::{estimate_mass_matrix, mat_all_finite, spd_mean};

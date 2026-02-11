@@ -12,7 +12,7 @@
 //! use nuts_rs::{CpuLogpFunc, CpuMath, LogpError, DiagGradNutsSettings, Chain, Progress,
 //! Settings, HasDims};
 //! use thiserror::Error;
-//! use rand::thread_rng;
+//! use rand::rng;
 //! use std::collections::HashMap;
 //!
 //! // Define a function that computes the unnormalized posterior density
@@ -76,7 +76,7 @@
 //! let math = CpuMath::new(logp_func);
 //!
 //! let chain = 0;
-//! let mut rng = thread_rng();
+//! let mut rng = rng();
 //! let mut sampler = settings.new_chain(0, math, &mut rng);
 //!
 //! // Set to some initial position and start drawing samples.

@@ -3,6 +3,7 @@ use std::{collections::HashMap, error::Error, fmt::Debug, mem::replace};
 use faer::{Col, Mat};
 use itertools::{Itertools, izip};
 use nuts_storable::{HasDims, Storable, Value};
+use rand::RngExt;
 use thiserror::Error;
 
 use crate::{

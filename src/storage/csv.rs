@@ -631,7 +631,7 @@ mod tests {
     use anyhow::Result;
     use nuts_derive::Storable;
     use nuts_storable::{HasDims, Value};
-    use rand::Rng;
+    use rand::{Rng, RngExt};
     use std::collections::HashMap;
     use std::fs;
     use std::path::Path;

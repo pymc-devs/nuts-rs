@@ -1,8 +1,7 @@
 use anyhow::{Context, Result, bail};
 use itertools::Itertools;
 use nuts_storable::{HasDims, Storable, Value};
-use rand::{Rng, SeedableRng, rngs::SmallRng};
-use rand_chacha::ChaCha8Rng;
+use rand::{Rng, SeedableRng, rngs::ChaCha8Rng, rngs::SmallRng};
 use rayon::{ScopeFifo, ThreadPoolBuilder};
 use serde::Serialize;
 use std::{

@@ -11,7 +11,7 @@ use nuts_rs::{
     Sampler, SamplerWaitResult,
 };
 use nuts_storable::HasDims;
-use rand::Rng;
+use rand::{Rng, RngExt};
 use thiserror::Error;
 
 // A simple multivariate normal distribution example

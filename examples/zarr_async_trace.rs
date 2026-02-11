@@ -22,7 +22,7 @@ use nuts_rs::{
     SamplerWaitResult, Storable, ZarrAsyncConfig,
 };
 use nuts_storable::{HasDims, Value};
-use rand::Rng;
+use rand::{Rng, RngExt};
 use thiserror::Error;
 use zarrs_object_store::AsyncObjectStore;
 
