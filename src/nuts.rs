@@ -1,3 +1,4 @@
+use rand::RngExt;
 use thiserror::Error;
 
 use std::{fmt::Debug, marker::PhantomData};

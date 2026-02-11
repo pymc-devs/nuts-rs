@@ -21,7 +21,7 @@ use nuts_rs::{
     Sampler, SamplerWaitResult, Storable,
 };
 use nuts_storable::{HasDims, Value};
-use rand::Rng;
+use rand::{Rng, RngExt};
 use thiserror::Error;
 
 /// A multivariate normal distribution model

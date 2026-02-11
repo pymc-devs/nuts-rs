@@ -1,7 +1,7 @@
 use itertools::Either;
 use nuts_derive::Storable;
-use rand::Rng;
-use rand_distr::Uniform;
+use rand::distr::Uniform;
+use rand::{Rng, RngExt};
 use serde::Serialize;
 
 use super::adam::{Adam, AdamOptions};
