@@ -1,16 +1,14 @@
 use std::collections::HashMap;
 use std::iter::once;
-use std::num::NonZero;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use nuts_storable::{ItemType, Value};
-use zarrs::array::{ArrayBuilder, ArraySubset, FillValue, data_type};
+use zarrs::array::{ArrayBuilder, ArraySubset};
 use zarrs::group::GroupBuilder;
-use zarrs::metadata_ext::data_type::NumpyTimeUnit;
 use zarrs::storage::{ReadableWritableListableStorage, ReadableWritableListableStorageTraits};
 
-use super::common::{Chunk, SampleBuffer, SampleBufferValue};
+use super::common::{Chunk, SampleBuffer, SampleBufferValue, value_to_zarr_coord_params};
 use super::create_arrays;
 use crate::storage::{ChainStorage, StorageConfig, TraceStorage};
 use crate::{Math, Progress, Settings};
@@ -31,68 +29,28 @@ pub fn store_coords(
     coords: &HashMap<String, Value>,
 ) -> Result<()> {
     for (name, coord) in coords {
-        let (data_type, len, fill_value) = match coord {
-            &Value::F64(ref v) => (data_type::float64(), v.len(), FillValue::from(f64::NAN)),
-            &Value::F32(ref v) => (data_type::float32(), v.len(), FillValue::from(f32::NAN)),
-            &Value::U64(ref v) => (data_type::uint64(), v.len(), FillValue::from(0u64)),
-            &Value::I64(ref v) => (data_type::int64(), v.len(), FillValue::from(0i64)),
-            &Value::Bool(ref v) => (data_type::bool(), v.len(), FillValue::from(false)),
-            &Value::Strings(ref v) => (data_type::string(), v.len(), FillValue::from("")),
-            &Value::DateTime64(ref unit, ref data) => {
-                let unit = match unit {
-                    nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
-                    nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
-                    nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
-                    nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
-                };
-                let scale_factor = NonZero::new(1).unwrap();
-
-                (
-                    data_type::numpy_datetime64(unit, scale_factor),
-                    data.len(),
-                    FillValue::new_optional_null(),
-                )
-            }
-            &Value::TimeDelta64(ref unit, ref data) => {
-                let unit = match unit {
-                    nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
-                    nuts_storable::DateTimeUnit::Milliseconds => NumpyTimeUnit::Millisecond,
-                    nuts_storable::DateTimeUnit::Microseconds => NumpyTimeUnit::Microsecond,
-                    nuts_storable::DateTimeUnit::Nanoseconds => NumpyTimeUnit::Nanosecond,
-                };
-                let scale_factor = NonZero::new(1).unwrap();
-
-                (
-                    data_type::numpy_timedelta64(unit, scale_factor),
-                    data.len(),
-                    FillValue::new_optional_null(),
-                )
-            }
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Unsupported coordinate type for coordinate {}",
-                    name
-                ));
-            }
-        };
+        let (data_type, len, fill_value) = value_to_zarr_coord_params(coord);
         let name: &String = name;
 
         let coord_array =
             ArrayBuilder::new(vec![len as u64], vec![len as u64], data_type, fill_value)
                 .dimension_names(Some(vec![name.to_string()]))
                 .build(store.clone(), &format!("{}/{}", group, name))?;
-        let subset = vec![0];
-        match coord {
-            //&Value::F64(ref v) => coord_array.store_chunk_elements::<f64>(&subset, v)?,
-            &Value::F64(ref v) => coord_array.store_chunk(&subset, v)?,
-            &Value::F32(ref v) => coord_array.store_chunk(&subset, v)?,
-            &Value::U64(ref v) => coord_array.store_chunk(&subset, v)?,
-            &Value::I64(ref v) => coord_array.store_chunk(&subset, v)?,
-            &Value::Bool(ref v) => coord_array.store_chunk(&subset, v)?,
-            &Value::Strings(ref v) => coord_array.store_chunk(&subset, v)?,
-            &Value::DateTime64(_, ref data) => coord_array.store_chunk(&subset, data)?,
-            &Value::TimeDelta64(_, ref data) => coord_array.store_chunk(&subset, data)?,
-            _ => unreachable!(),
+
+        if len > 0 {
+            let subset = vec![0];
+            match coord {
+                //&Value::F64(ref v) => coord_array.store_chunk_elements::<f64>(&subset, v)?,
+                &Value::F64(ref v) => coord_array.store_chunk(&subset, v)?,
+                &Value::F32(ref v) => coord_array.store_chunk(&subset, v)?,
+                &Value::U64(ref v) => coord_array.store_chunk(&subset, v)?,
+                &Value::I64(ref v) => coord_array.store_chunk(&subset, v)?,
+                &Value::Bool(ref v) => coord_array.store_chunk(&subset, v)?,
+                &Value::Strings(ref v) => coord_array.store_chunk(&subset, v)?,
+                &Value::DateTime64(_, ref data) => coord_array.store_chunk(&subset, data)?,
+                &Value::TimeDelta64(_, ref data) => coord_array.store_chunk(&subset, data)?,
+                _ => unreachable!(),
+            }
         }
         coord_array.store_metadata()?;
     }
@@ -126,6 +84,10 @@ fn store_zarr_chunk(array: &Array, data: Chunk, chain_chunk_index: u64) -> Resul
         .chain(once(0).cycle().take(rank - 2))
         .collect();
     let chunk = &chunk_vec[..];
+
+    if data.values.len() == 0 {
+        return Ok(());
+    }
 
     let result = if data.is_full() {
         match data.values {
