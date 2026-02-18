@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.4] - 2026-02-18
+
+### Bug Fixes
+
+- Allow empty arrays in zarr (Adrian Seyboldt)
+
+
+### Miscellaneous Tasks
+
+- Bump rand to 0.10 (Adrian Seyboldt)
+
+- Bump zarrs (Adrian Seyboldt)
+
+
 ## [0.17.3] - 2025-11-27
 
 ### Features
@@ -19,8 +33,6 @@ All notable changes to this project will be documented in this file.
 ### Miscellaneous Tasks
 
 - Update pulp dependency (Adrian Seyboldt)
-
-- Prepare release (Adrian Seyboldt)
 
 
 ## [0.17.1] - 2025-11-13
@@ -40,10 +52,6 @@ All notable changes to this project will be documented in this file.
 ### Miscellaneous Tasks
 
 - Update dependencies (Adrian Seyboldt)
-
-- Bump version (Adrian Seyboldt)
-
-- Bump nuts-storable version (Adrian Seyboldt)
 
 
 ## [0.17.0] - 2025-10-08
@@ -92,11 +100,7 @@ All notable changes to this project will be documented in this file.
 
 ### Miscellaneous Tasks
 
-- Prepare bugfix release (Adrian Seyboldt)
-
 - Update dependencies (Adrian Seyboldt)
-
-- Prepare 0.17.0 (Adrian Seyboldt)
 
 - Correctly specify dependencies in workspace (Adrian Seyboldt)
 
@@ -138,8 +142,6 @@ All notable changes to this project will be documented in this file.
 
 - Bump arrow version (Adrian Seyboldt)
 
-- Bump version and update changelog (Adrian Seyboldt)
-
 
 ### Performance
 
@@ -169,8 +171,6 @@ All notable changes to this project will be documented in this file.
 
 - Update dependencies (Adrian Seyboldt)
 
-- Bump version (Adrian Seyboldt)
-
 
 ### Ci
 
@@ -193,13 +193,9 @@ All notable changes to this project will be documented in this file.
 
 ### Miscellaneous Tasks
 
-- Update changelog (Adrian Seyboldt)
-
 - Update pulp (Adrian Seyboldt)
 
 - Update multiversion (Adrian Seyboldt)
-
-- Update version and changelog (Adrian Seyboldt)
 
 
 ### Refactor
