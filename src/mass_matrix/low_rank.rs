@@ -93,7 +93,7 @@ impl<M: Math> LowRankMassMatrix<M> {
         math.read_from_slice(&mut self.stds, &vals);
     }
 
-    fn update(&mut self, math: &mut M, mut stds: Col<f64>, vals: Col<f64>, vecs: Mat<f64>) {
+    fn update_diag(&mut self, math: &mut M, mut stds: Col<f64>) {
         math.read_from_slice(&mut self.stds, stds.try_as_col_major().unwrap().as_slice());
 
         stds.iter_mut().for_each(|x| *x = x.recip());
@@ -108,10 +108,15 @@ impl<M: Math> LowRankMassMatrix<M> {
             stds.try_as_col_major().unwrap().as_slice(),
         );
 
+        self.inner = None;
+    }
+
+    fn update(&mut self, math: &mut M, stds: Col<f64>, vals: Col<f64>, vecs: Mat<f64>) {
         if col_all_finite(&vals.as_ref()) & mat_all_finite(&vecs.as_ref()) {
+            self.update_diag(math, stds);
             self.inner = Some(InnerMatrix::new(math, vals, vecs));
         } else {
-            self.inner = None;
+            self.update_diag(math, stds);
         }
     }
 }
@@ -287,20 +292,33 @@ impl LowRankMassMatrixStrategy {
             grads.col_as_slice_mut(i).copy_from_slice(&grad[..]);
         }
 
-        let Some((stds, vals, vecs)) = self.compute_update(draws, grads) else {
-            return;
-        };
+        let (stds, low_rank) = self.compute_update(draws, grads);
 
-        matrix.update(math, stds, vals, vecs);
+        if !col_all_finite(&stds.as_ref()) {
+            return;
+        }
+
+        match low_rank {
+            Some((vals, vecs)) => matrix.update(math, stds, vals, vecs),
+            None => matrix.update_diag(math, stds),
+        }
     }
 
     fn compute_update(
         &self,
         mut draws: Mat<f64>,
         mut grads: Mat<f64>,
-    ) -> Option<(Col<f64>, Col<f64>, Mat<f64>)> {
+    ) -> (Col<f64>, Option<(Col<f64>, Mat<f64>)>) {
         let stds = rescale_points(&mut draws, &mut grads);
+        let low_rank = self.compute_low_rank(draws, grads);
+        (stds, low_rank)
+    }
 
+    fn compute_low_rank(
+        &self,
+        draws: Mat<f64>,
+        grads: Mat<f64>,
+    ) -> Option<(Col<f64>, Mat<f64>)> {
         let svd_draws = draws.thin_svd().ok()?;
         let svd_grads = grads.thin_svd().ok()?;
 
@@ -333,7 +351,7 @@ impl LowRankMassMatrixStrategy {
             .for_each(|(mut col, vals)| col.copy_from(vals));
 
         let vecs = subspace_basis * vecs;
-        Some((stds, vals, vecs))
+        Some((vals, vecs))
     }
 }
 
