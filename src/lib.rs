@@ -101,9 +101,8 @@
 mod adapt_strategy;
 mod chain;
 mod cpu_math;
-mod euclidean_hamiltonian;
+mod external_adapt_strategy;
 mod hamiltonian;
-mod mass_matrix;
 mod math;
 mod math_base;
 mod model;
@@ -113,7 +112,7 @@ mod sampler_stats;
 mod state;
 mod stepsize;
 mod storage;
-mod transform_adapt_strategy;
+mod transform;
 mod transformed_hamiltonian;
 
 pub use nuts_derive::Storable;
@@ -134,10 +133,10 @@ pub use sampler::{
 };
 pub use sampler_stats::SamplerStats;
 
-pub use mass_matrix::DiagAdaptExpSettings;
-pub use mass_matrix::LowRankSettings;
+pub use external_adapt_strategy::TransformedSettings;
 pub use stepsize::{AdamOptions, StepSizeAdaptMethod, StepSizeAdaptOptions, StepSizeSettings};
-pub use transform_adapt_strategy::TransformedSettings;
+pub use transform::DiagAdaptExpSettings;
+pub use transform::LowRankSettings;
 
 #[cfg(feature = "zarr")]
 pub use storage::{ZarrAsyncConfig, ZarrAsyncTraceStorage, ZarrConfig, ZarrTraceStorage};

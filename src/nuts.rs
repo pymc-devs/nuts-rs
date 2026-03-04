@@ -357,6 +357,8 @@ mod tests {
 
         let mut chain = settings.new_chain(0, math, &mut rng);
 
+        chain.set_position(&vec![0.0; ndim]).unwrap();
+
         let (_, mut progress) = chain.draw().unwrap();
         for _ in 0..10 {
             let (_, prog) = chain.draw().unwrap();

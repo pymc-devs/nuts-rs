@@ -4,14 +4,84 @@ use nuts_derive::Storable;
 use rand::Rng;
 use serde::Serialize;
 
-use super::diagonal::{DiagMassMatrix, DrawGradCollector, MassMatrix, RunningVariance};
 use crate::{
-    Math, NutsError,
-    euclidean_hamiltonian::EuclideanPoint,
+    Math, NutsError, SamplerStats,
     hamiltonian::Point,
     nuts::{Collector, NutsOptions},
-    sampler_stats::SamplerStats,
+    state::State,
+    transform::{DiagMassMatrix, adapt::strategy::MassMatrixAdaptStrategy},
 };
+
+#[derive(Debug)]
+pub struct RunningVariance<M: Math> {
+    mean: M::Vector,
+    variance: M::Vector,
+    count: u64,
+}
+
+impl<M: Math> RunningVariance<M> {
+    pub(crate) fn new(math: &mut M) -> Self {
+        Self {
+            mean: math.new_array(),
+            variance: math.new_array(),
+            count: 0,
+        }
+    }
+
+    pub(crate) fn add_sample(&mut self, math: &mut M, value: &M::Vector) {
+        self.count += 1;
+        if self.count == 1 {
+            math.copy_into(value, &mut self.mean);
+        } else {
+            math.array_update_variance(
+                &mut self.mean,
+                &mut self.variance,
+                value,
+                (self.count as f64).recip(),
+            );
+        }
+    }
+
+    /// Return current variance and scaling factor
+    pub(crate) fn current(&self) -> (&M::Vector, f64) {
+        assert!(self.count > 1);
+        (&self.variance, ((self.count - 1) as f64).recip())
+    }
+
+    pub(crate) fn count(&self) -> u64 {
+        self.count
+    }
+}
+
+pub struct DrawGradCollector<M: Math> {
+    pub(crate) draw: M::Vector,
+    pub(crate) grad: M::Vector,
+    pub(crate) is_good: bool,
+}
+
+impl<M: Math> DrawGradCollector<M> {
+    pub(crate) fn new(math: &mut M) -> Self {
+        DrawGradCollector {
+            draw: math.new_array(),
+            grad: math.new_array(),
+            is_good: true,
+        }
+    }
+}
+
+impl<M: Math, P: Point<M>> Collector<M, P> for DrawGradCollector<M> {
+    fn register_draw(&mut self, math: &mut M, state: &State<M, P>, info: &crate::nuts::SampleInfo) {
+        math.copy_into(state.point().position(), &mut self.draw);
+        math.copy_into(state.point().gradient(), &mut self.grad);
+        let idx = state.index_in_trajectory();
+        if info.divergence_info.is_some() {
+            self.is_good = idx.abs() > 4;
+        } else {
+            self.is_good = idx != 0;
+        }
+    }
+}
+
 const LOWER_LIMIT: f64 = 1e-20f64;
 const UPPER_LIMIT: f64 = 1e20f64;
 
@@ -55,38 +125,8 @@ impl<M: Math> SamplerStats<M> for Strategy<M> {
     }
 }
 
-pub trait MassMatrixAdaptStrategy<M: Math>: SamplerStats<M> {
-    type MassMatrix: MassMatrix<M>;
-    type Collector: Collector<M, EuclideanPoint<M>>;
-    type Options: std::fmt::Debug + Default + Clone + Send + Sync + Copy;
-
-    fn update_estimators(&mut self, math: &mut M, collector: &Self::Collector);
-
-    fn switch(&mut self, math: &mut M);
-
-    fn current_count(&self) -> u64;
-
-    fn background_count(&self) -> u64;
-
-    /// Give the opportunity to update the potential and return if it was changed
-    fn adapt(&self, math: &mut M, mass_matrix: &mut Self::MassMatrix) -> bool;
-
-    fn new(math: &mut M, options: Self::Options, _num_tune: u64, _chain: u64) -> Self;
-
-    fn init<R: Rng + ?Sized>(
-        &mut self,
-        math: &mut M,
-        _options: &mut NutsOptions,
-        mass_matrix: &mut Self::MassMatrix,
-        point: &impl Point<M>,
-        _rng: &mut R,
-    ) -> Result<(), NutsError>;
-
-    fn new_collector(&self, math: &mut M) -> Self::Collector;
-}
-
 impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
-    type MassMatrix = DiagMassMatrix<M>;
+    type Transformation = DiagMassMatrix<M>;
     type Collector = DrawGradCollector<M>;
     type Options = DiagAdaptExpSettings;
 
@@ -126,9 +166,14 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
         let (grad_var, grad_scale) = self.exp_variance_grad.current();
         assert!(draw_scale == grad_scale);
 
+        let draw_mean = &self.exp_variance_draw.mean;
+        let grad_mean = &self.exp_variance_grad.mean;
+
         if self._settings.use_grad_based_estimate {
             mass_matrix.update_diag_draw_grad(
                 math,
+                draw_mean,
+                grad_mean,
                 draw_var,
                 grad_var,
                 None,
@@ -136,7 +181,14 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
             );
         } else {
             let scale = (self.exp_variance_draw.count() as f64).recip();
-            mass_matrix.update_diag_draw(math, draw_var, scale, None, (LOWER_LIMIT, UPPER_LIMIT));
+            mass_matrix.update_diag_draw(
+                math,
+                draw_mean,
+                draw_var,
+                scale,
+                None,
+                (LOWER_LIMIT, UPPER_LIMIT),
+            );
         }
 
         true
@@ -157,7 +209,7 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
         &mut self,
         math: &mut M,
         _options: &mut NutsOptions,
-        mass_matrix: &mut Self::MassMatrix,
+        mass_matrix: &mut Self::Transformation,
         point: &impl Point<M>,
         _rng: &mut R,
     ) -> Result<(), NutsError> {
@@ -172,6 +224,7 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
             1f64,
             (INIT_LOWER_LIMIT, INIT_UPPER_LIMIT),
         );
+
         Ok(())
     }
 
