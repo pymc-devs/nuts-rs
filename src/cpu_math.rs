@@ -281,6 +281,12 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         })
     }
 
+    fn array_sum_ln(&mut self, array: &Self::Vector) -> f64 {
+        let mut sum = 0f64;
+        faer::zip!(array).for_each(|faer::unzip!(val)| sum += val.ln());
+        sum
+    }
+
     fn array_mult(
         &mut self,
         array1: &Self::Vector,
@@ -293,6 +299,24 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
             array2.try_as_col_major().unwrap().as_slice(),
             dest.try_as_col_major_mut().unwrap().as_slice_mut(),
         )
+    }
+
+    fn apply_lowrank_transform(
+        &mut self,
+        vecs: &Self::EigVectors,
+        vals: &Self::EigValues,
+        rhs: &Self::Vector,
+        dest: &mut Self::Vector,
+    ) {
+        if vecs.ncols() == 0 {
+            self.copy_into(rhs, dest);
+            return;
+        }
+        // dest = (I + U * (diag(vals) - I) * U^T) * rhs
+        //      = rhs + U * (diag(vals) - I) * (U^T * rhs)
+        let trafo = vecs.transpose() * rhs;
+        let result = vecs * (vals.as_diagonal() * (&trafo) - (&trafo)) + rhs;
+        let _ = replace(dest, result);
     }
 
     fn array_mult_eigs(
@@ -611,14 +635,14 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         )
     }
 
-    fn new_transformation<R: rand::Rng + ?Sized>(
+    fn init_transformation<R: rand::Rng + ?Sized>(
         &mut self,
         rng: &mut R,
         untransformed_position: &Self::Vector,
         untransfogmed_gradient: &Self::Vector,
         chain: u64,
     ) -> Result<Self::FlowParameters, Self::LogpErr> {
-        self.logp_func.new_transformation(
+        self.logp_func.init_transformation(
             rng,
             untransformed_position
                 .try_as_col_major()
@@ -630,6 +654,15 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
                 .as_slice(),
             chain,
         )
+    }
+
+    fn new_transformation<R: rand::Rng + ?Sized>(
+        &mut self,
+        rng: &mut R,
+        dim: usize,
+        chain: u64,
+    ) -> Result<Self::FlowParameters, Self::LogpErr> {
+        self.logp_func.new_transformation(rng, dim, chain)
     }
 
     fn transformation_id(&self, params: &Self::FlowParameters) -> Result<i64, Self::LogpErr> {
@@ -700,11 +733,20 @@ pub trait CpuLogpFunc: HasDims {
         unimplemented!()
     }
 
-    fn new_transformation<R: rand::Rng + ?Sized>(
+    fn init_transformation<R: rand::Rng + ?Sized>(
         &mut self,
         _rng: &mut R,
         _untransformed_position: &[f64],
         _untransformed_gradient: &[f64],
+        _chain: u64,
+    ) -> Result<Self::FlowParameters, Self::LogpError> {
+        unimplemented!()
+    }
+
+    fn new_transformation<R: rand::Rng + ?Sized>(
+        &mut self,
+        _rng: &mut R,
+        _dim: usize,
         _chain: u64,
     ) -> Result<Self::FlowParameters, Self::LogpError> {
         unimplemented!()

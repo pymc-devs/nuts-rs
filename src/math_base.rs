@@ -102,11 +102,36 @@ pub trait Math: HasDims {
         data.into()
     }
 
+    /// Compute the sum of the natural logarithms of all elements in `array`,
+    /// i.e. `Σ ln(array[i])`.
+    ///
+    /// The default implementation copies into a temporary allocation via
+    /// [`write_to_slice`]; backends may override this with a zero-allocation
+    /// version.
+    fn array_sum_ln(&mut self, array: &Self::Vector) -> f64 {
+        let mut data = vec![0f64; self.dim()];
+        self.write_to_slice(array, &mut data);
+        data.iter().map(|x| x.ln()).sum()
+    }
+
     fn fill_array(&mut self, array: &mut Self::Vector, val: f64);
 
     fn array_all_finite(&mut self, array: &Self::Vector) -> bool;
     fn array_all_finite_and_nonzero(&mut self, array: &Self::Vector) -> bool;
     fn array_mult(&mut self, array1: &Self::Vector, array2: &Self::Vector, dest: &mut Self::Vector);
+
+    /// Apply the low-rank linear map `(I + U * (diag(vals) - I) * U^T) * rhs` into `dest`.
+    ///
+    /// `vecs` is `U` (d × r, orthonormal columns), `vals` is the diagonal vector (length r).
+    /// When `vecs` has zero columns the result is just a copy of `rhs`.
+    fn apply_lowrank_transform(
+        &mut self,
+        vecs: &Self::EigVectors,
+        vals: &Self::EigValues,
+        rhs: &Self::Vector,
+        dest: &mut Self::Vector,
+    );
+
     fn array_mult_eigs(
         &mut self,
         stds: &Self::Vector,
@@ -202,6 +227,13 @@ pub trait Math: HasDims {
     ) -> Result<(), Self::LogpErr>;
 
     fn new_transformation<R: rand::Rng + ?Sized>(
+        &mut self,
+        rng: &mut R,
+        dim: usize,
+        chain: u64,
+    ) -> Result<Self::FlowParameters, Self::LogpErr>;
+
+    fn init_transformation<R: rand::Rng + ?Sized>(
         &mut self,
         rng: &mut R,
         untransformed_position: &Self::Vector,

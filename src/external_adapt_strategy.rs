@@ -10,7 +10,8 @@ use crate::sampler_stats::{SamplerStats, StatsDims};
 use crate::state::State;
 use crate::stepsize::AcceptanceRateCollector;
 use crate::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
-use crate::transformed_hamiltonian::TransformedHamiltonian;
+use crate::transform::ExternalTransformation;
+use crate::transformed_hamiltonian::{TransformedHamiltonian, TransformedPoint};
 use crate::{Math, NutsError};
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -34,7 +35,7 @@ impl Default for TransformedSettings {
     }
 }
 
-pub struct TransformAdaptation {
+pub struct ExternalTransformAdaptation {
     step_size: StepSizeStrategy,
     options: TransformedSettings,
     num_tune: u64,
@@ -52,7 +53,7 @@ pub struct Stats<P: HasDims, S: Storable<P>> {
     _phantom: std::marker::PhantomData<fn() -> P>,
 }
 
-impl<M: Math> SamplerStats<M> for TransformAdaptation {
+impl<M: Math> SamplerStats<M> for ExternalTransformAdaptation {
     type Stats = Stats<StatsDims, <StepSizeStrategy as SamplerStats<M>>::Stats>;
     type StatsOptions = ();
 
@@ -147,15 +148,11 @@ impl<M: Math, P: Point<M>> Collector<M, P> for DrawCollector<M> {
     }
 }
 
-impl<M: Math> AdaptStrategy<M> for TransformAdaptation {
-    type Hamiltonian = TransformedHamiltonian<M>;
+impl<M: Math> AdaptStrategy<M> for ExternalTransformAdaptation {
+    type Hamiltonian = TransformedHamiltonian<M, ExternalTransformation<M>>;
 
-    type Collector = CombinedCollector<
-        M,
-        <Self::Hamiltonian as Hamiltonian<M>>::Point,
-        AcceptanceRateCollector,
-        DrawCollector<M>,
-    >;
+    type Collector =
+        CombinedCollector<M, TransformedPoint<M>, AcceptanceRateCollector, DrawCollector<M>>;
 
     type Options = TransformedSettings;
 

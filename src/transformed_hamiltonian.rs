@@ -1,26 +1,45 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 
 use nuts_derive::Storable;
+use nuts_storable::HasDims;
 
 use crate::{
     DivergenceInfo, LogpError, Math, NutsError,
     hamiltonian::{Direction, Hamiltonian, LeapfrogResult, Point},
-    sampler_stats::SamplerStats,
+    sampler_stats::{SamplerStats, StatsDims},
     state::{State, StatePool},
+    transform::{ExternalTransformation, Transformation},
 };
 
 pub struct TransformedPoint<M: Math> {
-    untransformed_position: M::Vector,
-    untransformed_gradient: M::Vector,
-    transformed_position: M::Vector,
-    transformed_gradient: M::Vector,
-    velocity: M::Vector,
+    pub(crate) untransformed_position: M::Vector,
+    pub(crate) untransformed_gradient: M::Vector,
+    pub(crate) transformed_position: M::Vector,
+    pub(crate) transformed_gradient: M::Vector,
+    pub(crate) velocity: M::Vector,
     index_in_trajectory: i64,
     logp: f64,
     logdet: f64,
     kinetic_energy: f64,
     initial_energy: f64,
     transform_id: i64,
+}
+
+impl<M: Math> Debug for TransformedPoint<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransformedPoint")
+            .field("untransformed_position", &self.untransformed_position)
+            .field("untransformed_gradient", &self.untransformed_gradient)
+            .field("transformed_position", &self.transformed_position)
+            .field("transformed_gradient", &self.transformed_gradient)
+            .field("velocity", &self.velocity)
+            .field("index_in_trajectory", &self.index_in_trajectory)
+            .field("logp", &self.logp)
+            .field("logdet", &self.logdet)
+            .field("kinetic_energy", &self.kinetic_energy)
+            .field("transform_id", &self.transform_id)
+            .finish()
+    }
 }
 
 #[derive(Debug, Storable)]
@@ -87,45 +106,53 @@ impl<M: Math> TransformedPoint<M> {
         self.kinetic_energy = 0.5 * math.array_vector_dot(&self.velocity, &self.velocity);
     }
 
-    fn init_from_untransformed_position(
+    fn init_from_untransformed_position<T: Transformation<M>>(
         &mut self,
-        hamiltonian: &TransformedHamiltonian<M>,
+        transformation: &T,
         math: &mut M,
     ) -> Result<(), M::LogpErr> {
-        let (logp, logdet) = {
-            math.init_from_untransformed_position(
-                hamiltonian.params.as_ref().expect("No transformation set"),
-                &self.untransformed_position,
-                &mut self.untransformed_gradient,
-                &mut self.transformed_position,
-                &mut self.transformed_gradient,
-            )
-        }?;
+        let (logp, logdet) = transformation.init_from_untransformed_position(
+            math,
+            &self.untransformed_position,
+            &mut self.untransformed_gradient,
+            &mut self.transformed_position,
+            &mut self.transformed_gradient,
+        )?;
         self.logp = logp;
         self.logdet = logdet;
+        self.transform_id = transformation.transformation_id(math);
         Ok(())
     }
 
-    fn init_from_transformed_position(
+    fn init_from_transformed_position<T: Transformation<M>>(
         &mut self,
-        hamiltonian: &TransformedHamiltonian<M>,
+        transformation: &T,
         math: &mut M,
     ) -> Result<(), M::LogpErr> {
-        let (logp, logdet) = {
-            math.init_from_transformed_position(
-                hamiltonian.params.as_ref().expect("No transformation set"),
-                &mut self.untransformed_position,
-                &mut self.untransformed_gradient,
-                &self.transformed_position,
-                &mut self.transformed_gradient,
-            )
-        }?;
+        let (logp, logdet) = transformation.init_from_transformed_position(
+            math,
+            &mut self.untransformed_position,
+            &mut self.untransformed_gradient,
+            &self.transformed_position,
+            &mut self.transformed_gradient,
+        )?;
         self.logp = logp;
         self.logdet = logdet;
+        self.transform_id = transformation.transformation_id(math);
         Ok(())
     }
 
-    fn is_valid(&self, math: &mut M) -> bool {
+    fn check_untransformed(&self, math: &mut M) -> bool {
+        if !math.array_all_finite(&self.untransformed_gradient) {
+            return false;
+        }
+        if !math.array_all_finite(&self.untransformed_position) {
+            return false;
+        }
+        true
+    }
+
+    fn check_all(&self, math: &mut M) -> bool {
         if !math.array_all_finite(&self.transformed_position) {
             return false;
         }
@@ -138,7 +165,6 @@ impl<M: Math> TransformedPoint<M> {
         if !math.array_all_finite(&self.untransformed_position) {
             return false;
         }
-
         true
     }
 }
@@ -213,18 +239,17 @@ impl<M: Math> Point<M> for TransformedPoint<M> {
     }
 }
 
-pub struct TransformedHamiltonian<M: Math> {
+pub struct TransformedHamiltonian<M: Math, T: Transformation<M>> {
     ones: M::Vector,
     zeros: M::Vector,
     step_size: f64,
-    params: Option<M::FlowParameters>,
+    transformation: T,
     max_energy_error: f64,
-    _phantom: PhantomData<M>,
     pool: StatePool<M, TransformedPoint<M>>,
 }
 
-impl<M: Math> TransformedHamiltonian<M> {
-    pub fn new(math: &mut M, max_energy_error: f64) -> Self {
+impl<M: Math, T: Transformation<M>> TransformedHamiltonian<M, T> {
+    pub fn new(math: &mut M, max_energy_error: f64, transformation: T) -> Self {
         let mut ones = math.new_array();
         math.fill_array(&mut ones, 1f64);
         let mut zeros = math.new_array();
@@ -234,13 +259,22 @@ impl<M: Math> TransformedHamiltonian<M> {
             step_size: 0f64,
             ones,
             zeros,
-            params: None,
+            transformation,
             max_energy_error,
-            _phantom: Default::default(),
             pool,
         }
     }
 
+    pub fn transformation(&self) -> &T {
+        &self.transformation
+    }
+
+    pub fn transformation_mut(&mut self) -> &mut T {
+        &mut self.transformation
+    }
+}
+
+impl<M: Math> TransformedHamiltonian<M, ExternalTransformation<M>> {
     pub fn init_transformation<R: rand::Rng + ?Sized>(
         &mut self,
         rng: &mut R,
@@ -254,10 +288,10 @@ impl<M: Math> TransformedHamiltonian<M> {
         let _ = math
             .logp_array(&position_array, &mut gradient_array)
             .map_err(|e| NutsError::BadInitGrad(Box::new(e)))?;
-        let params = math
-            .new_transformation(rng, &position_array, &gradient_array, chain)
+        let mut params = math
+            .init_transformation(rng, &position_array, &gradient_array, chain)
             .map_err(|e| NutsError::BadInitGrad(Box::new(e)))?;
-        self.params = Some(params);
+        std::mem::swap(self.transformation_mut().params_mut(), &mut params);
         Ok(())
     }
 
@@ -269,35 +303,37 @@ impl<M: Math> TransformedHamiltonian<M> {
         grads: impl ExactSizeIterator<Item = &'a M::Vector>,
         logps: impl ExactSizeIterator<Item = &'a f64>,
     ) -> Result<(), NutsError> {
-        math.update_transformation(
-            rng,
-            draws,
-            grads,
-            logps,
-            self.params.as_mut().expect("Transformation was empty"),
-        )
-        .map_err(|e| NutsError::BadInitGrad(Box::new(e)))?;
+        let t = self.transformation_mut();
+        math.update_transformation(rng, draws, grads, logps, t.params_mut())
+            .map_err(|e| NutsError::BadInitGrad(Box::new(e)))?;
         Ok(())
     }
 }
 
 #[derive(Debug, Storable)]
-pub struct HamiltonianStats {
+pub struct HamiltonianStats<P: HasDims, S: nuts_storable::Storable<P>> {
     pub step_size: f64,
+    #[storable(flatten)]
+    pub transformation: S,
+    #[storable(ignore)]
+    _phantom: PhantomData<fn() -> P>,
 }
 
-impl<M: Math> SamplerStats<M> for TransformedHamiltonian<M> {
-    type Stats = HamiltonianStats;
-    type StatsOptions = ();
+impl<M: Math, T: Transformation<M>> SamplerStats<M> for TransformedHamiltonian<M, T> {
+    type Stats = HamiltonianStats<StatsDims, T::Stats>;
+    type StatsOptions = T::StatsOptions;
 
-    fn extract_stats(&self, _math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
+    fn extract_stats(&self, math: &mut M, opt: Self::StatsOptions) -> Self::Stats {
+        let transformation_stats = self.transformation.extract_stats(math, opt);
         HamiltonianStats {
             step_size: self.step_size,
+            transformation: transformation_stats,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<M: Math> Hamiltonian<M> for TransformedHamiltonian<M> {
+impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M, T> {
     type Point = TransformedPoint<M>;
 
     fn leapfrog<C: crate::nuts::Collector<M, Self::Point>>(
@@ -325,7 +361,9 @@ impl<M: Math> Hamiltonian<M> for TransformedHamiltonian<M> {
             .first_velocity_halfstep(math, out_point, epsilon);
 
         start.point().position_step(math, out_point, epsilon);
-        if let Err(logp_error) = out_point.init_from_transformed_position(self, math) {
+
+        let transformation = self.transformation();
+        if let Err(logp_error) = out_point.init_from_transformed_position(transformation, math) {
             if !logp_error.is_recoverable() {
                 return LeapfrogResult::Err(logp_error);
             }
@@ -401,11 +439,36 @@ impl<M: Math> Hamiltonian<M> for TransformedHamiltonian<M> {
         let point = state.try_point_mut().expect("State already in use");
         math.read_from_slice(&mut point.untransformed_position, init);
 
+        let transformation = self.transformation();
         point
-            .init_from_untransformed_position(self, math)
+            .init_from_untransformed_position(transformation, math)
             .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
 
-        if !point.is_valid(math) {
+        if !point.check_all(math) {
+            Err(NutsError::BadInitGrad(
+                anyhow::anyhow!("Invalid initial point").into(),
+            ))
+        } else {
+            Ok(state)
+        }
+    }
+
+    fn init_state_untransformed(
+        &mut self,
+        math: &mut M,
+        untransformed_position: &[f64],
+    ) -> Result<State<M, Self::Point>, NutsError> {
+        let mut state = self.pool().new_state(math);
+        let point = state.try_point_mut().expect("State already in use");
+        math.read_from_slice(&mut point.untransformed_position, untransformed_position);
+        math.logp_array(
+            &mut point.untransformed_position,
+            &mut point.untransformed_gradient,
+        )
+        .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
+        // Force recomputation of transformed coordinates on first leapfrog step
+        point.transform_id = -1;
+        if !point.check_untransformed(math) {
             Err(NutsError::BadInitGrad(
                 anyhow::anyhow!("Invalid initial point").into(),
             ))
@@ -422,13 +485,12 @@ impl<M: Math> Hamiltonian<M> for TransformedHamiltonian<M> {
     ) -> Result<(), NutsError> {
         let point = state.try_point_mut().expect("State has other references");
         math.array_gaussian(rng, &mut point.velocity, &self.ones);
-        let current_transform_id = math
-            .transformation_id(self.params.as_ref().expect("No transformation set"))
-            .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
+        let current_transform_id = self.transformation().transformation_id(math);
         if current_transform_id != point.transform_id {
-            let logdet = math
+            let logdet = self
+                .transformation()
                 .inv_transform_normalize(
-                    self.params.as_ref().expect("No transformation set"),
+                    math,
                     &point.untransformed_position,
                     &point.untransformed_gradient,
                     &mut point.transformed_position,
