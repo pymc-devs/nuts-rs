@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use itertools::Itertools;
 use nuts_storable::{HasDims, Storable, Value};
-use rand::{Rng, SeedableRng, rngs::ChaCha8Rng, rngs::SmallRng};
+use rand::{Rng, SeedableRng, rngs::ChaCha8Rng};
 use rayon::{ScopeFifo, ThreadPoolBuilder};
 use serde::Serialize;
 use std::{
@@ -254,8 +254,8 @@ impl Default for TransformedNutsSettings {
     }
 }
 
-type DiagGradNutsChain<M> = NutsChain<M, SmallRng, GlobalStrategy<M, DiagAdaptStrategy<M>>>;
-type LowRankNutsChain<M> = NutsChain<M, SmallRng, GlobalStrategy<M, LowRankMassMatrixStrategy>>;
+type DiagGradNutsChain<M> = NutsChain<M, ChaCha8Rng, GlobalStrategy<M, DiagAdaptStrategy<M>>>;
+type LowRankNutsChain<M> = NutsChain<M, ChaCha8Rng, GlobalStrategy<M, LowRankMassMatrixStrategy>>;
 
 impl Settings for LowRankNutsSettings {
     type Chain<M: Math> = LowRankNutsChain<M>;
@@ -281,7 +281,7 @@ impl Settings for LowRankNutsSettings {
             check_turning: self.check_turning,
         };
 
-        let rng = rand::rngs::SmallRng::try_from_rng(&mut rng).expect("Could not seed rng");
+        let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
 
         NutsChain::new(
             math,
@@ -351,7 +351,7 @@ impl Settings for DiagGradNutsSettings {
             check_turning: self.check_turning,
         };
 
-        let rng = rand::rngs::SmallRng::try_from_rng(&mut rng).expect("Could not seed rng");
+        let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
 
         NutsChain::new(
             math,
@@ -395,7 +395,7 @@ impl Settings for DiagGradNutsSettings {
 }
 
 impl Settings for TransformedNutsSettings {
-    type Chain<M: Math> = NutsChain<M, SmallRng, ExternalTransformAdaptation>;
+    type Chain<M: Math> = NutsChain<M, ChaCha8Rng, ExternalTransformAdaptation>;
 
     fn new_chain<M: Math, R: Rng + ?Sized>(
         &self,
@@ -423,7 +423,7 @@ impl Settings for TransformedNutsSettings {
             check_turning: self.check_turning,
         };
 
-        let rng = rand::rngs::SmallRng::try_from_rng(&mut rng).expect("Could not seed rng");
+        let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
         NutsChain::new(
             math,
             hamiltonian,

@@ -249,6 +249,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct NutsOptions {
     pub maxdepth: u64,
     pub mindepth: u64,
