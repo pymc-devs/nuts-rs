@@ -1,3 +1,5 @@
+//! Concrete Hamiltonian that runs leapfrog in a whitened space to improve sampling geometry.
+
 use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 
 use nuts_derive::Storable;

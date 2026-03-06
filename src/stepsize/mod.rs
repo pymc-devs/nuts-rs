@@ -1,3 +1,5 @@
+//! Step-size adaptation: algorithms and scheduling logic for tuning the leapfrog step size toward a target acceptance rate.
+
 mod adam;
 mod adapt;
 mod dual_avg;

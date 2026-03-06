@@ -1,3 +1,5 @@
+//! Storage backend that collects draws and statistics into in-memory ndarray arrays.
+
 use anyhow::{Context, Result};
 use ndarray::{ArrayD, IxDyn};
 use nuts_storable::{ItemType, Value};

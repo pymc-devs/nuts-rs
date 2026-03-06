@@ -1,3 +1,5 @@
+//! Online estimators that update the mass-matrix transformation from samples collected during warmup.
+
 mod diagonal;
 mod low_rank;
 mod strategy;

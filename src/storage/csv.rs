@@ -1,8 +1,4 @@
-//! CSV storage backend for nuts-rs that outputs CmdStan-compatible CSV files
-//!
-//! This module provides a CSV storage backend that saves MCMC samples and
-//! statistics in a format compatible with CmdStan, allowing existing Stan
-//! analysis tools and libraries to read nuts-rs results.
+//! Store samples and statistics as CmdStan-compatible CSV files.
 
 use std::collections::HashMap;
 use std::fs::File;

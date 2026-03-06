@@ -1,3 +1,5 @@
+//! Nesterov dual-averaging algorithm for tuning the leapfrog step size toward a target acceptance rate.
+
 use serde::Serialize;
 
 use crate::{

@@ -1,3 +1,5 @@
+//! Augment the diagonal transformation with a low-rank spectral correction for correlated posteriors.
+
 use std::fmt::Debug;
 use std::iter::repeat;
 

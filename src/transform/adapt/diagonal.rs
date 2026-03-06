@@ -1,3 +1,5 @@
+//! Online estimator that adapts the diagonal mass matrix from draw and gradient variance during warmup.
+
 use std::marker::PhantomData;
 
 use nuts_derive::Storable;

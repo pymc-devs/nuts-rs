@@ -1,3 +1,5 @@
+//! Backend-agnostic traits for progressively writing per-draw statistics and finalising a multi-chain trace.
+
 use anyhow::Result;
 use nuts_storable::Value;
 

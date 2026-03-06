@@ -1,3 +1,5 @@
+//! Minimal serialisation abstractions that let the sampler emit typed values without depending on any specific serialisation format.
+
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

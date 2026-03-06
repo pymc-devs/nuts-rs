@@ -1,3 +1,5 @@
+//! Adaptation strategy for when the coordinate transformation is learned from data rather than computed analytically.
+
 use nuts_derive::Storable;
 use nuts_storable::{HasDims, Storable};
 use serde::Serialize;

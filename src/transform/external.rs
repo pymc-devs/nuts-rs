@@ -1,3 +1,5 @@
+//! Bridge the `Transformation` interface to a user-supplied normalizing flow.
+
 use std::fmt::Debug;
 
 use nuts_derive::Storable;

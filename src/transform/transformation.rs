@@ -1,3 +1,5 @@
+//! Define the interface for a differentiable bijection between original and whitened parameter spaces.
+
 use std::fmt::Debug;
 
 use crate::{Math, SamplerStats};

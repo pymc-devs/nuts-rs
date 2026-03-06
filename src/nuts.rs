@@ -1,3 +1,5 @@
+//! Implement the recursive doubling tree expansion that is the heart of the NUTS algorithm.
+
 use rand::RngExt;
 use thiserror::Error;
 

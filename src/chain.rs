@@ -1,3 +1,5 @@
+//! Drive a single sampling chain by wiring together the Hamiltonian, adaptation, and per-draw bookkeeping.
+
 use std::{
     cell::{Ref, RefCell},
     fmt::Debug,

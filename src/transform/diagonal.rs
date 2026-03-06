@@ -1,3 +1,5 @@
+//! Diagonal (per-dimension) affine transformation estimated from draw and gradient variance.
+
 use std::fmt::Debug;
 
 use nuts_derive::Storable;

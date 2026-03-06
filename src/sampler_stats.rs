@@ -1,3 +1,5 @@
+//! Define how per-draw diagnostics are extracted and labelled for downstream storage.
+
 use std::collections::HashMap;
 
 use nuts_storable::{HasDims, Storable, Value};

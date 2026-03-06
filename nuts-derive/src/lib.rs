@@ -1,3 +1,5 @@
+//! Derive macro that auto-generates the `Storable` implementation for stats structs.
+
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
