@@ -1,3 +1,5 @@
+//! Define the backend interface that decouples the sampler from any particular hardware or logp implementation.
+
 use std::{error::Error, fmt::Debug};
 
 use nuts_storable::{HasDims, Storable, Value};

@@ -6,7 +6,7 @@
 use anyhow::Result;
 use rand::Rng;
 
-use crate::math_base::Math;
+use crate::Math;
 
 /// Trait for MCMC models with associated math backend and initialization.
 ///

@@ -19,11 +19,11 @@ use std::{
 };
 
 use crate::{
-    DiagAdaptExpSettings,
+    DiagAdaptExpSettings, Math,
     adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy, GlobalStrategyStatsOptions},
     chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
+    dynamics::{TransformedHamiltonian, TransformedPointStatsOptions},
     external_adapt_strategy::{ExternalTransformAdaptation, TransformedSettings},
-    math_base::Math,
     model::Model,
     nuts::NutsOptions,
     sampler_stats::{SamplerStats, StatsDims},
@@ -32,7 +32,6 @@ use crate::{
         DiagAdaptStrategy, DiagMassMatrix, ExternalTransformation, LowRankMassMatrix,
         LowRankMassMatrixStrategy, LowRankSettings,
     },
-    transformed_hamiltonian::{TransformedHamiltonian, TransformedPointStatsOptions},
 };
 
 /// All sampler configurations implement this trait
@@ -1027,8 +1026,7 @@ pub mod test_logps {
 
     use crate::{
         Model,
-        cpu_math::{CpuLogpFunc, CpuMath},
-        math_base::LogpError,
+        math::{CpuLogpFunc, CpuMath, LogpError},
     };
     use anyhow::Result;
     use nuts_storable::HasDims;
@@ -1088,7 +1086,7 @@ pub mod test_logps {
             &mut self,
             _rng: &mut R,
             array: &[f64],
-        ) -> std::result::Result<Self::ExpandedVector, crate::cpu_math::CpuMathError>
+        ) -> std::result::Result<Self::ExpandedVector, crate::math::CpuMathError>
         where
             R: rand::Rng + ?Sized,
         {
@@ -1199,7 +1197,7 @@ mod tests {
     use super::test_logps::NormalLogp;
     use crate::{
         Chain, DiagGradNutsSettings, Sampler, ZarrConfig,
-        cpu_math::CpuMath,
+        math::CpuMath,
         sample_sequentially,
         sampler::{Settings, test_logps::CpuModel},
     };

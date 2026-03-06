@@ -100,20 +100,16 @@
 
 mod adapt_strategy;
 mod chain;
-mod cpu_math;
+mod dynamics;
 mod external_adapt_strategy;
-mod hamiltonian;
 mod math;
-mod math_base;
 mod model;
 mod nuts;
 mod sampler;
 mod sampler_stats;
-mod state;
 mod stepsize;
 mod storage;
 mod transform;
-mod transformed_hamiltonian;
 
 pub use nuts_derive::Storable;
 pub use nuts_storable::{DateTimeUnit, HasDims, ItemType, Storable, Value};
@@ -121,9 +117,8 @@ pub use rand;
 
 pub use adapt_strategy::EuclideanAdaptOptions;
 pub use chain::Chain;
-pub use cpu_math::{CpuLogpFunc, CpuMath, CpuMathError};
-pub use hamiltonian::DivergenceInfo;
-pub use math_base::{LogpError, Math};
+pub use dynamics::DivergenceInfo;
+pub use math::{CpuLogpFunc, CpuMath, CpuMathError, LogpError, Math};
 pub use model::Model;
 pub use nuts::NutsError;
 pub use sampler::{

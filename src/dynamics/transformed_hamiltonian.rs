@@ -5,9 +5,9 @@ use nuts_storable::HasDims;
 
 use crate::{
     DivergenceInfo, LogpError, Math, NutsError,
-    hamiltonian::{Direction, Hamiltonian, LeapfrogResult, Point},
+    dynamics::{Direction, Hamiltonian, LeapfrogResult, Point},
+    dynamics::{State, StatePool},
     sampler_stats::{SamplerStats, StatsDims},
-    state::{State, StatePool},
     transform::{ExternalTransformation, Transformation},
 };
 
