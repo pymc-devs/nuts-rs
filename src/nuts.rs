@@ -3,11 +3,8 @@ use thiserror::Error;
 
 use std::{fmt::Debug, marker::PhantomData};
 
-use crate::hamiltonian::{Direction, DivergenceInfo, Hamiltonian, LeapfrogResult, Point};
-use crate::math::logaddexp;
-use crate::state::State;
-
-use crate::math_base::Math;
+use crate::dynamics::{Direction, DivergenceInfo, Hamiltonian, LeapfrogResult, Point, State};
+use crate::math::{Math, logaddexp};
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
@@ -343,7 +340,7 @@ mod tests {
     use rand::rng;
 
     use crate::{
-        Chain, Settings, adapt_strategy::test_logps::NormalLogp, cpu_math::CpuMath,
+        Chain, Settings, adapt_strategy::test_logps::NormalLogp, math::CpuMath,
         sampler::DiagGradNutsSettings,
     };
 

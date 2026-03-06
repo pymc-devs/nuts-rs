@@ -10,11 +10,10 @@ use rand::Rng;
 
 use crate::{
     Math, NutsError,
-    hamiltonian::{Hamiltonian, Point},
+    dynamics::{Hamiltonian, Point, State},
     nuts::{Collector, NutsOptions, SampleInfo, draw},
     sampler::Progress,
     sampler_stats::{SamplerStats, StatsDims},
-    state::State,
 };
 
 use anyhow::Result;

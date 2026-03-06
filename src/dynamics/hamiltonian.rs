@@ -7,9 +7,9 @@ use rand::{
 
 use crate::{
     Math, NutsError,
+    dynamics::{State, StatePool},
     nuts::Collector,
     sampler_stats::SamplerStats,
-    state::{State, StatePool},
 };
 
 /// Details about a divergence that might have occured during sampling

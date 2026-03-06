@@ -4,7 +4,7 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use crate::{hamiltonian::Point, math_base::Math};
+use crate::{dynamics::Point, math::Math};
 
 struct StateStorage<M: Math, P: Point<M>> {
     free_states: RefCell<Vec<Rc<InnerStateReusable<M, P>>>>,
@@ -123,10 +123,7 @@ impl<M: Math, P: Point<M>> Clone for State<M, P> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        cpu_math::CpuMath, sampler::test_logps::NormalLogp,
-        transformed_hamiltonian::TransformedPoint,
-    };
+    use crate::{dynamics::TransformedPoint, math::CpuMath, sampler::test_logps::NormalLogp};
 
     use super::*;
 

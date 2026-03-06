@@ -6,9 +6,9 @@ use nuts_storable::{HasDims, Storable, Value};
 use rand::RngExt;
 use thiserror::Error;
 
-use crate::{
-    math::{axpy, axpy_out, multiply, scalar_prods2, scalar_prods3, vector_dot},
-    math_base::{LogpError, Math},
+use super::{
+    math::{LogpError, Math},
+    util::{axpy, axpy_out, multiply, scalar_prods2, scalar_prods3, vector_dot},
 };
 
 #[derive(Debug)]

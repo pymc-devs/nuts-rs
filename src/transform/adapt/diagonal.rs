@@ -6,9 +6,8 @@ use serde::Serialize;
 
 use crate::{
     Math, NutsError, SamplerStats,
-    hamiltonian::Point,
+    dynamics::{Point, State},
     nuts::{Collector, NutsOptions},
-    state::State,
     transform::{DiagMassMatrix, adapt::strategy::MassMatrixAdaptStrategy},
 };
 

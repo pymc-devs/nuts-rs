@@ -4,14 +4,12 @@ use serde::Serialize;
 
 use crate::adapt_strategy::CombinedCollector;
 use crate::chain::AdaptStrategy;
-use crate::hamiltonian::{Hamiltonian, Point};
+use crate::dynamics::{Hamiltonian, Point, State, TransformedHamiltonian, TransformedPoint};
 use crate::nuts::{Collector, NutsOptions, SampleInfo};
 use crate::sampler_stats::{SamplerStats, StatsDims};
-use crate::state::State;
 use crate::stepsize::AcceptanceRateCollector;
 use crate::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
 use crate::transform::ExternalTransformation;
-use crate::transformed_hamiltonian::{TransformedHamiltonian, TransformedPoint};
 use crate::{Math, NutsError};
 
 #[derive(Clone, Copy, Debug, Serialize)]

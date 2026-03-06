@@ -1,10 +1,9 @@
 use serde::Serialize;
 
 use crate::{
-    hamiltonian::{DivergenceInfo, Point},
-    math_base::Math,
+    dynamics::{DivergenceInfo, Point, State},
+    math::Math,
     nuts::{Collector, NutsOptions},
-    state::State,
 };
 
 /// Settings for step size adaptation

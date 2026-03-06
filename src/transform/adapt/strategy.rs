@@ -2,10 +2,9 @@ use rand::Rng;
 
 use crate::{
     Math, NutsError, SamplerStats,
-    hamiltonian::Point,
+    dynamics::{Point, TransformedPoint},
     nuts::{Collector, NutsOptions},
     transform::Transformation,
-    transformed_hamiltonian::TransformedPoint,
 };
 
 pub trait MassMatrixAdaptStrategy<M: Math>: SamplerStats<M> {

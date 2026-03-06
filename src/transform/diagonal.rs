@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use nuts_derive::Storable;
 
-use crate::{math_base::Math, sampler_stats::SamplerStats, transform::Transformation};
+use crate::{math::Math, sampler_stats::SamplerStats, transform::Transformation};
 
 pub struct DiagMassMatrix<M: Math> {
     mean: M::Vector,

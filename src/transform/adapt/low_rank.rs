@@ -5,7 +5,7 @@ use itertools::Itertools;
 
 use crate::{
     LowRankSettings, Math, NutsError, SamplerStats,
-    hamiltonian::Point,
+    dynamics::Point,
     transform::{LowRankMassMatrix, MassMatrixAdaptStrategy, adapt::diagonal::DrawGradCollector},
 };
 

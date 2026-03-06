@@ -23,8 +23,7 @@ mod tests {
 
     use crate::{
         Math,
-        cpu_math::{CpuLogpFunc, CpuMath, CpuMathError},
-        math_base::LogpError,
+        math::{CpuLogpFunc, CpuMath, CpuMathError, LogpError},
         transform::{DiagMassMatrix, LowRankMassMatrix, LowRankSettings, Transformation},
     };
 
@@ -172,8 +171,6 @@ mod tests {
     /// exact variances.
     #[test]
     fn test_diag_transform_position_and_gradient() {
-        use crate::math_base::Math;
-
         // Target: N(0, diag(1, 4, 9))  =>  sigma = [1, 2, 3], inv_stds = [1, 0.5, 1/3]
         let sigma2 = [1f64, 4., 9.];
         let mut precision = Mat::zeros(3, 3);
@@ -253,8 +250,6 @@ mod tests {
     /// Round-trip: init_from_transformed_position recovers the original x and gradient.
     #[test]
     fn test_diag_round_trip() {
-        use crate::math_base::Math;
-
         let sigma2 = [2f64, 0.5, 3.];
         let mut precision = Mat::zeros(3, 3);
         for i in 0..3 {
@@ -323,8 +318,6 @@ mod tests {
     /// With a non-zero mean the adapted position should be (x - mu) / sigma.
     #[test]
     fn test_diag_nonzero_mean() {
-        use crate::math_base::Math;
-
         let sigma2 = [4f64, 1., 9.];
         let mu = [3f64, -1., 2.];
 
@@ -394,8 +387,6 @@ mod tests {
     /// the full adaptation path (update from exact draws/scores).
     #[test]
     fn test_lowrank_transform_position_and_gradient() {
-        use crate::math_base::Math;
-
         // Target: N(0, diag(1, 4, 9))
         let sigma2 = [1f64, 4., 9.];
         let mut precision = Mat::zeros(3, 3);
@@ -463,8 +454,6 @@ mod tests {
     /// Low-rank round-trip: init_from_transformed_position recovers original x.
     #[test]
     fn test_lowrank_round_trip() {
-        use crate::math_base::Math;
-
         let sigma2 = [2f64, 0.5, 3.];
         let mut precision = Mat::zeros(3, 3);
         for i in 0..3 {
@@ -534,8 +523,6 @@ mod tests {
     /// So this is actually a full preconditioner for N(0, diag(4, 1, 1)).
     #[test]
     fn test_lowrank_with_rank1_correction() {
-        use crate::math_base::Math;
-
         // Target precision: diag(1/4, 1, 1)  <=>  N(0, diag(4, 1, 1))
         let mut precision = Mat::zeros(3, 3);
         precision[(0, 0)] = 0.25;
@@ -624,8 +611,6 @@ mod tests {
     /// Non-zero mean with low-rank: the translation is applied correctly.
     #[test]
     fn test_lowrank_nonzero_mean() {
-        use crate::math_base::Math;
-
         let sigma2 = [4f64, 1., 9.];
         let mu = [2f64, -1., 3.];
         let mut precision = Mat::zeros(3, 3);

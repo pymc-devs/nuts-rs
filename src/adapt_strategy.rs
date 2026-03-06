@@ -7,16 +7,16 @@ use serde::Serialize;
 
 use super::stepsize::AcceptanceRateCollector;
 use super::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
+use crate::dynamics::{
+    DivergenceInfo, Hamiltonian, Point, State, TransformedHamiltonian, TransformedPoint,
+};
 use crate::transform::MassMatrixAdaptStrategy;
-use crate::transformed_hamiltonian::{TransformedHamiltonian, TransformedPoint};
 use crate::{
     NutsError,
     chain::AdaptStrategy,
-    hamiltonian::{DivergenceInfo, Hamiltonian, Point},
-    math_base::Math,
+    math::Math,
     nuts::{Collector, NutsOptions},
     sampler_stats::{SamplerStats, StatsDims},
-    state::State,
 };
 
 pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
@@ -317,7 +317,7 @@ where
 pub mod test_logps {
     use std::collections::HashMap;
 
-    use crate::{cpu_math::CpuLogpFunc, math_base::LogpError};
+    use crate::math::{CpuLogpFunc, LogpError};
     use nuts_storable::HasDims;
     use thiserror::Error;
 
@@ -375,7 +375,7 @@ pub mod test_logps {
             &mut self,
             _rng: &mut R,
             array: &[f64],
-        ) -> Result<Self::ExpandedVector, crate::cpu_math::CpuMathError>
+        ) -> Result<Self::ExpandedVector, crate::math::CpuMathError>
         where
             R: rand::Rng + ?Sized,
         {
@@ -391,9 +391,9 @@ mod test {
     use crate::{
         Chain, DiagAdaptExpSettings,
         chain::{NutsChain, StatOptions},
-        cpu_math::CpuMath,
+        dynamics::{TransformedHamiltonian, TransformedPointStatsOptions},
+        math::CpuMath,
         transform::{DiagAdaptStrategy, DiagMassMatrix},
-        transformed_hamiltonian::{TransformedHamiltonian, TransformedPointStatsOptions},
     };
 
     #[test]
