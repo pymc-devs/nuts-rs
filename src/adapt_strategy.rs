@@ -1,3 +1,5 @@
+//! Orchestrate the tuning schedule that jointly adapts step size and mass matrix during warmup.
+
 use std::{fmt::Debug, marker::PhantomData};
 
 use nuts_derive::Storable;

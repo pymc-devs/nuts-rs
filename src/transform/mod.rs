@@ -1,3 +1,5 @@
+//! Coordinate transformations that map the original parameter space to a whitened space for more efficient sampling.
+
 mod adapt;
 mod diagonal;
 mod external;

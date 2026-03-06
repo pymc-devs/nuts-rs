@@ -1,3 +1,5 @@
+//! Define the interface for online mass-matrix estimators that update the transformation from samples collected during warmup.
+
 use rand::Rng;
 
 use crate::{

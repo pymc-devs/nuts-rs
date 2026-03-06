@@ -1,3 +1,5 @@
+//! In-memory storage backend that accumulates draws and statistics into plain Rust `HashMap`s.
+
 use anyhow::Result;
 use nuts_storable::{ItemType, Value};
 use std::collections::HashMap;

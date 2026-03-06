@@ -1,3 +1,5 @@
+//! Online low-rank mass-matrix estimator that accumulates draw/gradient windows and fits a low-rank + diagonal approximation.
+
 use std::collections::VecDeque;
 
 use faer::{Col, ColRef, Mat, Scale};

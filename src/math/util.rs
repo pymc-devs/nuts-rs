@@ -1,3 +1,5 @@
+//! Low-level SIMD-accelerated linear algebra primitives used internally by the CPU backend.
+
 use itertools::izip;
 use pulp::{Arch, WithSimd};
 

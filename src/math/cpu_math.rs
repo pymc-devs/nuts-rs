@@ -1,3 +1,5 @@
+//! CPU backend that calls the user-supplied logp function and provides the required vector operations.
+
 use std::{collections::HashMap, error::Error, fmt::Debug, mem::replace};
 
 use faer::{Col, Mat};

@@ -1,3 +1,5 @@
+//! Manage efficient allocation and reuse of phase-space points across tree expansion steps.
+
 use std::{
     cell::RefCell,
     fmt::Debug,

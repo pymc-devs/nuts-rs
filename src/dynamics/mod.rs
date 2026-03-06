@@ -1,3 +1,6 @@
+//! Hamiltonian dynamics: leapfrog integration, phase-space state management,
+//! and the transformed Hamiltonian that operates in a whitened parameter space.
+
 mod hamiltonian;
 mod state;
 mod transformed_hamiltonian;

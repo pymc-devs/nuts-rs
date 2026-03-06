@@ -1,3 +1,5 @@
+//! Apache Arrow storage backend that accumulates draws and statistics as typed record batches.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

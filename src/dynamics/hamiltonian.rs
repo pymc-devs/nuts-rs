@@ -1,3 +1,5 @@
+//! Define the abstract interface for a Hamiltonian system (leapfrog, U-turn test, divergence detection).
+
 use std::{fmt::Debug, sync::Arc};
 
 use rand::{

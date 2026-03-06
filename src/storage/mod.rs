@@ -1,3 +1,5 @@
+//! Trace storage backends for recording per-draw statistics and samples to various output formats.
+
 #[cfg(feature = "arrow")]
 mod arrow;
 mod core;

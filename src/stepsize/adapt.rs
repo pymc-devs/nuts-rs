@@ -1,3 +1,5 @@
+//! Coordinate step-size search at initialisation and dispatch to the chosen adaptation algorithm during tuning.
+
 use itertools::Either;
 use nuts_derive::Storable;
 use rand::distr::Uniform;

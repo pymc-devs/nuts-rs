@@ -1,3 +1,6 @@
+//! High-level sampler entry points: `Settings` presets, the parallel `Sampler`,
+//! and `sample_sequentially` for running one or many chains.
+
 use anyhow::{Context, Result, bail};
 use itertools::Itertools;
 use nuts_storable::{HasDims, Storable, Value};
