@@ -876,7 +876,7 @@ impl<F: Send + 'static> Sampler<F> {
                             Ok(SamplerCommand::Inspect) => {
                                 let traces = chains
                                     .iter()
-                                    .map(|chain| {
+                                    .filter_map(|chain| {
                                         chain
                                             .trace
                                             .lock()
@@ -884,7 +884,6 @@ impl<F: Send + 'static> Sampler<F> {
                                             .as_ref()
                                             .map(|v| v.inspect())
                                     })
-                                    .flatten()
                                     .collect_vec();
                                 let finalized_trace = trace.inspect(traces)?;
                                 responses_tx.send(SamplerResponse::Inspect(finalized_trace)).map_err(|e| {

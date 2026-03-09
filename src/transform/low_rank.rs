@@ -1,7 +1,7 @@
 //! Augment the diagonal transformation with a low-rank spectral correction for correlated posteriors.
 
 use std::fmt::Debug;
-use std::iter::repeat;
+use std::iter::repeat_n;
 
 use faer::{Col, ColRef, Mat, MatRef};
 use nuts_derive::Storable;
@@ -249,7 +249,10 @@ impl<M: Math> SamplerStats<M> for LowRankMassMatrix<M> {
                 .map(|inner| math.eigs_as_array(&inner.vals_sqrt));
             let mut eigvals = eigvals.map(|x| x.into_vec());
             if let Some(ref mut eigvals) = eigvals {
-                eigvals.extend(repeat(f64::NAN).take(stds.as_ref().unwrap().len() - eigvals.len()));
+                eigvals.extend(repeat_n(
+                    f64::NAN,
+                    stds.as_ref().unwrap().len() - eigvals.len(),
+                ));
             }
             MatrixStats {
                 mass_matrix_eigvals: eigvals,

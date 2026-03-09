@@ -464,7 +464,7 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         let point = state.try_point_mut().expect("State already in use");
         math.read_from_slice(&mut point.untransformed_position, untransformed_position);
         math.logp_array(
-            &mut point.untransformed_position,
+            &point.untransformed_position,
             &mut point.untransformed_gradient,
         )
         .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
