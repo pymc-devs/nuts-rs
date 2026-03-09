@@ -121,6 +121,8 @@ pub trait Math: HasDims {
     fn array_all_finite(&mut self, array: &Self::Vector) -> bool;
     fn array_all_finite_and_nonzero(&mut self, array: &Self::Vector) -> bool;
     fn array_mult(&mut self, array1: &Self::Vector, array2: &Self::Vector, dest: &mut Self::Vector);
+    fn array_mult_inplace(&mut self, array1: &mut Self::Vector, array2: &Self::Vector);
+    fn array_recip(&mut self, array: &Self::Vector, dest: &mut Self::Vector);
 
     /// Apply the low-rank linear map `(I + U * (diag(vals) - I) * U^T) * rhs` into `dest`.
     ///
@@ -132,6 +134,13 @@ pub trait Math: HasDims {
         vals: &Self::EigValues,
         rhs: &Self::Vector,
         dest: &mut Self::Vector,
+    );
+
+    fn apply_lowrank_transform_inplace(
+        &mut self,
+        vecs: &Self::EigVectors,
+        vals: &Self::EigValues,
+        rhs_and_dest: &mut Self::Vector,
     );
 
     fn array_mult_eigs(
@@ -166,8 +175,8 @@ pub trait Math: HasDims {
     );
     fn array_update_var_inv_std_draw(
         &mut self,
-        variance_out: &mut Self::Vector,
         inv_std: &mut Self::Vector,
+        std: &mut Self::Vector,
         draw_var: &Self::Vector,
         scale: f64,
         fill_invalid: Option<f64>,
@@ -175,8 +184,8 @@ pub trait Math: HasDims {
     );
     fn array_update_var_inv_std_draw_grad(
         &mut self,
-        variance_out: &mut Self::Vector,
         inv_std: &mut Self::Vector,
+        std: &mut Self::Vector,
         draw_var: &Self::Vector,
         grad_var: &Self::Vector,
         fill_invalid: Option<f64>,
@@ -185,8 +194,8 @@ pub trait Math: HasDims {
 
     fn array_update_var_inv_std_grad(
         &mut self,
-        variance_out: &mut Self::Vector,
         inv_std: &mut Self::Vector,
+        std: &mut Self::Vector,
         gradient: &Self::Vector,
         fill_invalid: f64,
         clamp: (f64, f64),

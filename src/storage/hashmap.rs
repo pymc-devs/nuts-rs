@@ -86,7 +86,7 @@ pub struct HashMapResult {
 
 impl HashMapChainStorage {
     /// Create a new chain storage with HashMaps for parameters and samples
-    fn new(param_types: &Vec<(String, ItemType)>, draw_types: &Vec<(String, ItemType)>) -> Self {
+    fn new(param_types: &[(String, ItemType)], draw_types: &[(String, ItemType)]) -> Self {
         let warmup_stats = param_types
             .iter()
             .cloned()
