@@ -7,7 +7,7 @@ use faer::{Col, ColRef, Mat, MatRef};
 use nuts_derive::Storable;
 use serde::Serialize;
 
-use crate::transform::Transformation;
+use crate::transform::{DiagMassMatrix, Transformation};
 use crate::{Math, sampler_stats::SamplerStats};
 
 pub fn mat_all_finite(mat: &MatRef<f64>) -> bool {
@@ -77,6 +77,10 @@ impl<M: Math> InnerMatrix<M> {
             num_eigenvalues,
         }
     }
+
+    fn logdet(&self) -> f64 {
+        self.logdet_contribution
+    }
 }
 
 /// Low-rank + diagonal affine transformation.
@@ -96,14 +100,9 @@ impl<M: Math> InnerMatrix<M> {
 /// operate entirely in that space.  When no eigenvectors are available
 /// (early adaptation) the transform falls back to the pure diagonal case.
 pub struct LowRankMassMatrix<M: Math> {
-    /// μ* = x̄ + σ² ⊙ ᾱ — translation centre (target space)
-    mean: M::Vector,
-    variance: M::Vector,
-    stds: M::Vector,
-    inv_stds: M::Vector,
+    diag: DiagMassMatrix<M>,
     inner: Option<InnerMatrix<M>>,
     settings: LowRankSettings,
-    /// log|det J_{F⁻¹}| = Σ log(σᵢ⁻¹) − ½ Σ log(λᵢ), cached so leapfrog never calls write_to_slice.
     logdet: f64,
     /// Monotonically increasing id; bumped whenever the matrix changes.
     id: i64,
@@ -112,10 +111,7 @@ pub struct LowRankMassMatrix<M: Math> {
 impl<M: Math> Debug for LowRankMassMatrix<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LowRankMassMatrix")
-            .field("mean", &self.mean)
-            .field("variance", &self.variance)
-            .field("stds", &self.stds)
-            .field("inv_stds", &self.inv_stds)
+            .field("diag", &self.diag)
             .field("inner", &self.inner)
             .field("settings", &self.settings)
             .field("id", &self.id)
@@ -126,10 +122,7 @@ impl<M: Math> Debug for LowRankMassMatrix<M> {
 impl<M: Math> LowRankMassMatrix<M> {
     pub fn new(math: &mut M, settings: LowRankSettings) -> Self {
         Self {
-            mean: math.new_array(),
-            variance: math.new_array(),
-            inv_stds: math.new_array(),
-            stds: math.new_array(),
+            diag: DiagMassMatrix::new(math, settings.store_mass_matrix),
             settings,
             logdet: 0f64,
             inner: None,
@@ -141,24 +134,15 @@ impl<M: Math> LowRankMassMatrix<M> {
     pub fn update_from_grad(
         &mut self,
         math: &mut M,
-        grad: &<M as Math>::Vector,
+        pos: &M::Vector,
+        grad: &M::Vector,
         fill_invalid: f64,
         clamp: (f64, f64),
     ) {
-        math.array_update_var_inv_std_grad(
-            &mut self.variance,
-            &mut self.inv_stds,
-            grad,
-            fill_invalid,
-            clamp,
-        );
-        let mut inv_std_vals = vec![0f64; math.dim()];
-        math.write_to_slice(&self.inv_stds, &mut inv_std_vals);
-        self.logdet = inv_std_vals.iter().map(|v| v.ln()).sum();
-        inv_std_vals.iter_mut().for_each(|x| *x = x.recip());
-        math.read_from_slice(&mut self.stds, &inv_std_vals);
-        // No mean information yet — keep at zero.
-        math.fill_array(&mut self.mean, 0f64);
+        self.inner = None;
+        self.diag
+            .update_diag_grad(math, pos, grad, fill_invalid, clamp);
+        self.logdet = self.diag.logdet();
         self.id += 1;
     }
 
@@ -171,41 +155,27 @@ impl<M: Math> LowRankMassMatrix<M> {
     pub fn update(
         &mut self,
         math: &mut M,
-        mut stds: Col<f64>,
+        stds: Col<f64>,
         mean: Col<f64>,
         vals: Col<f64>,
         vecs: Mat<f64>,
     ) {
-        math.read_from_slice(&mut self.stds, stds.try_as_col_major().unwrap().as_slice());
-        math.read_from_slice(&mut self.mean, mean.try_as_col_major().unwrap().as_slice());
-
-        stds.iter_mut().for_each(|x| *x = x.recip());
-        math.read_from_slice(
-            &mut self.inv_stds,
-            stds.try_as_col_major().unwrap().as_slice(),
-        );
-
-        stds.iter_mut().for_each(|x| *x = x.recip() * x.recip());
-        math.read_from_slice(
-            &mut self.variance,
-            stds.try_as_col_major().unwrap().as_slice(),
-        );
-
-        if col_all_finite(&vals.as_ref()) & mat_all_finite(&vecs.as_ref()) {
-            self.inner = Some(InnerMatrix::new(math, vals, vecs));
-        } else {
-            self.inner = None;
+        if (!col_all_finite(&stds.as_ref())) | (!col_all_finite(&mean.as_ref())) {
+            return;
         }
-        // Cache the full logdet: diagonal part + low-rank correction.
-        // write_to_slice here is fine — this runs only on adaptation updates, not leapfrog steps.
-        let mut std_vals = vec![0f64; math.dim()];
-        math.write_to_slice(&self.inv_stds, &mut std_vals);
-        let diag_part: f64 = std_vals.iter().map(|v| v.ln()).sum();
-        let lowrank_part = self
-            .inner
-            .as_ref()
-            .map_or(0.0, |inner| inner.logdet_contribution);
-        self.logdet = diag_part + lowrank_part;
+        if (!col_all_finite(&vals.as_ref())) | (!mat_all_finite(&vecs.as_ref())) {
+            return;
+        }
+
+        let mut stds_array = math.new_array();
+        math.read_from_slice(&mut stds_array, stds.try_as_col_major().unwrap().as_slice());
+        let mut mean_array = math.new_array();
+        math.read_from_slice(&mut mean_array, mean.try_as_col_major().unwrap().as_slice());
+        self.diag.set_transform(math, &stds_array, &mean_array);
+
+        let inner = InnerMatrix::new(math, vals, vecs);
+        self.logdet = inner.logdet() + self.diag.logdet();
+        self.inner = Some(inner);
         self.id += 1;
     }
 }
@@ -242,7 +212,7 @@ impl<M: Math> SamplerStats<M> for LowRankMassMatrix<M> {
 
     fn extract_stats(&self, math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
         if self.settings.store_mass_matrix {
-            let stds = Some(math.box_array(&self.stds));
+            let stds = Some(math.box_array(self.diag.stds()));
             let eigvals = self
                 .inner
                 .as_ref()
@@ -325,61 +295,74 @@ impl<M: Math> Transformation<M> for LowRankMassMatrix<M> {
 }
 
 impl<M: Math> LowRankMassMatrix<M> {
-    /// z = F⁻¹(x) = (I + U (diag(λ^{-1/2}) − I) Uᵀ) · ((x − μ) ⊙ σ⁻¹)
-    fn compute_transformed_position(&self, math: &mut M, x: &M::Vector, z: &mut M::Vector) {
-        // centered = x − μ
-        let mut centered = math.new_array();
-        math.copy_into(x, &mut centered);
-        math.axpy(&self.mean, &mut centered, -1.0);
+    fn compute_transformed_position(
+        &self,
+        math: &mut M,
+        untransformed_position: &M::Vector,
+        transformed_position: &mut M::Vector,
+    ) {
+        math.axpy_out(
+            &self.diag.mean(),
+            &untransformed_position,
+            -1.0,
+            transformed_position,
+        );
+        math.array_mult_inplace(transformed_position, self.diag.inv_stds());
 
-        // scaled = (x − μ) ⊙ inv_stds
-        let mut scaled = math.new_array();
-        math.array_mult(&centered, &self.inv_stds, &mut scaled);
-
-        match &self.inner {
-            None => math.copy_into(&scaled, z),
-            Some(inner) => {
-                // z = (I + U (diag(λ^{-1/2}) − I) Uᵀ) · scaled
-                math.apply_lowrank_transform(&inner.vecs, &inner.vals_sqrt_inv, &scaled, z);
-            }
+        if let Some(inner) = &self.inner {
+            math.apply_lowrank_transform_inplace(
+                &inner.vecs,
+                &inner.vals_sqrt_inv,
+                transformed_position,
+            );
         }
     }
 
-    /// x = F(z) = σ ⊙ (I + U (diag(λ^{1/2}) − I) Uᵀ) · z + μ
-    fn compute_untransformed_position(&self, math: &mut M, z: &M::Vector, x: &mut M::Vector) {
+    fn compute_untransformed_position(
+        &self,
+        math: &mut M,
+        transformed_position: &M::Vector,
+        untransformed_position: &mut M::Vector,
+    ) {
         match &self.inner {
             None => {
-                math.array_mult(z, &self.stds, x);
+                math.array_mult(
+                    transformed_position,
+                    &self.diag.stds(),
+                    untransformed_position,
+                );
             }
             Some(inner) => {
-                // tmp = (I + U (diag(λ^{1/2}) − I) Uᵀ) · z
-                let mut tmp = math.new_array();
-                math.apply_lowrank_transform(&inner.vecs, &inner.vals_sqrt, z, &mut tmp);
-                // x = σ ⊙ tmp
-                math.array_mult(&tmp, &self.stds, x);
+                math.apply_lowrank_transform(
+                    &inner.vecs,
+                    &inner.vals_sqrt,
+                    transformed_position,
+                    untransformed_position,
+                );
+                math.array_mult_inplace(untransformed_position, &self.diag.stds());
             }
         }
-        // x += μ
-        math.axpy(&self.mean, x, 1.0);
+        math.axpy(&self.diag.mean(), untransformed_position, 1.0);
     }
 
-    /// β = J_Fᵀ · α = (I + U (diag(λ^{1/2}) − I) Uᵀ) · (σ ⊙ α)
     fn compute_transformed_gradient(
         &self,
         math: &mut M,
-        grad_x: &M::Vector,
-        grad_z: &mut M::Vector,
+        untransformed_gradient: &M::Vector,
+        transformed_gradient: &mut M::Vector,
     ) {
-        // scaled = σ ⊙ grad_x
-        let mut scaled = math.new_array();
-        math.array_mult(grad_x, &self.stds, &mut scaled);
+        math.array_mult(
+            untransformed_gradient,
+            self.diag.stds(),
+            transformed_gradient,
+        );
 
-        match &self.inner {
-            None => math.copy_into(&scaled, grad_z),
-            Some(inner) => {
-                // grad_z = (I + U (diag(λ^{1/2}) − I) Uᵀ) · scaled
-                math.apply_lowrank_transform(&inner.vecs, &inner.vals_sqrt, &scaled, grad_z);
-            }
+        if let Some(inner) = &self.inner {
+            math.apply_lowrank_transform_inplace(
+                &inner.vecs,
+                &inner.vals_sqrt,
+                transformed_gradient,
+            );
         }
     }
 

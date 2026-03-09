@@ -221,6 +221,7 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
 
         mass_matrix.update_diag_grad(
             math,
+            point.position(),
             point.gradient(),
             1f64,
             (INIT_LOWER_LIMIT, INIT_UPPER_LIMIT),

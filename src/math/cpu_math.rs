@@ -2,11 +2,15 @@
 
 use std::{collections::HashMap, error::Error, fmt::Debug, mem::replace};
 
-use faer::{Col, Mat};
+use faer::linalg::matmul::matmul;
+
+use faer::{Accum, Col, Mat, Par};
 use itertools::{Itertools, izip};
 use nuts_storable::{HasDims, Storable, Value};
 use rand::RngExt;
 use thiserror::Error;
+
+use crate::math::util::multiply_inplace;
 
 use super::{
     math::{LogpError, Math},
@@ -17,12 +21,19 @@ use super::{
 pub struct CpuMath<F: CpuLogpFunc> {
     logp_func: F,
     arch: pulp::Arch,
+    /// Preallocated scratch buffer for the low-rank transform intermediate vector
+    /// (U^T * rhs), sized to the current rank (vecs.ncols()). Resized as needed.
+    lowrank_scratch: Col<f64>,
 }
 
 impl<F: CpuLogpFunc> CpuMath<F> {
     pub fn new(logp_func: F) -> Self {
         let arch = pulp::Arch::new();
-        Self { logp_func, arch }
+        Self {
+            logp_func,
+            arch,
+            lowrank_scratch: Col::zeros(0),
+        }
     }
 }
 
@@ -303,6 +314,18 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         )
     }
 
+    fn array_mult_inplace(&mut self, array1: &mut Self::Vector, array2: &Self::Vector) {
+        multiply_inplace(
+            self.arch,
+            array1.try_as_col_major_mut().unwrap().as_slice_mut(),
+            array2.try_as_col_major().unwrap().as_slice(),
+        )
+    }
+
+    fn array_recip(&mut self, array: &Self::Vector, dest: &mut Self::Vector) {
+        faer::zip!(array, dest).for_each(|faer::unzip!(val, dest)| *dest = val.recip())
+    }
+
     fn apply_lowrank_transform(
         &mut self,
         vecs: &Self::EigVectors,
@@ -316,9 +339,86 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         }
         // dest = (I + U * (diag(vals) - I) * U^T) * rhs
         //      = rhs + U * (diag(vals) - I) * (U^T * rhs)
-        let trafo = vecs.transpose() * rhs;
-        let result = vecs * (vals.as_diagonal() * (&trafo) - (&trafo)) + rhs;
-        let _ = replace(dest, result);
+
+        let rank = vecs.ncols();
+
+        // Resize scratch if needed (rank can change across calls)
+        if self.lowrank_scratch.nrows() != rank {
+            self.lowrank_scratch.resize_with(rank, |_| 0.0);
+        }
+
+        // scratch = U^T * rhs
+        matmul(
+            self.lowrank_scratch.as_mut(),
+            Accum::Replace,
+            vecs.transpose(),
+            rhs.as_ref(),
+            1.0,
+            Par::Seq,
+        );
+
+        // scratch = (diag(vals) - I) * scratch  (element-wise: scratch[i] *= vals[i] - 1)
+        self.lowrank_scratch
+            .iter_mut()
+            .zip(vals.iter())
+            .for_each(|(s, &v)| *s *= v - 1.0);
+
+        // dest = rhs + U * scratch
+        dest.copy_from(rhs);
+        matmul(
+            dest.as_mut(),
+            Accum::Add,
+            vecs.as_ref(),
+            self.lowrank_scratch.as_ref(),
+            1.0,
+            Par::Seq,
+        );
+    }
+
+    fn apply_lowrank_transform_inplace(
+        &mut self,
+        vecs: &Self::EigVectors,
+        vals: &Self::EigValues,
+        rhs_and_dest: &mut Self::Vector,
+    ) {
+        if vecs.ncols() == 0 {
+            return;
+        }
+        // rhs_and_dest = (I + U * (diag(vals) - I) * U^T) * rhs_and_dest
+        //              = rhs_and_dest + U * (diag(vals) - I) * (U^T * rhs_and_dest)
+
+        let rank = vecs.ncols();
+
+        // Resize scratch if needed
+        if self.lowrank_scratch.nrows() != rank {
+            self.lowrank_scratch.resize_with(rank, |_| 0.0);
+        }
+
+        // scratch = U^T * rhs_and_dest
+        matmul(
+            self.lowrank_scratch.as_mut(),
+            Accum::Replace,
+            vecs.transpose(),
+            rhs_and_dest.as_ref(),
+            1.0,
+            Par::Seq,
+        );
+
+        // scratch = (diag(vals) - I) * scratch  (element-wise: scratch[i] *= vals[i] - 1)
+        self.lowrank_scratch
+            .iter_mut()
+            .zip(vals.iter())
+            .for_each(|(s, &v)| *s *= v - 1.0);
+
+        // rhs_and_dest += U * scratch
+        matmul(
+            rhs_and_dest.as_mut(),
+            Accum::Add,
+            vecs.as_ref(),
+            self.lowrank_scratch.as_ref(),
+            1.0,
+            Par::Seq,
+        );
     }
 
     fn array_mult_eigs(
@@ -419,8 +519,8 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
 
     fn array_update_var_inv_std_draw(
         &mut self,
-        variance_out: &mut Self::Vector,
         inv_std: &mut Self::Vector,
+        std: &mut Self::Vector,
         draw_var: &Self::Vector,
         scale: f64,
         fill_invalid: Option<f64>,
@@ -428,8 +528,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     ) {
         self.arch.dispatch(|| {
             izip!(
-                variance_out
-                    .try_as_col_major_mut()
+                std.try_as_col_major_mut()
                     .unwrap()
                     .as_slice_mut()
                     .iter_mut(),
@@ -440,16 +539,16 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
                     .iter_mut(),
                 draw_var.try_as_col_major().unwrap().as_slice().iter(),
             )
-            .for_each(|(var_out, inv_std_out, &draw_var)| {
+            .for_each(|(std_out, inv_std_out, &draw_var)| {
                 let draw_var = draw_var * scale;
                 if (!draw_var.is_finite()) | (draw_var == 0f64) {
                     if let Some(fill_val) = fill_invalid {
-                        *var_out = fill_val;
+                        *std_out = fill_val.sqrt();
                         *inv_std_out = fill_val.recip().sqrt();
                     }
                 } else {
                     let val = draw_var.clamp(clamp.0, clamp.1);
-                    *var_out = val;
+                    *std_out = val.sqrt();
                     *inv_std_out = val.recip().sqrt();
                 }
             });
@@ -458,8 +557,8 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
 
     fn array_update_var_inv_std_draw_grad(
         &mut self,
-        variance_out: &mut Self::Vector,
         inv_std: &mut Self::Vector,
+        std: &mut Self::Vector,
         draw_var: &Self::Vector,
         grad_var: &Self::Vector,
         fill_invalid: Option<f64>,
@@ -467,8 +566,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     ) {
         self.arch.dispatch(|| {
             izip!(
-                variance_out
-                    .try_as_col_major_mut()
+                std.try_as_col_major_mut()
                     .unwrap()
                     .as_slice_mut()
                     .iter_mut(),
@@ -480,16 +578,16 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
                 draw_var.try_as_col_major().unwrap().as_slice().iter(),
                 grad_var.try_as_col_major().unwrap().as_slice().iter(),
             )
-            .for_each(|(var_out, inv_std_out, &draw_var, &grad_var)| {
+            .for_each(|(std_out, inv_std_out, &draw_var, &grad_var)| {
                 let val = (draw_var / grad_var).sqrt();
                 if (!val.is_finite()) | (val == 0f64) {
                     if let Some(fill_val) = fill_invalid {
-                        *var_out = fill_val;
+                        *std_out = fill_val.sqrt();
                         *inv_std_out = fill_val.recip().sqrt();
                     }
                 } else {
                     let val = val.clamp(clamp.0, clamp.1);
-                    *var_out = val;
+                    *std_out = val.sqrt();
                     *inv_std_out = val.recip().sqrt();
                 }
             });
@@ -498,16 +596,15 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
 
     fn array_update_var_inv_std_grad(
         &mut self,
-        variance_out: &mut Self::Vector,
         inv_std: &mut Self::Vector,
+        std: &mut Self::Vector,
         gradient: &Self::Vector,
         fill_invalid: f64,
         clamp: (f64, f64),
     ) {
         self.arch.dispatch(|| {
             izip!(
-                variance_out
-                    .try_as_col_major_mut()
+                std.try_as_col_major_mut()
                     .unwrap()
                     .as_slice_mut()
                     .iter_mut(),
@@ -518,10 +615,10 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
                     .iter_mut(),
                 gradient.try_as_col_major().unwrap().as_slice().iter(),
             )
-            .for_each(|(var_out, inv_std_out, &grad_var)| {
+            .for_each(|(std_out, inv_std_out, &grad_var)| {
                 let val = grad_var.abs().clamp(clamp.0, clamp.1).recip();
                 let val = if val.is_finite() { val } else { fill_invalid };
-                *var_out = val;
+                *std_out = val.sqrt();
                 *inv_std_out = val.recip().sqrt();
             });
         });
@@ -764,6 +861,7 @@ impl<M: CpuLogpFunc + Clone> Clone for CpuMath<M> {
         Self {
             logp_func: self.logp_func.clone(),
             arch: self.arch,
+            lowrank_scratch: Col::zeros(self.lowrank_scratch.nrows()),
         }
     }
 }

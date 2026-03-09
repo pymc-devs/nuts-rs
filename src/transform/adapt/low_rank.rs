@@ -114,7 +114,7 @@ impl LowRankMassMatrixStrategy {
 /// Centre and rescale draws and gradients in-place.
 ///
 /// Returns `(stds, mean)` where
-///   `stds[i] = sqrt(var(x_i) / var(α_i))`  — diagonal scale σ
+///   `stds[i] = sqrt(sqrt(var(x_i) / var(α_i)))`  — diagonal scale σ
 ///   `mean[i] = x̄_i + σᵢ² · ᾱᵢ`             — optimal translation μ*
 ///
 /// After this call each column of `draws` holds `(xᵢ − x̄) / (σ · n)`
@@ -143,7 +143,7 @@ fn rescale_points(draws: &mut Mat<f64>, grads: &mut Mat<f64>) -> (Col<f64>, Col<
             .sum::<f64>()
             / n;
 
-        let sigma = (draw_var / grad_var).sqrt();
+        let sigma = (draw_var / grad_var).sqrt().sqrt();
 
         // μ* = x̄ + σ² · ᾱ
         mean[row] = draw_mean + sigma * sigma * grad_mean;
@@ -249,7 +249,13 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for LowRankMassMatrixStrategy {
         _rng: &mut R,
     ) -> Result<(), NutsError> {
         self.add_draw(math, point);
-        mass_matrix.update_from_grad(math, point.gradient(), 1f64, (1e-20, 1e20));
+        mass_matrix.update_from_grad(
+            math,
+            point.position(),
+            point.gradient(),
+            1f64,
+            (1e-20, 1e20),
+        );
         Ok(())
     }
 

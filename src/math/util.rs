@@ -70,6 +70,47 @@ pub fn multiply(arch: Arch, x: &[f64], y: &[f64], out: &mut [f64]) {
     arch.dispatch(Multiply { x, y, out })
 }
 
+struct MultiplyInplace<'a> {
+    x: &'a [f64],
+    out: &'a mut [f64],
+}
+
+impl<'a> WithSimd for MultiplyInplace<'a> {
+    type Output = ();
+
+    #[inline(always)]
+    fn with_simd<S: pulp::Simd>(self, simd: S) -> Self::Output {
+        let x = self.x;
+        let out = self.out;
+
+        let (x_out, x_tail) = S::as_simd_f64s(x);
+        let (out_head, out_tail) = S::as_mut_simd_f64s(out);
+
+        let (out_arrays, out_simd_tail) = pulp::as_arrays_mut::<4, _>(out_head);
+        let (x_arrays, x_simd_tail) = pulp::as_arrays::<4, _>(x_out);
+
+        izip!(out_arrays, x_arrays).for_each(|([out0, out1, out2, out3], [x0, x1, x2, x3])| {
+            *out0 = simd.mul_f64s(*x0, *out0);
+            *out1 = simd.mul_f64s(*x1, *out1);
+            *out2 = simd.mul_f64s(*x2, *out2);
+            *out3 = simd.mul_f64s(*x3, *out3);
+        });
+
+        izip!(out_simd_tail.iter_mut(), x_simd_tail.iter(),).for_each(|(out, &x)| {
+            *out = simd.mul_f64s(x, *out);
+        });
+
+        izip!(out_tail.iter_mut(), x_tail.iter()).for_each(|(out, &x)| {
+            *out = x * (*out);
+        });
+    }
+}
+
+#[inline(never)]
+pub fn multiply_inplace(arch: Arch, out: &mut [f64], x: &[f64]) {
+    arch.dispatch(MultiplyInplace { x, out })
+}
+
 struct ScalarProds2<'a> {
     positive1: &'a [f64],
     positive2: &'a [f64],
