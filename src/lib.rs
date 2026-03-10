@@ -129,7 +129,7 @@ pub use model::Model;
 pub use nuts::NutsError;
 pub use sampler::{
     ChainProgress, DiagGradNutsSettings, LowRankNutsSettings, NutsSettings, Progress,
-    ProgressCallback, Sampler, SamplerWaitResult, Settings, TransformedNutsSettings,
+    ProgressCallback, SampleData, Sampler, SamplerWaitResult, Settings, TransformedNutsSettings,
     sample_sequentially,
 };
 pub use sampler_stats::SamplerStats;

@@ -1,7 +1,7 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use itertools::Itertools;
 use nuts_storable::{HasDims, Storable, Value};
-use rand::{Rng, SeedableRng, rngs::ChaCha8Rng, rngs::SmallRng};
+use rand::{rngs::ChaCha8Rng, rngs::SmallRng, Rng, SeedableRng};
 use rayon::{ScopeFifo, ThreadPoolBuilder};
 use serde::Serialize;
 use std::{
@@ -9,17 +9,16 @@ use std::{
     fmt::Debug,
     ops::Deref,
     sync::{
-        Arc, Mutex,
         mpsc::{
-            Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel,
+            channel, sync_channel, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError,
         },
+        Arc, Mutex,
     },
-    thread::{JoinHandle, spawn},
+    thread::{spawn, JoinHandle},
     time::{Duration, Instant},
 };
 
 use crate::{
-    DiagAdaptExpSettings,
     adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy, GlobalStrategyStatsOptions},
     chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
     euclidean_hamiltonian::EuclideanHamiltonian,
@@ -33,6 +32,7 @@ use crate::{
     storage::{ChainStorage, StorageConfig, TraceStorage},
     transform_adapt_strategy::{TransformAdaptation, TransformedSettings},
     transformed_hamiltonian::{TransformedHamiltonian, TransformedPointStatsOptions},
+    DiagAdaptExpSettings,
 };
 
 /// All sampler configurations implement this trait
@@ -466,8 +466,28 @@ pub fn sample_sequentially<'math, M: Math + 'math, R: Rng + ?Sized>(
     Ok((0..draws).map(move |_| sampler.draw()))
 }
 
-#[non_exhaustive]
-#[derive(Clone, Debug)]
+/// Data for the most recent sample from a chain
+#[derive(Debug, Clone)]
+pub struct SampleData {
+    /// Chain identifier
+    pub chain_id: u64,
+    /// Draw number within the chain
+    pub draw: u64,
+    /// Whether this sample is from the tuning phase
+    pub is_tuning: bool,
+    /// Parameter values for this sample
+    pub position: Vec<f64>,
+    /// Hamiltonian energy for this sample
+    pub energy: f64,
+    /// Whether this sample had a divergence
+    pub diverging: bool,
+    /// NUTS tree depth for this sample
+    pub tree_depth: u64,
+    /// Current step size
+    pub step_size: f64,
+}
+
+#[derive(Clone)]
 pub struct ChainProgress {
     pub finished_draws: usize,
     pub total_draws: usize,
@@ -479,6 +499,8 @@ pub struct ChainProgress {
     pub step_size: f64,
     pub runtime: Duration,
     pub divergent_draws: Vec<usize>,
+    /// The most recent sample from this chain (if available)
+    pub latest_sample: Option<SampleData>,
 }
 
 impl ChainProgress {
@@ -494,6 +516,7 @@ impl ChainProgress {
             total_num_steps: 0,
             runtime: Duration::ZERO,
             divergent_draws: Vec::new(),
+            latest_sample: None,
         }
     }
 
@@ -537,7 +560,7 @@ impl<T: TraceStorage> ChainProcess<T> {
     }
 
     fn progress(&self) -> ChainProgress {
-        self.progress.lock().expect("Poisoned lock").clone()
+        (*self.progress.lock().expect("Poisoned lock")).clone()
     }
 
     fn resume(&self) -> Result<()> {
@@ -649,6 +672,62 @@ impl<T: TraceStorage> ChainProcess<T> {
                         &info,
                     )?;
 
+                    // Update latest sample in progress
+                    {
+                        // Extract position from draw_data
+                        let position_data: Vec<f64> = draw_data
+                            .get_all(math.deref())
+                            .iter()
+                            .filter_map(|(_, val)| {
+                                if let Some(Value::F64(v)) = val {
+                                    Some(v.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .flatten()
+                            .collect();
+
+                        // Extract energy and depth from stats
+                        let stats_all = stats.get_all(&dims);
+                        let energy = stats_all
+                            .iter()
+                            .find(|(name, _)| *name == "energy")
+                            .and_then(|(_, val)| {
+                                if let Some(Value::ScalarF64(v)) = val {
+                                    Some(*v)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(0.0);
+
+                        let depth = stats_all
+                            .iter()
+                            .find(|(name, _)| *name == "depth")
+                            .and_then(|(_, val)| {
+                                if let Some(Value::ScalarU64(v)) = val {
+                                    Some(*v)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(0);
+
+                        let sample_data = SampleData {
+                            chain_id,
+                            draw: draw as u64,
+                            is_tuning: info.tuning,
+                            position: position_data,
+                            energy,
+                            diverging: info.diverging,
+                            tree_depth: depth,
+                            step_size: info.step_size,
+                        };
+
+                        progress.lock().expect("Poisoned mutex").latest_sample = Some(sample_data);
+                    }
+
                     draw += 1;
                     if draw == draws {
                         break;
@@ -720,6 +799,10 @@ pub struct ProgressCallback {
 }
 
 impl<F: Send + 'static> Sampler<F> {
+    /// Create a new sampler.
+    ///
+    /// The optional `callback` is invoked periodically with progress updates for all chains.
+    /// Sample-level data is accessible via the `latest_sample` field in `ChainProgress`.
     pub fn new<M, S, C, T>(
         model: M,
         settings: S,
@@ -851,11 +934,13 @@ impl<F: Send + 'static> Sampler<F> {
                             Ok(SamplerCommand::Progress) => {
                                 let progress =
                                     chains.iter().map(|chain| chain.progress()).collect_vec();
-                                responses_tx.send(SamplerResponse::Progress(progress.into())).map_err(|e| {
-                                    anyhow::anyhow!(
+                                responses_tx
+                                    .send(SamplerResponse::Progress(progress.into()))
+                                    .map_err(|e| {
+                                        anyhow::anyhow!(
                                         "Could not send progress response to controller thread: {e}"
                                     )
-                                })?;
+                                    })?;
                             }
                             Ok(SamplerCommand::Inspect) => {
                                 let traces = chains
@@ -871,11 +956,13 @@ impl<F: Send + 'static> Sampler<F> {
                                     .flatten()
                                     .collect_vec();
                                 let finalized_trace = trace.inspect(traces)?;
-                                responses_tx.send(SamplerResponse::Inspect(finalized_trace)).map_err(|e| {
-                                    anyhow::anyhow!(
+                                responses_tx
+                                    .send(SamplerResponse::Inspect(finalized_trace))
+                                    .map_err(|e| {
+                                        anyhow::anyhow!(
                                         "Could not send inspect response to controller thread: {e}"
                                     )
-                                })?;
+                                    })?;
                             }
                             Ok(SamplerCommand::Flush) => {
                                 for chain in chains.iter() {
@@ -1012,9 +1099,9 @@ pub mod test_logps {
     use std::collections::HashMap;
 
     use crate::{
-        Model,
         cpu_math::{CpuLogpFunc, CpuMath},
         math_base::LogpError,
+        Model,
     };
     use anyhow::Result;
     use nuts_storable::HasDims;
@@ -1184,16 +1271,16 @@ mod tests {
 
     use super::test_logps::NormalLogp;
     use crate::{
-        Chain, DiagGradNutsSettings, Sampler, ZarrConfig,
         cpu_math::CpuMath,
         sample_sequentially,
-        sampler::{Settings, test_logps::CpuModel},
+        sampler::{test_logps::CpuModel, Settings},
+        Chain, DiagGradNutsSettings, Sampler, ZarrConfig,
     };
 
     use anyhow::Result;
     use itertools::Itertools;
     use pretty_assertions::assert_eq;
-    use rand::{SeedableRng, rngs::StdRng};
+    use rand::{rngs::StdRng, SeedableRng};
     use zarrs::storage::store::MemoryStore;
 
     #[test]
