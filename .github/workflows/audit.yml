@@ -3,11 +3,16 @@ on:
   schedule:
     - cron: "0 0 * * *"
   push:
+    branches:
+      - main
     paths:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
       - "**/audit.yml"
   pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
 jobs:
   audit:
     runs-on: ubuntu-latest
