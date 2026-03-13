@@ -1,7 +1,7 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use itertools::Itertools;
 use nuts_storable::{HasDims, Storable, Value};
-use rand::{rngs::ChaCha8Rng, rngs::SmallRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::ChaCha8Rng, rngs::SmallRng};
 use rayon::{ScopeFifo, ThreadPoolBuilder};
 use serde::Serialize;
 use std::{
@@ -9,16 +9,17 @@ use std::{
     fmt::Debug,
     ops::Deref,
     sync::{
-        mpsc::{
-            channel, sync_channel, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError,
-        },
         Arc, Mutex,
+        mpsc::{
+            Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel,
+        },
     },
-    thread::{spawn, JoinHandle},
+    thread::{JoinHandle, spawn},
     time::{Duration, Instant},
 };
 
 use crate::{
+    DiagAdaptExpSettings,
     adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy, GlobalStrategyStatsOptions},
     chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
     euclidean_hamiltonian::EuclideanHamiltonian,
@@ -32,7 +33,6 @@ use crate::{
     storage::{ChainStorage, StorageConfig, TraceStorage},
     transform_adapt_strategy::{TransformAdaptation, TransformedSettings},
     transformed_hamiltonian::{TransformedHamiltonian, TransformedPointStatsOptions},
-    DiagAdaptExpSettings,
 };
 
 /// All sampler configurations implement this trait
@@ -475,16 +475,23 @@ pub struct SampleData {
     pub draw: u64,
     /// Whether this sample is from the tuning phase
     pub is_tuning: bool,
-    /// Parameter values for this sample
-    pub position: Vec<f64>,
-    /// Hamiltonian energy for this sample
-    pub energy: f64,
-    /// Whether this sample had a divergence
-    pub diverging: bool,
+
+    // NUTS-specific statistics (all optional to support other samplers)
     /// NUTS tree depth for this sample
-    pub tree_depth: u64,
+    pub tree_depth: Option<u64>,
+    /// Whether the trajectory reached the maximum tree depth
+    pub reached_max_treedepth: Option<bool>,
+    /// Whether this sample had a divergence
+    pub diverging: Option<bool>,
+
+    // Energy statistics
+    /// Energy at the start of the trajectory
+    pub initial_energy: Option<f64>,
+    /// Energy at the sampled point
+    pub draw_energy: Option<f64>,
+
     /// Current step size
-    pub step_size: f64,
+    pub step_size: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -674,35 +681,10 @@ impl<T: TraceStorage> ChainProcess<T> {
 
                     // Update latest sample in progress
                     {
-                        // Extract position from draw_data
-                        let position_data: Vec<f64> = draw_data
-                            .get_all(math.deref())
-                            .iter()
-                            .filter_map(|(_, val)| {
-                                if let Some(Value::F64(v)) = val {
-                                    Some(v.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .flatten()
-                            .collect();
-
-                        // Extract energy and depth from stats
                         let stats_all = stats.get_all(&dims);
-                        let energy = stats_all
-                            .iter()
-                            .find(|(name, _)| *name == "energy")
-                            .and_then(|(_, val)| {
-                                if let Some(Value::ScalarF64(v)) = val {
-                                    Some(*v)
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or(0.0);
 
-                        let depth = stats_all
+                        // Extract depth from stats
+                        let tree_depth = stats_all
                             .iter()
                             .find(|(name, _)| *name == "depth")
                             .and_then(|(_, val)| {
@@ -711,18 +693,42 @@ impl<T: TraceStorage> ChainProcess<T> {
                                 } else {
                                     None
                                 }
-                            })
-                            .unwrap_or(0);
+                            });
+
+                        // Extract maxdepth_reached from stats
+                        let reached_max_treedepth = stats_all
+                            .iter()
+                            .find(|(name, _)| *name == "maxdepth_reached")
+                            .and_then(|(_, val)| {
+                                if let Some(Value::ScalarBool(v)) = val {
+                                    Some(*v)
+                                } else {
+                                    None
+                                }
+                            });
+
+                        // Extract draw energy from stats
+                        let draw_energy = stats_all
+                            .iter()
+                            .find(|(name, _)| *name == "energy")
+                            .and_then(|(_, val)| {
+                                if let Some(Value::ScalarF64(v)) = val {
+                                    Some(*v)
+                                } else {
+                                    None
+                                }
+                            });
 
                         let sample_data = SampleData {
                             chain_id,
                             draw: draw as u64,
                             is_tuning: info.tuning,
-                            position: position_data,
-                            energy,
-                            diverging: info.diverging,
-                            tree_depth: depth,
-                            step_size: info.step_size,
+                            tree_depth,
+                            reached_max_treedepth,
+                            diverging: Some(info.diverging),
+                            initial_energy: None, // Not available in current stats
+                            draw_energy,
+                            step_size: Some(info.step_size),
                         };
 
                         progress.lock().expect("Poisoned mutex").latest_sample = Some(sample_data);
@@ -1099,9 +1105,9 @@ pub mod test_logps {
     use std::collections::HashMap;
 
     use crate::{
+        Model,
         cpu_math::{CpuLogpFunc, CpuMath},
         math_base::LogpError,
-        Model,
     };
     use anyhow::Result;
     use nuts_storable::HasDims;
@@ -1271,16 +1277,16 @@ mod tests {
 
     use super::test_logps::NormalLogp;
     use crate::{
+        Chain, DiagGradNutsSettings, Sampler, ZarrConfig,
         cpu_math::CpuMath,
         sample_sequentially,
-        sampler::{test_logps::CpuModel, Settings},
-        Chain, DiagGradNutsSettings, Sampler, ZarrConfig,
+        sampler::{Settings, test_logps::CpuModel},
     };
 
     use anyhow::Result;
     use itertools::Itertools;
     use pretty_assertions::assert_eq;
-    use rand::{rngs::StdRng, SeedableRng};
+    use rand::{SeedableRng, rngs::StdRng};
     use zarrs::storage::store::MemoryStore;
 
     #[test]
