@@ -179,7 +179,7 @@ fn main() -> Result<()> {
             // Print progress information periodically
             if *count <= 10 {
                 println!(
-                    "📊 Progress callback #{}: Elapsed: {:.1}s, {} chains",
+                    "Progress callback #{}: Elapsed: {:.1}s, {} chains",
                     count,
                     elapsed.as_secs_f64(),
                     chains.len()
@@ -188,26 +188,45 @@ fn main() -> Result<()> {
                 for chain_progress in chains.iter() {
                     // Access the latest sample data if available
                     if let Some(sample_data) = &chain_progress.latest_sample {
+                        // Demonstrate accessing optional fields with proper handling
+                        let energy_str = sample_data
+                            .draw_energy
+                            .map(|e| format!("{:.3}", e))
+                            .unwrap_or_else(|| "N/A".to_string());
+                        let diverging_str = sample_data
+                            .diverging
+                            .map(|d| d.to_string())
+                            .unwrap_or_else(|| "N/A".to_string());
+                        let tree_depth_str = sample_data
+                            .tree_depth
+                            .map(|d| d.to_string())
+                            .unwrap_or_else(|| "N/A".to_string());
+
                         println!(
-                            "   Chain {}: Draw {}/{}, Energy: {:.3}, Diverging: {}, Tree depth: {}",
+                            "   Chain {}: Draw {}/{}, Energy: {}, Diverging: {}, Tree depth: {}",
                             sample_data.chain_id,
                             chain_progress.finished_draws,
                             chain_progress.total_draws,
-                            sample_data.energy,
-                            sample_data.diverging,
-                            sample_data.tree_depth
-                        );
-                        println!(
-                            "   Position: [{:.4}, {:.4}]",
-                            sample_data.position[0], sample_data.position[1]
-                        );
-                        println!(
-                            "   Step size: {:.6}, Tuning: {}",
-                            sample_data.step_size, sample_data.is_tuning
+                            energy_str,
+                            diverging_str,
+                            tree_depth_str
                         );
 
+                        if let Some(step_size) = sample_data.step_size {
+                            println!(
+                                "   Step size: {:.6}, Tuning: {}",
+                                step_size, sample_data.is_tuning
+                            );
+                        }
+
+                        if let Some(max_depth) = sample_data.reached_max_treedepth {
+                            if max_depth {
+                                println!("   ⚠ Maximum tree depth reached!");
+                            }
+                        }
+
                         // Track divergences
-                        if sample_data.diverging {
+                        if sample_data.diverging.unwrap_or(false) {
                             let mut div_count = divergence_count_clone.lock().unwrap();
                             *div_count += 1;
                         }
@@ -276,11 +295,14 @@ fn main() -> Result<()> {
         }
     }
 
-    println!("\n✅ Example completed successfully!");
+    println!("\n✓ Example completed successfully!");
     println!("\nKey features demonstrated:");
     println!("  - ProgressCallback provides both chain progress and latest sample data");
     println!("  - Time-based rate limiting (10ms) prevents excessive overhead");
-    println!("  - latest_sample includes rich data (position, energy, divergence, etc.)");
+    println!(
+        "  - latest_sample includes rich optional data (energy, divergence, tree depth, etc.)"
+    );
+    println!("  - All sampler-specific stats are Option<T> for compatibility with other samplers");
     println!("  - Works seamlessly with multi-chain sampling");
     println!("  - Single callback mechanism for all monitoring needs");
 
