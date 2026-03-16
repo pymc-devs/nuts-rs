@@ -34,6 +34,8 @@ pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
     tuning: bool,
     has_initial_mass_matrix: bool,
     last_update: u64,
+    // Current target window size for the main (non-early) phase; grows after each switch.
+    current_window_size: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -42,9 +44,13 @@ pub struct EuclideanAdaptOptions<S: Debug + Default> {
     pub mass_matrix_options: S,
     pub early_window: f64,
     pub step_size_window: f64,
+    /// Initial window size for the main (non-early) mass-matrix adaptation phase.
     pub mass_matrix_switch_freq: u64,
     pub early_mass_matrix_switch_freq: u64,
     pub mass_matrix_update_freq: u64,
+    /// Multiplicative growth factor applied to the window size after each switch in the
+    /// main phase. 1.0 means constant windows (old behaviour). Must be >= 1.0.
+    pub mass_matrix_window_growth: f64,
 }
 
 impl<S: Debug + Default> Default for EuclideanAdaptOptions<S> {
@@ -57,6 +63,7 @@ impl<S: Debug + Default> Default for EuclideanAdaptOptions<S> {
             mass_matrix_switch_freq: 80,
             early_mass_matrix_switch_freq: 10,
             mass_matrix_update_freq: 1,
+            mass_matrix_window_growth: 1.5,
         }
     }
 }
@@ -74,6 +81,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         let final_second_step_size = num_tune.saturating_sub(step_size_window);
 
         assert!(early_end < num_tune);
+        assert!(options.mass_matrix_window_growth >= 1.0);
 
         Self {
             step_size: StepSizeStrategy::new(options.step_size_settings),
@@ -85,6 +93,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
             tuning: true,
             has_initial_mass_matrix: true,
             last_update: 0,
+            current_window_size: options.mass_matrix_switch_freq,
         }
     }
 
@@ -130,10 +139,20 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
 
         if draw < self.final_step_size_window {
             let is_early = draw < self.early_end;
+
+            // At the transition from early to main phase, seed current_window_size as the
+            // maximum of the configured initial size and the background count already
+            // accumulated, so we never shrink the window.
+            if !is_early && draw == self.early_end {
+                self.current_window_size = self
+                    .current_window_size
+                    .max(self.mass_matrix_adapt.background_count());
+            }
+
             let switch_freq = if is_early {
                 self.options.early_mass_matrix_switch_freq
             } else {
-                self.options.mass_matrix_switch_freq
+                self.current_window_size
             };
 
             self.mass_matrix_adapt
@@ -142,12 +161,27 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
             // and if the number of remaining mass matrix steps is larger than
             // the switch frequency.
             let could_switch = self.mass_matrix_adapt.background_count() >= switch_freq;
-            let is_late = switch_freq + draw > self.final_step_size_window;
+            // For the main phase: after switching, the *next* window will be larger, so
+            // is_late must look ahead using that next size to decide whether there is
+            // still room for another full window before the step-size window.
+            let next_window_size = if is_early {
+                self.options.early_mass_matrix_switch_freq
+            } else {
+                (self.current_window_size + 1).max(
+                    (self.current_window_size as f64 * self.options.mass_matrix_window_growth)
+                        .round() as u64,
+                )
+            };
+            let is_late = next_window_size + draw > self.final_step_size_window;
 
             let mut force_update = false;
             if could_switch && (!is_late) {
                 self.mass_matrix_adapt.switch(math);
                 force_update = true;
+                // Grow the window for the next main-phase switch.
+                if !is_early {
+                    self.current_window_size = next_window_size;
+                }
             }
 
             let did_change = if force_update
