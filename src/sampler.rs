@@ -466,8 +466,35 @@ pub fn sample_sequentially<'math, M: Math + 'math, R: Rng + ?Sized>(
     Ok((0..draws).map(move |_| sampler.draw()))
 }
 
-#[non_exhaustive]
-#[derive(Clone, Debug)]
+/// Data for the most recent sample from a chain
+#[derive(Debug, Clone)]
+pub struct SampleData {
+    /// Chain identifier
+    pub chain_id: u64,
+    /// Draw number within the chain
+    pub draw: u64,
+    /// Whether this sample is from the tuning phase
+    pub is_tuning: bool,
+
+    // NUTS-specific statistics (all optional to support other samplers)
+    /// NUTS tree depth for this sample
+    pub tree_depth: Option<u64>,
+    /// Whether the trajectory reached the maximum tree depth
+    pub reached_max_treedepth: Option<bool>,
+    /// Whether this sample had a divergence
+    pub diverging: Option<bool>,
+
+    // Energy statistics
+    /// Energy at the start of the trajectory
+    pub initial_energy: Option<f64>,
+    /// Energy at the sampled point
+    pub draw_energy: Option<f64>,
+
+    /// Current step size
+    pub step_size: Option<f64>,
+}
+
+#[derive(Clone)]
 pub struct ChainProgress {
     pub finished_draws: usize,
     pub total_draws: usize,
@@ -479,6 +506,8 @@ pub struct ChainProgress {
     pub step_size: f64,
     pub runtime: Duration,
     pub divergent_draws: Vec<usize>,
+    /// The most recent sample from this chain (if available)
+    pub latest_sample: Option<SampleData>,
 }
 
 impl ChainProgress {
@@ -494,6 +523,7 @@ impl ChainProgress {
             total_num_steps: 0,
             runtime: Duration::ZERO,
             divergent_draws: Vec::new(),
+            latest_sample: None,
         }
     }
 
@@ -537,7 +567,7 @@ impl<T: TraceStorage> ChainProcess<T> {
     }
 
     fn progress(&self) -> ChainProgress {
-        self.progress.lock().expect("Poisoned lock").clone()
+        (*self.progress.lock().expect("Poisoned lock")).clone()
     }
 
     fn resume(&self) -> Result<()> {
@@ -649,6 +679,61 @@ impl<T: TraceStorage> ChainProcess<T> {
                         &info,
                     )?;
 
+                    // Update latest sample in progress
+                    {
+                        let stats_all = stats.get_all(&dims);
+
+                        // Extract depth from stats
+                        let tree_depth = stats_all
+                            .iter()
+                            .find(|(name, _)| *name == "depth")
+                            .and_then(|(_, val)| {
+                                if let Some(Value::ScalarU64(v)) = val {
+                                    Some(*v)
+                                } else {
+                                    None
+                                }
+                            });
+
+                        // Extract maxdepth_reached from stats
+                        let reached_max_treedepth = stats_all
+                            .iter()
+                            .find(|(name, _)| *name == "maxdepth_reached")
+                            .and_then(|(_, val)| {
+                                if let Some(Value::ScalarBool(v)) = val {
+                                    Some(*v)
+                                } else {
+                                    None
+                                }
+                            });
+
+                        // Extract draw energy from stats
+                        let draw_energy = stats_all
+                            .iter()
+                            .find(|(name, _)| *name == "energy")
+                            .and_then(|(_, val)| {
+                                if let Some(Value::ScalarF64(v)) = val {
+                                    Some(*v)
+                                } else {
+                                    None
+                                }
+                            });
+
+                        let sample_data = SampleData {
+                            chain_id,
+                            draw: draw as u64,
+                            is_tuning: info.tuning,
+                            tree_depth,
+                            reached_max_treedepth,
+                            diverging: Some(info.diverging),
+                            initial_energy: None, // Not available in current stats
+                            draw_energy,
+                            step_size: Some(info.step_size),
+                        };
+
+                        progress.lock().expect("Poisoned mutex").latest_sample = Some(sample_data);
+                    }
+
                     draw += 1;
                     if draw == draws {
                         break;
@@ -720,6 +805,10 @@ pub struct ProgressCallback {
 }
 
 impl<F: Send + 'static> Sampler<F> {
+    /// Create a new sampler.
+    ///
+    /// The optional `callback` is invoked periodically with progress updates for all chains.
+    /// Sample-level data is accessible via the `latest_sample` field in `ChainProgress`.
     pub fn new<M, S, C, T>(
         model: M,
         settings: S,
@@ -851,11 +940,13 @@ impl<F: Send + 'static> Sampler<F> {
                             Ok(SamplerCommand::Progress) => {
                                 let progress =
                                     chains.iter().map(|chain| chain.progress()).collect_vec();
-                                responses_tx.send(SamplerResponse::Progress(progress.into())).map_err(|e| {
-                                    anyhow::anyhow!(
+                                responses_tx
+                                    .send(SamplerResponse::Progress(progress.into()))
+                                    .map_err(|e| {
+                                        anyhow::anyhow!(
                                         "Could not send progress response to controller thread: {e}"
                                     )
-                                })?;
+                                    })?;
                             }
                             Ok(SamplerCommand::Inspect) => {
                                 let traces = chains
@@ -871,11 +962,13 @@ impl<F: Send + 'static> Sampler<F> {
                                     .flatten()
                                     .collect_vec();
                                 let finalized_trace = trace.inspect(traces)?;
-                                responses_tx.send(SamplerResponse::Inspect(finalized_trace)).map_err(|e| {
-                                    anyhow::anyhow!(
+                                responses_tx
+                                    .send(SamplerResponse::Inspect(finalized_trace))
+                                    .map_err(|e| {
+                                        anyhow::anyhow!(
                                         "Could not send inspect response to controller thread: {e}"
                                     )
-                                })?;
+                                    })?;
                             }
                             Ok(SamplerCommand::Flush) => {
                                 for chain in chains.iter() {
