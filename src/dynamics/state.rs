@@ -1,10 +1,12 @@
+//! Manage efficient allocation and reuse of phase-space points across tree expansion steps.
+
 use std::{
     cell::RefCell,
     fmt::Debug,
     rc::{Rc, Weak},
 };
 
-use crate::{hamiltonian::Point, math_base::Math};
+use crate::{dynamics::Point, math::Math};
 
 struct StateStorage<M: Math, P: Point<M>> {
     free_states: RefCell<Vec<Rc<InnerStateReusable<M, P>>>>,
@@ -123,9 +125,7 @@ impl<M: Math, P: Point<M>> Clone for State<M, P> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        cpu_math::CpuMath, euclidean_hamiltonian::EuclideanPoint, sampler::test_logps::NormalLogp,
-    };
+    use crate::{dynamics::TransformedPoint, math::CpuMath, sampler::test_logps::NormalLogp};
 
     use super::*;
 
@@ -133,7 +133,7 @@ mod tests {
     fn crate_pool() {
         let logp = NormalLogp { dim: 10, mu: 0.2 };
         let mut math = CpuMath::new(&logp);
-        let pool: StatePool<_, EuclideanPoint<_>> = StatePool::new(&mut math, 10);
+        let pool: StatePool<_, TransformedPoint<_>> = StatePool::new(&mut math, 10);
         let mut state = pool.new_state(&mut math);
         state.try_point_mut().unwrap();
 
@@ -147,7 +147,7 @@ mod tests {
         let dim = 10;
         let logp = NormalLogp { dim, mu: 0.2 };
         let mut math = CpuMath::new(&logp);
-        let pool: StatePool<_, EuclideanPoint<_>> = StatePool::new(&mut math, 10);
+        let pool: StatePool<_, TransformedPoint<_>> = StatePool::new(&mut math, 10);
         let a = pool.new_state(&mut math);
         assert_eq!(a.index_in_trajectory(), 0);
     }

@@ -1,3 +1,5 @@
+//! Drive a single sampling chain by wiring together the Hamiltonian, adaptation, and per-draw bookkeeping.
+
 use std::{
     cell::{Ref, RefCell},
     fmt::Debug,
@@ -10,11 +12,10 @@ use rand::Rng;
 
 use crate::{
     Math, NutsError,
-    hamiltonian::{Hamiltonian, Point},
+    dynamics::{Hamiltonian, Point, State},
     nuts::{Collector, NutsOptions, SampleInfo, draw},
     sampler::Progress,
     sampler_stats::{SamplerStats, StatsDims},
-    state::State,
 };
 
 use anyhow::Result;

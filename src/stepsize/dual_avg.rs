@@ -1,10 +1,11 @@
+//! Nesterov dual-averaging algorithm for tuning the leapfrog step size toward a target acceptance rate.
+
 use serde::Serialize;
 
 use crate::{
-    hamiltonian::{DivergenceInfo, Point},
-    math_base::Math,
+    dynamics::{DivergenceInfo, Point, State},
+    math::Math,
     nuts::{Collector, NutsOptions},
-    state::State,
 };
 
 /// Settings for step size adaptation

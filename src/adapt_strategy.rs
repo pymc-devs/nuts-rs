@@ -1,3 +1,5 @@
+//! Orchestrate the tuning schedule that jointly adapts step size and mass matrix during warmup.
+
 use std::{fmt::Debug, marker::PhantomData};
 
 use nuts_derive::Storable;
@@ -7,24 +9,24 @@ use serde::Serialize;
 
 use super::stepsize::AcceptanceRateCollector;
 use super::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
-use crate::mass_matrix::MassMatrixAdaptStrategy;
+use crate::dynamics::{
+    DivergenceInfo, Hamiltonian, Point, State, TransformedHamiltonian, TransformedPoint,
+};
+use crate::transform::MassMatrixAdaptStrategy;
 use crate::{
     NutsError,
     chain::AdaptStrategy,
-    euclidean_hamiltonian::EuclideanHamiltonian,
-    hamiltonian::{DivergenceInfo, Hamiltonian, Point},
-    math_base::Math,
+    math::Math,
     nuts::{Collector, NutsOptions},
     sampler_stats::{SamplerStats, StatsDims},
-    state::State,
 };
 
 pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
     step_size: StepSizeStrategy,
-    mass_matrix: A,
+    mass_matrix_adapt: A,
     options: EuclideanAdaptOptions<A::Options>,
     num_tune: u64,
-    // The number of draws in the the early window
+    // The number of draws in the early window
     early_end: u64,
 
     // The first draw number for the final step size adaptation window
@@ -60,13 +62,9 @@ impl<S: Debug + Default> Default for EuclideanAdaptOptions<S> {
 }
 
 impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy<M, A> {
-    type Hamiltonian = EuclideanHamiltonian<M, A::MassMatrix>;
-    type Collector = CombinedCollector<
-        M,
-        <Self::Hamiltonian as Hamiltonian<M>>::Point,
-        AcceptanceRateCollector,
-        A::Collector,
-    >;
+    type Hamiltonian = TransformedHamiltonian<M, A::Transformation>;
+    type Collector =
+        CombinedCollector<M, TransformedPoint<M>, AcceptanceRateCollector, A::Collector>;
     type Options = EuclideanAdaptOptions<A::Options>;
 
     fn new(math: &mut M, options: Self::Options, num_tune: u64, chain: u64) -> Self {
@@ -79,7 +77,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
 
         Self {
             step_size: StepSizeStrategy::new(options.step_size_settings),
-            mass_matrix: A::new(math, options.mass_matrix_options, num_tune, chain),
+            mass_matrix_adapt: A::new(math, options.mass_matrix_options, num_tune, chain),
             options,
             num_tune,
             early_end,
@@ -98,11 +96,11 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         position: &[f64],
         rng: &mut R,
     ) -> Result<(), NutsError> {
-        let state = hamiltonian.init_state(math, position)?;
-        self.mass_matrix.init(
+        let state = hamiltonian.init_state_untransformed(math, position)?;
+        self.mass_matrix_adapt.init(
             math,
             options,
-            &mut hamiltonian.mass_matrix,
+            hamiltonian.transformation_mut(),
             state.point(),
             rng,
         )?;
@@ -118,7 +116,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         hamiltonian: &mut Self::Hamiltonian,
         draw: u64,
         collector: &Self::Collector,
-        state: &State<M, <Self::Hamiltonian as Hamiltonian<M>>::Point>,
+        state: &State<M, TransformedPoint<M>>,
         rng: &mut R,
     ) -> Result<(), NutsError> {
         self.step_size.update(&collector.collector1);
@@ -138,24 +136,25 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
                 self.options.mass_matrix_switch_freq
             };
 
-            self.mass_matrix
+            self.mass_matrix_adapt
                 .update_estimators(math, &collector.collector2);
             // We only switch if we have switch_freq draws in the background estimate,
             // and if the number of remaining mass matrix steps is larger than
             // the switch frequency.
-            let could_switch = self.mass_matrix.background_count() >= switch_freq;
+            let could_switch = self.mass_matrix_adapt.background_count() >= switch_freq;
             let is_late = switch_freq + draw > self.final_step_size_window;
 
             let mut force_update = false;
             if could_switch && (!is_late) {
-                self.mass_matrix.switch(math);
+                self.mass_matrix_adapt.switch(math);
                 force_update = true;
             }
 
             let did_change = if force_update
                 | (draw - self.last_update >= self.options.mass_matrix_update_freq)
             {
-                self.mass_matrix.adapt(math, &mut hamiltonian.mass_matrix)
+                self.mass_matrix_adapt
+                    .adapt(math, hamiltonian.transformation_mut())
             } else {
                 false
             };
@@ -191,7 +190,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
     fn new_collector(&self, math: &mut M) -> Self::Collector {
         Self::Collector::new(
             self.step_size.new_collector(),
-            self.mass_matrix.new_collector(math),
+            self.mass_matrix_adapt.new_collector(math),
         )
     }
 
@@ -243,7 +242,7 @@ where
                 let _: () = opt.step_size;
                 self.step_size.extract_stats(math, ())
             },
-            mass_matrix: self.mass_matrix.extract_stats(math, opt.mass_matrix),
+            mass_matrix: self.mass_matrix_adapt.extract_stats(math, opt.mass_matrix),
             tuning: self.tuning,
             _phantom: PhantomData,
         }
@@ -320,7 +319,7 @@ where
 pub mod test_logps {
     use std::collections::HashMap;
 
-    use crate::{cpu_math::CpuLogpFunc, math_base::LogpError};
+    use crate::math::{CpuLogpFunc, LogpError};
     use nuts_storable::HasDims;
     use thiserror::Error;
 
@@ -378,72 +377,11 @@ pub mod test_logps {
             &mut self,
             _rng: &mut R,
             array: &[f64],
-        ) -> Result<Self::ExpandedVector, crate::cpu_math::CpuMathError>
+        ) -> Result<Self::ExpandedVector, crate::math::CpuMathError>
         where
             R: rand::Rng + ?Sized,
         {
             Ok(array.to_vec())
-        }
-
-        fn inv_transform_normalize(
-            &mut self,
-            _params: &Self::FlowParameters,
-            _untransformed_position: &[f64],
-            _untransofrmed_gradient: &[f64],
-            _transformed_position: &mut [f64],
-            _transformed_gradient: &mut [f64],
-        ) -> Result<f64, Self::LogpError> {
-            unimplemented!()
-        }
-
-        fn init_from_transformed_position(
-            &mut self,
-            _params: &Self::FlowParameters,
-            _untransformed_position: &mut [f64],
-            _untransformed_gradient: &mut [f64],
-            _transformed_position: &[f64],
-            _transformed_gradient: &mut [f64],
-        ) -> Result<(f64, f64), Self::LogpError> {
-            unimplemented!()
-        }
-
-        fn init_from_untransformed_position(
-            &mut self,
-            _params: &Self::FlowParameters,
-            _untransformed_position: &[f64],
-            _untransformed_gradient: &mut [f64],
-            _transformed_position: &mut [f64],
-            _transformed_gradient: &mut [f64],
-        ) -> Result<(f64, f64), Self::LogpError> {
-            unimplemented!()
-        }
-
-        fn update_transformation<'a, R: rand::Rng + ?Sized>(
-            &'a mut self,
-            _rng: &mut R,
-            _untransformed_positions: impl Iterator<Item = &'a [f64]>,
-            _untransformed_gradients: impl Iterator<Item = &'a [f64]>,
-            _untransformed_logp: impl Iterator<Item = &'a f64>,
-            _params: &'a mut Self::FlowParameters,
-        ) -> Result<(), Self::LogpError> {
-            unimplemented!()
-        }
-
-        fn new_transformation<R: rand::Rng + ?Sized>(
-            &mut self,
-            _rng: &mut R,
-            _untransformed_position: &[f64],
-            _untransfogmed_gradient: &[f64],
-            _chain: u64,
-        ) -> Result<Self::FlowParameters, Self::LogpError> {
-            unimplemented!()
-        }
-
-        fn transformation_id(
-            &self,
-            _params: &Self::FlowParameters,
-        ) -> Result<i64, Self::LogpError> {
-            unimplemented!()
         }
     }
 }
@@ -455,28 +393,27 @@ mod test {
     use crate::{
         Chain, DiagAdaptExpSettings,
         chain::{NutsChain, StatOptions},
-        cpu_math::CpuMath,
-        euclidean_hamiltonian::EuclideanHamiltonian,
-        mass_matrix::DiagMassMatrix,
+        dynamics::{TransformedHamiltonian, TransformedPointStatsOptions},
+        math::CpuMath,
+        transform::{DiagAdaptStrategy, DiagMassMatrix},
     };
 
     #[test]
     fn instanciate_adaptive_sampler() {
-        use crate::mass_matrix::Strategy;
-
         let ndim = 10;
-        let func = NormalLogp::new(ndim, 3.);
+        let func = NormalLogp::new(ndim, 30.);
         let mut math = CpuMath::new(func);
         let num_tune = 100;
         let options = EuclideanAdaptOptions::<DiagAdaptExpSettings>::default();
-        let strategy = GlobalStrategy::<_, Strategy<_>>::new(&mut math, options, num_tune, 0u64);
+        let strategy =
+            GlobalStrategy::<_, DiagAdaptStrategy<_>>::new(&mut math, options, num_tune, 0u64);
 
         let mass_matrix = DiagMassMatrix::new(&mut math, true);
         let max_energy_error = 1000f64;
-        let step_size = 0.1f64;
 
-        let hamiltonian =
-            EuclideanHamiltonian::new(&mut math, mass_matrix, max_energy_error, step_size);
+        let hamiltonian: TransformedHamiltonian<_, DiagMassMatrix<CpuMath<NormalLogp>>> =
+            TransformedHamiltonian::new(&mut math, max_energy_error, mass_matrix);
+
         let options = NutsOptions {
             maxdepth: 10u64,
             mindepth: 0,
@@ -498,7 +435,9 @@ mod test {
                 mass_matrix: (),
             },
             hamiltonian: (),
-            point: (),
+            point: TransformedPointStatsOptions {
+                store_transformed: false,
+            },
         };
 
         let mut sampler = NutsChain::new(
@@ -514,5 +453,13 @@ mod test {
         for _ in 0..200 {
             sampler.draw().unwrap();
         }
+
+        // Check that we arrive at 3
+        let (last_position, _, _, prog) = sampler.expanded_draw().unwrap();
+        dbg!(&last_position);
+        for p in last_position {
+            assert!((p - 30.).abs() < 5.0);
+        }
+        assert!(!prog.diverging);
     }
 }

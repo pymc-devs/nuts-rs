@@ -1,3 +1,5 @@
+//! Coordinate step-size search at initialisation and dispatch to the chosen adaptation algorithm during tuning.
+
 use itertools::Either;
 use nuts_derive::Storable;
 use rand::distr::Uniform;
@@ -8,7 +10,7 @@ use super::adam::{Adam, AdamOptions};
 use super::dual_avg::{AcceptanceRateCollector, DualAverage, DualAverageOptions};
 use crate::{
     Math, NutsError,
-    hamiltonian::{Direction, Hamiltonian, LeapfrogResult, Point},
+    dynamics::{Direction, Hamiltonian, LeapfrogResult, Point},
     nuts::{Collector, NutsOptions},
     sampler_stats::SamplerStats,
 };

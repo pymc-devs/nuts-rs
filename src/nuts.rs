@@ -1,13 +1,12 @@
+//! Implement the recursive doubling tree expansion that is the heart of the NUTS algorithm.
+
 use rand::RngExt;
 use thiserror::Error;
 
 use std::{fmt::Debug, marker::PhantomData};
 
-use crate::hamiltonian::{Direction, DivergenceInfo, Hamiltonian, LeapfrogResult, Point};
-use crate::math::logaddexp;
-use crate::state::State;
-
-use crate::math_base::Math;
+use crate::dynamics::{Direction, DivergenceInfo, Hamiltonian, LeapfrogResult, Point, State};
+use crate::math::{Math, logaddexp};
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
@@ -249,6 +248,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct NutsOptions {
     pub maxdepth: u64,
     pub mindepth: u64,
@@ -342,7 +342,7 @@ mod tests {
     use rand::rng;
 
     use crate::{
-        Chain, Settings, adapt_strategy::test_logps::NormalLogp, cpu_math::CpuMath,
+        Chain, Settings, adapt_strategy::test_logps::NormalLogp, math::CpuMath,
         sampler::DiagGradNutsSettings,
     };
 
@@ -356,6 +356,8 @@ mod tests {
         let mut rng = rng();
 
         let mut chain = settings.new_chain(0, math, &mut rng);
+
+        chain.set_position(&vec![0.0; ndim]).unwrap();
 
         let (_, mut progress) = chain.draw().unwrap();
         for _ in 0..10 {

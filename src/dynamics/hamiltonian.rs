@@ -1,4 +1,6 @@
-use std::sync::Arc;
+//! Define the abstract interface for a Hamiltonian system (leapfrog, U-turn test, divergence detection).
+
+use std::{fmt::Debug, sync::Arc};
 
 use rand::{
     Rng, RngExt,
@@ -7,9 +9,9 @@ use rand::{
 
 use crate::{
     Math, NutsError,
+    dynamics::{State, StatePool},
     nuts::Collector,
     sampler_stats::SamplerStats,
-    state::{State, StatePool},
 };
 
 /// Details about a divergence that might have occured during sampling
@@ -53,7 +55,7 @@ pub enum LeapfrogResult<M: Math, P: Point<M>> {
     Err(M::LogpErr),
 }
 
-pub trait Point<M: Math>: Sized + SamplerStats<M> {
+pub trait Point<M: Math>: Sized + SamplerStats<M> + Debug {
     fn position(&self) -> &M::Vector;
     fn gradient(&self) -> &M::Vector;
     fn index_in_trajectory(&self) -> i64;
@@ -100,6 +102,13 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
     /// The momentum should be initialized to some arbitrary invalid number,
     /// it will later be set using Self::randomize_momentum.
     fn init_state(
+        &mut self,
+        math: &mut M,
+        init: &[f64],
+    ) -> Result<State<M, Self::Point>, NutsError>;
+
+    /// Initialize a state at a new location, without applying a transformation.
+    fn init_state_untransformed(
         &mut self,
         math: &mut M,
         init: &[f64],
