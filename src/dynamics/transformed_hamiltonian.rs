@@ -1,9 +1,18 @@
 //! Concrete Hamiltonian that runs leapfrog in a whitened space to improve sampling geometry.
+//!
+//! Three trajectory kinds are supported via [`KineticEnergyKind`]:
+//! - [`KineticEnergyKind::Euclidean`]: standard leapfrog with Euclidean kinetic energy.
+//! - [`KineticEnergyKind::ExactNormal`]: geodesic leapfrog that is exact for a standard-normal
+//!   potential (position and velocity rotate together in each 2-D plane).
+//! - [`KineticEnergyKind::Microcanonical`]: isokinetic ESH-dynamics leapfrog (microcanonical
+//!   HMC). The momentum is constrained to the unit sphere and the ESH update keeps it there
+//!   while tracking the accumulated kinetic-energy change along the trajectory.
 
 use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 
 use nuts_derive::Storable;
 use nuts_storable::HasDims;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     DivergenceInfo, LogpError, Math, NutsError,
@@ -12,6 +21,37 @@ use crate::{
     sampler_stats::{SamplerStats, StatsDims},
     transform::{ExternalTransformation, Transformation},
 };
+
+/// Selects the kinetic-energy form (and thus the integrator) used by
+/// [`TransformedHamiltonian`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum KineticEnergyKind {
+    /// Standard Euclidean kinetic energy `K = ½ ‖v‖²`.
+    /// Uses the ordinary leapfrog integrator (velocity Verlet).
+    #[default]
+    Euclidean,
+
+    /// Geodesic leapfrog that is *exact* for a standard-normal potential.
+    /// Position and velocity are rotated together in each 2-D plane `(q_i, v_i)`.
+    ExactNormal,
+
+    /// Microcanonical / isokinetic HMC using ESH dynamics
+    /// ([Steeg & Gallagher 2021](https://arxiv.org/abs/2111.02434),
+    /// ported from the [BlackJAX implementation](https://github.com/blackjax-devs/blackjax/blob/main/blackjax/mcmc/integrators.py#L314)).
+    ///
+    /// The momentum is constrained to the unit sphere (`‖v‖ = 1`).
+    /// The momentum update uses the ESH formula which preserves `‖v‖ = 1` exactly
+    /// while tracking the cumulative kinetic-energy change needed for the
+    /// Metropolis accept/reject decision.
+    ///
+    /// No partial momentum refreshment is performed — this variant only implements
+    /// the deterministic ESH trajectory.
+    Microcanonical,
+}
+
+// ---------------------------------------------------------------------------
+// ESH (Extended Stochastic Hamiltonian) momentum update
+// ---------------------------------------------------------------------------
 
 pub struct TransformedPoint<M: Math> {
     pub(crate) untransformed_position: M::Vector,
@@ -22,6 +62,10 @@ pub struct TransformedPoint<M: Math> {
     index_in_trajectory: i64,
     logp: f64,
     logdet: f64,
+    /// For Euclidean / ExactNormal: `½ ‖v‖²`.
+    /// For Microcanonical: the accumulated kinetic-energy change ΔKE along the
+    /// current leapfrog step (carried through `kinetic_energy` between the two
+    /// half-steps, then fixed after the second half-step).
     kinetic_energy: f64,
     initial_energy: f64,
     transform_id: i64,
@@ -82,59 +126,103 @@ impl<M: Math> SamplerStats<M> for TransformedPoint<M> {
 }
 
 impl<M: Math> TransformedPoint<M> {
+    /// First velocity half-step.
     fn first_velocity_halfstep(
         &self,
         math: &mut M,
         out: &mut Self,
         epsilon: f64,
-        exact_normal: bool,
+        kind: KineticEnergyKind,
     ) {
-        if exact_normal {
-            math.std_norm_grad_flow(
-                &self.transformed_position,
-                &self.transformed_gradient,
-                &self.velocity,
-                &mut out.velocity,
-                epsilon / 2.,
-            );
-        } else {
-            math.axpy_out(
-                &self.transformed_gradient,
-                &self.velocity,
-                epsilon / 2.,
-                &mut out.velocity,
-            );
+        match kind {
+            KineticEnergyKind::ExactNormal => {
+                math.std_norm_grad_flow(
+                    &self.transformed_position,
+                    &self.transformed_gradient,
+                    &self.velocity,
+                    &mut out.velocity,
+                    epsilon / 2.,
+                );
+            }
+            KineticEnergyKind::Euclidean => {
+                math.axpy_out(
+                    &self.transformed_gradient,
+                    &self.velocity,
+                    epsilon / 2.,
+                    &mut out.velocity,
+                );
+            }
+            KineticEnergyKind::Microcanonical => {
+                // TODO this is an extra copy we could get rid of
+                math.copy_into(&self.velocity, &mut out.velocity);
+                let ndim = math.dim();
+                out.kinetic_energy = self.kinetic_energy
+                    + math.esh_momentum_update(
+                        &self.transformed_gradient,
+                        &mut out.velocity,
+                        // Make the step sizes comparable
+                        (ndim as f64).sqrt() * epsilon / 2.,
+                    );
+            }
         }
     }
 
-    fn position_step(&self, math: &mut M, out: &mut Self, epsilon: f64, exact_normal: bool) {
-        if exact_normal {
-            math.std_norm_flow(
-                &self.transformed_position,
-                &mut out.transformed_position,
-                &mut out.velocity,
-                epsilon,
-            );
-        } else {
-            math.axpy_out(
-                &out.velocity,
-                &self.transformed_position,
-                epsilon,
-                &mut out.transformed_position,
-            );
+    /// Position (and, for geodesic integrators, simultaneous velocity) step.
+    fn position_step(&self, math: &mut M, out: &mut Self, epsilon: f64, kind: KineticEnergyKind) {
+        match kind {
+            //   q' =  q cos ε + v sin ε
+            //   v' = −q sin ε + v cos ε
+            KineticEnergyKind::ExactNormal => {
+                math.std_norm_flow(
+                    &self.transformed_position,
+                    &mut out.transformed_position,
+                    &mut out.velocity,
+                    epsilon,
+                );
+            }
+            KineticEnergyKind::Euclidean | KineticEnergyKind::Microcanonical => {
+                let epsilon = if matches!(kind, KineticEnergyKind::Microcanonical) {
+                    epsilon * (math.dim() as f64).sqrt()
+                } else {
+                    epsilon
+                };
+                math.axpy_out(
+                    &out.velocity,
+                    &self.transformed_position,
+                    epsilon,
+                    &mut out.transformed_position,
+                );
+            }
         }
     }
 
-    fn second_velocity_halfstep(&mut self, math: &mut M, epsilon: f64, exact_normal: bool) {
-        if exact_normal {
-            return math.std_norm_grad_flow_inplace(
-                &self.transformed_position,
-                &self.transformed_gradient,
-                &mut self.velocity,
-                epsilon / 2.,
-            );
-        } else {
-            math.axpy(&self.transformed_gradient, &mut self.velocity, epsilon / 2.);
+    /// Second velocity half-step.
+    ///
+    /// `accumulated_delta_ke` is the ΔKE from the first half-step (only used for
+    /// Microcanonical; ignored for other variants).  After this call `self.kinetic_energy`
+    /// holds the final value appropriate for `energy()`.
+    fn second_velocity_halfstep(&mut self, math: &mut M, epsilon: f64, kind: KineticEnergyKind) {
+        match kind {
+            KineticEnergyKind::ExactNormal => {
+                math.std_norm_grad_flow_inplace(
+                    &self.transformed_position,
+                    &self.transformed_gradient,
+                    &mut self.velocity,
+                    epsilon / 2.,
+                );
+            }
+            KineticEnergyKind::Euclidean => {
+                math.axpy(&self.transformed_gradient, &mut self.velocity, epsilon / 2.);
+            }
+            KineticEnergyKind::Microcanonical => {
+                let ndim = math.dim();
+                self.kinetic_energy = self.kinetic_energy
+                    + math.esh_momentum_update(
+                        &self.transformed_gradient,
+                        &mut self.velocity,
+                        (ndim as f64).sqrt() * epsilon / 2.,
+                    );
+            }
         }
     }
 
@@ -218,6 +306,15 @@ impl<M: Math> Point<M> for TransformedPoint<M> {
         self.index_in_trajectory
     }
 
+    /// The Hamiltonian energy at this point.
+    ///
+    /// For Euclidean / ExactNormal:  `E = ½‖v‖² − (logp + logdet)`
+    /// For Microcanonical:           `E = ΔKE_accum − (logp + logdet)`
+    ///
+    /// In both cases `energy_error = energy − initial_energy` is used for
+    /// divergence detection.  The constant offset `−(n−1) log 2` present in
+    /// the ESH kinetic energy cancels in the difference and is therefore
+    /// omitted.
     fn energy(&self) -> f64 {
         self.kinetic_energy - (self.logp + self.logdet)
     }
@@ -281,12 +378,17 @@ pub struct TransformedHamiltonian<M: Math, T: Transformation<M>> {
     step_size: f64,
     transformation: T,
     max_energy_error: f64,
-    exact_normal: bool,
+    pub kinetic_energy_kind: KineticEnergyKind,
     pool: StatePool<M, TransformedPoint<M>>,
 }
 
 impl<M: Math, T: Transformation<M>> TransformedHamiltonian<M, T> {
-    pub fn new(math: &mut M, max_energy_error: f64, transformation: T, exact_normal: bool) -> Self {
+    pub fn new(
+        math: &mut M,
+        max_energy_error: f64,
+        transformation: T,
+        kinetic_energy_kind: KineticEnergyKind,
+    ) -> Self {
         let mut ones = math.new_array();
         math.fill_array(&mut ones, 1f64);
         let mut zeros = math.new_array();
@@ -298,7 +400,7 @@ impl<M: Math, T: Transformation<M>> TransformedHamiltonian<M, T> {
             zeros,
             transformation,
             max_energy_error,
-            exact_normal,
+            kinetic_energy_kind,
             pool,
         }
     }
@@ -393,15 +495,20 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         };
 
         let epsilon = (sign as f64) * self.step_size;
+        let kind = self.kinetic_energy_kind;
 
+        // --- First velocity half-step ---
+        // For Microcanonical: out_point.kinetic_energy receives the running ΔKE
+        // after this call; for other kinds it is left at whatever value it had
+        // (it will be overwritten by update_kinetic_energy below).
         start
             .point()
-            .first_velocity_halfstep(math, out_point, epsilon, self.exact_normal);
+            .first_velocity_halfstep(math, out_point, epsilon, kind);
 
-        start
-            .point()
-            .position_step(math, out_point, epsilon, self.exact_normal);
+        // --- Position step ---
+        start.point().position_step(math, out_point, epsilon, kind);
 
+        // --- Evaluate log-density at new position ---
         let transformation = self.transformation();
         if let Err(logp_error) = out_point.init_from_transformed_position(transformation, math) {
             if !logp_error.is_recoverable() {
@@ -421,9 +528,14 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
             return LeapfrogResult::Divergence(div_info);
         }
 
-        out_point.second_velocity_halfstep(math, epsilon, self.exact_normal);
+        out_point.second_velocity_halfstep(math, epsilon, kind);
 
-        out_point.update_kinetic_energy(math);
+        // For Microcanonical, kinetic_energy already holds the total accumulated ΔKE
+        // (set by second_velocity_halfstep). For other kinds we recompute from ½‖v‖².
+        if kind != KineticEnergyKind::Microcanonical {
+            out_point.update_kinetic_energy(math);
+        }
+
         out_point.index_in_trajectory = start.index_in_trajectory() + sign;
 
         let energy_error = out_point.energy_error();
@@ -524,7 +636,15 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         rng: &mut R,
     ) -> Result<(), NutsError> {
         let point = state.try_point_mut().expect("State has other references");
+
+        // Sample raw isotropic Gaussian momentum.
         math.array_gaussian(rng, &mut point.velocity, &self.ones);
+
+        // For Microcanonical HMC the momentum must lie on the unit sphere.
+        if self.kinetic_energy_kind == KineticEnergyKind::Microcanonical {
+            math.array_normalize(&mut point.velocity);
+        }
+
         let current_transform_id = self.transformation().transformation_id(math);
         if current_transform_id != point.transform_id {
             let logdet = self
@@ -540,7 +660,18 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
             point.logdet = logdet;
             point.transform_id = current_transform_id;
         }
-        point.update_kinetic_energy(math);
+
+        match self.kinetic_energy_kind {
+            KineticEnergyKind::Microcanonical => {
+                // Initial accumulated ΔKE is 0 (no steps taken yet).
+                // energy() = 0 − (logp + logdet) = −(logp + logdet).
+                point.kinetic_energy = 0.0;
+            }
+            _ => {
+                point.update_kinetic_energy(math);
+            }
+        }
+
         point.index_in_trajectory = 0;
         point.initial_energy = point.energy();
         Ok(())

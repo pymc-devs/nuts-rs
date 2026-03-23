@@ -427,7 +427,7 @@ mod test {
     use crate::{
         Chain, DiagAdaptExpSettings,
         chain::{NutsChain, StatOptions},
-        dynamics::{TransformedHamiltonian, TransformedPointStatsOptions},
+        dynamics::{KineticEnergyKind, TransformedHamiltonian, TransformedPointStatsOptions},
         math::CpuMath,
         transform::{DiagAdaptStrategy, DiagMassMatrix},
     };
@@ -446,7 +446,12 @@ mod test {
         let max_energy_error = 1000f64;
 
         let hamiltonian: TransformedHamiltonian<_, DiagMassMatrix<CpuMath<NormalLogp>>> =
-            TransformedHamiltonian::new(&mut math, max_energy_error, mass_matrix, false);
+            TransformedHamiltonian::new(
+                &mut math,
+                max_energy_error,
+                mass_matrix,
+                KineticEnergyKind::Euclidean,
+            );
 
         let options = NutsOptions {
             maxdepth: 10u64,

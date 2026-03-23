@@ -11,4 +11,6 @@ pub use hamiltonian::Point;
 pub use hamiltonian::{Direction, LeapfrogResult};
 pub use state::{State, StatePool};
 pub use transformed_hamiltonian::TransformedHamiltonian;
-pub use transformed_hamiltonian::{TransformedPoint, TransformedPointStatsOptions};
+pub use transformed_hamiltonian::{
+    KineticEnergyKind, TransformedPoint, TransformedPointStatsOptions,
+};
