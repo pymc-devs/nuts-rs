@@ -117,7 +117,7 @@ pub use rand;
 
 pub use adapt_strategy::EuclideanAdaptOptions;
 pub use chain::Chain;
-pub use dynamics::DivergenceInfo;
+pub use dynamics::{DivergenceInfo, KineticEnergyKind};
 pub use math::{CpuLogpFunc, CpuMath, CpuMathError, LogpError, Math};
 pub use model::Model;
 pub use nuts::NutsError;

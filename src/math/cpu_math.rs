@@ -493,6 +493,63 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         );
     }
 
+    fn array_normalize(&mut self, v: &mut Self::Vector) {
+        let v = v.try_as_col_major_mut().unwrap().as_slice_mut();
+        let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let inv = 1.0 / norm;
+        for x in v.iter_mut() {
+            *x *= inv;
+        }
+    }
+
+    fn esh_momentum_update(
+        &mut self,
+        gradient: &Self::Vector,
+        momentum: &mut Self::Vector,
+        step_size: f64,
+    ) -> f64 {
+        let gradient = gradient.try_as_col_major().unwrap().as_slice();
+        let momentum = momentum.try_as_col_major_mut().unwrap().as_slice_mut();
+        let n = gradient.len();
+        assert!(n >= 2, "ESH dynamics requires at least 2 dimensions");
+
+        // ‖g‖
+        let grad_norm: f64 = gradient.iter().map(|g| g * g).sum::<f64>().sqrt();
+
+        let inv_grad_norm = 1.0 / grad_norm;
+
+        // α = p · ĝ
+        let momentum_proj: f64 = momentum
+            .iter()
+            .zip(gradient.iter())
+            .map(|(p, g)| p * g * inv_grad_norm)
+            .sum();
+
+        let dims_m1 = (n - 1) as f64;
+        let delta = step_size * grad_norm / dims_m1;
+        let zeta = (-delta).exp();
+
+        // p_raw = ĝ · (1 − ζ)(1 + ζ + α(1 − ζ))  +  2ζ p
+        let coeff_g = (1.0 - zeta) * (1.0 + zeta + momentum_proj * (1.0 - zeta));
+        let coeff_p = 2.0 * zeta;
+
+        for (p, g) in momentum.iter_mut().zip(gradient.iter()) {
+            *p = coeff_g * (g * inv_grad_norm) + coeff_p * *p;
+        }
+
+        // Renormalise to unit sphere.
+        let raw_norm: f64 = momentum.iter().map(|p| p * p).sum::<f64>().sqrt();
+        let inv = 1.0 / raw_norm;
+        for p in momentum.iter_mut() {
+            *p *= inv;
+        }
+
+        let arg = momentum_proj + (1.0 - momentum_proj) * zeta * zeta;
+        let kinetic_energy_change = (delta - std::f64::consts::LN_2 + arg.ln_1p()) * dims_m1;
+
+        kinetic_energy_change
+    }
+
     fn array_vector_dot(&mut self, array1: &Self::Vector, array2: &Self::Vector) -> f64 {
         vector_dot(
             self.arch,

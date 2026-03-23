@@ -25,7 +25,7 @@ use crate::{
     DiagAdaptExpSettings, Math,
     adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy, GlobalStrategyStatsOptions},
     chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
-    dynamics::{TransformedHamiltonian, TransformedPointStatsOptions},
+    dynamics::{KineticEnergyKind, TransformedHamiltonian, TransformedPointStatsOptions},
     external_adapt_strategy::{ExternalTransformAdaptation, TransformedSettings},
     model::Model,
     nuts::NutsOptions,
@@ -186,7 +186,14 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     pub adapt_options: A,
     pub check_turning: bool,
     pub target_integration_time: Option<f64>,
-    pub exact_normal_trajectory: bool,
+    /// Selects the kinetic-energy form and the corresponding integrator.
+    ///
+    /// - [`KineticEnergyKind::Euclidean`]: standard leapfrog (default for most settings).
+    /// - [`KineticEnergyKind::ExactNormal`]: geodesic leapfrog exact for a standard-normal
+    ///   potential.
+    /// - [`KineticEnergyKind::Microcanonical`]: isokinetic ESH-dynamics leapfrog (microcanonical
+    ///   HMC); momentum is constrained to the unit sphere.
+    pub trajectory_kind: KineticEnergyKind,
     pub num_chains: usize,
     pub seed: u64,
     /// Number of extra doublings to perform after reaching maxdepth. This can
@@ -216,7 +223,7 @@ impl Default for DiagGradNutsSettings {
             seed: 0,
             num_chains: 6,
             target_integration_time: None,
-            exact_normal_trajectory: false,
+            trajectory_kind: KineticEnergyKind::Euclidean,
             extra_doublings: 0,
         }
     }
@@ -239,7 +246,7 @@ impl Default for LowRankNutsSettings {
             seed: 0,
             num_chains: 6,
             target_integration_time: None,
-            exact_normal_trajectory: false,
+            trajectory_kind: KineticEnergyKind::Euclidean,
             extra_doublings: 0,
         };
         vals.adapt_options.mass_matrix_update_freq = 20;
@@ -264,7 +271,7 @@ impl Default for TransformedNutsSettings {
             seed: 0,
             num_chains: 1,
             target_integration_time: None,
-            exact_normal_trajectory: false,
+            trajectory_kind: KineticEnergyKind::Euclidean,
             extra_doublings: 0,
         }
     }
@@ -290,7 +297,7 @@ impl Settings for LowRankNutsSettings {
             &mut math,
             max_energy_error,
             mass_matrix,
-            self.exact_normal_trajectory,
+            self.trajectory_kind,
         );
 
         let options = NutsOptions {
@@ -367,7 +374,7 @@ impl Settings for DiagGradNutsSettings {
             &mut math,
             max_energy_error,
             mass_matrix,
-            self.exact_normal_trajectory,
+            self.trajectory_kind,
         );
 
         let options = NutsOptions {
@@ -446,7 +453,7 @@ impl Settings for TransformedNutsSettings {
             &mut math,
             max_energy_error,
             transform,
-            self.exact_normal_trajectory,
+            self.trajectory_kind,
         );
 
         let options = NutsOptions {

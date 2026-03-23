@@ -175,6 +175,40 @@ pub trait Math: HasDims {
         epsilon: f64,
     );
 
+    /// Normalise `v` to unit length in-place: `v := v / ‖v‖`.
+    ///
+    /// If `‖v‖ < 1e-300` the vector is left unchanged.
+    fn array_normalize(&mut self, v: &mut Self::Vector);
+
+    /// Perform one ESH (Extended Stochastic Hamiltonian) momentum half-step.
+    ///
+    /// Updates `mom` in-place so that it remains on the unit sphere, and
+    /// returns the new cumulative kinetic-energy change `prev_delta_ke + ΔKE`.
+    ///
+    /// # Algorithm
+    ///
+    /// Given momentum `p` on the unit sphere, log-density gradient `g`,
+    /// half-step size `step`, and dimension `n`:
+    ///
+    /// ```text
+    /// ĝ      = g / ‖g‖
+    /// α      = p · ĝ
+    /// Δ      = step · ‖g‖ / (n − 1)
+    /// ζ      = exp(−Δ)
+    /// p_raw  = ĝ · (1 − ζ)(1 + ζ + α(1 − ζ))  +  2ζ p
+    /// p'     = p_raw / ‖p_raw‖
+    /// ΔKE    = (Δ − log 2 + log(1 + α + (1 − α)ζ²)) · (n − 1)
+    /// ```
+    ///
+    /// Reference: Steeg & Gallagher, arXiv:2111.02434 (2021), ported from the
+    /// [BlackJAX implementation](https://github.com/blackjax-devs/blackjax/blob/main/blackjax/mcmc/integrators.py#L314).
+    fn esh_momentum_update(
+        &mut self,
+        grad: &Self::Vector,
+        mom: &mut Self::Vector,
+        step: f64,
+    ) -> f64;
+
     fn array_vector_dot(&mut self, array1: &Self::Vector, array2: &Self::Vector) -> f64;
     fn array_gaussian<R: rand::Rng + ?Sized>(
         &mut self,
