@@ -140,6 +140,12 @@ pub struct Progress {
     pub tuning: bool,
     pub step_size: f64,
     pub num_steps: u64,
+
+    // NUTS-specific fields (None for non-NUTS samplers)
+    pub depth: Option<u64>,
+    pub reached_maxdepth: Option<bool>,
+    pub initial_energy: Option<f64>,
+    pub draw_energy: Option<f64>,
 }
 
 mod private {
@@ -539,6 +545,18 @@ impl ChainProgress {
         self.total_num_steps += stats.num_steps as usize;
         self.step_size = stats.step_size;
         self.runtime += draw_duration;
+
+        self.latest_sample = Some(SampleData {
+            chain_id: stats.chain,
+            draw: stats.draw,
+            is_tuning: stats.tuning,
+            tree_depth: stats.depth,
+            reached_max_treedepth: stats.reached_maxdepth,
+            diverging: Some(stats.diverging),
+            initial_energy: stats.initial_energy,
+            draw_energy: stats.draw_energy,
+            step_size: Some(stats.step_size),
+        });
     }
 }
 
@@ -678,61 +696,6 @@ impl<T: TraceStorage> ChainProcess<T> {
                         draw_data.get_all(math.deref()),
                         &info,
                     )?;
-
-                    // Update latest sample in progress
-                    {
-                        let stats_all = stats.get_all(&dims);
-
-                        // Extract depth from stats
-                        let tree_depth = stats_all
-                            .iter()
-                            .find(|(name, _)| *name == "depth")
-                            .and_then(|(_, val)| {
-                                if let Some(Value::ScalarU64(v)) = val {
-                                    Some(*v)
-                                } else {
-                                    None
-                                }
-                            });
-
-                        // Extract maxdepth_reached from stats
-                        let reached_max_treedepth = stats_all
-                            .iter()
-                            .find(|(name, _)| *name == "maxdepth_reached")
-                            .and_then(|(_, val)| {
-                                if let Some(Value::ScalarBool(v)) = val {
-                                    Some(*v)
-                                } else {
-                                    None
-                                }
-                            });
-
-                        // Extract draw energy from stats
-                        let draw_energy = stats_all
-                            .iter()
-                            .find(|(name, _)| *name == "energy")
-                            .and_then(|(_, val)| {
-                                if let Some(Value::ScalarF64(v)) = val {
-                                    Some(*v)
-                                } else {
-                                    None
-                                }
-                            });
-
-                        let sample_data = SampleData {
-                            chain_id,
-                            draw: draw as u64,
-                            is_tuning: info.tuning,
-                            tree_depth,
-                            reached_max_treedepth,
-                            diverging: Some(info.diverging),
-                            initial_energy: None, // Not available in current stats
-                            draw_energy,
-                            step_size: Some(info.step_size),
-                        };
-
-                        progress.lock().expect("Poisoned mutex").latest_sample = Some(sample_data);
-                    }
 
                     draw += 1;
                     if draw == draws {

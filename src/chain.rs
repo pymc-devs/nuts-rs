@@ -177,6 +177,10 @@ where
             tuning: self.strategy.is_tuning(),
             step_size: self.hamiltonian.step_size(),
             num_steps: self.strategy.last_num_steps(),
+            depth: Some(info.depth),
+            reached_maxdepth: Some(info.reached_maxdepth),
+            initial_energy: Some(info.initial_energy),
+            draw_energy: Some(info.draw_energy),
         };
 
         self.draw_count += 1;
