@@ -1061,13 +1061,13 @@ pub mod test_logps {
 
     use std::collections::HashMap;
 
-    use crate::{
-        Model,
-        math::{CpuLogpFunc, CpuMath, LogpError},
-    };
+    use crate::math::{CpuLogpFunc, LogpError};
+    #[cfg(feature = "zarr")]
+    use crate::{Model, math::CpuMath};
+    #[cfg(feature = "zarr")]
+    use rand::Rng;
     use anyhow::Result;
     use nuts_storable::HasDims;
-    use rand::Rng;
     use thiserror::Error;
 
     #[derive(Clone, Debug)]
@@ -1192,16 +1192,19 @@ pub mod test_logps {
         }
     }
 
+    #[cfg(feature = "zarr")]
     pub struct CpuModel<F> {
         logp: F,
     }
 
+    #[cfg(feature = "zarr")]
     impl<F> CpuModel<F> {
         pub fn new(logp: F) -> Self {
             Self { logp }
         }
     }
 
+    #[cfg(feature = "zarr")]
     impl<F> Model for CpuModel<F>
     where
         F: Send + Sync + 'static,
@@ -1226,23 +1229,30 @@ pub mod test_logps {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::Arc,
-        time::{Duration, Instant},
-    };
-
     use super::test_logps::NormalLogp;
     use crate::{
-        Chain, DiagGradNutsSettings, Sampler, ZarrConfig,
-        math::CpuMath,
-        sample_sequentially,
-        sampler::{Settings, test_logps::CpuModel},
+        Chain, DiagGradNutsSettings, math::CpuMath, sample_sequentially,
+        sampler::Settings,
     };
+
+    #[cfg(feature = "zarr")]
+    use super::test_logps::CpuModel;
 
     use anyhow::Result;
     use itertools::Itertools;
     use pretty_assertions::assert_eq;
     use rand::{SeedableRng, rngs::StdRng};
+
+    #[cfg(feature = "zarr")]
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+
+    #[cfg(feature = "zarr")]
+    use crate::{Sampler, ZarrConfig};
+
+    #[cfg(feature = "zarr")]
     use zarrs::storage::store::MemoryStore;
 
     #[test]
@@ -1277,6 +1287,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "zarr")]
     #[test]
     fn sample_parallel() -> Result<()> {
         let logp = NormalLogp { dim: 100, mu: 0.1 };
