@@ -1,7 +1,9 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
+#[cfg(target_os = "linux")]
 use nix::sched::{CpuSet, sched_setaffinity};
+#[cfg(target_os = "linux")]
 use nix::unistd::Pid;
 use nuts_rs::{Chain, CpuLogpFunc, CpuMath, LogpError, Math, Settings};
 use nuts_storable::HasDims;
@@ -96,19 +98,30 @@ pub fn sample_one(out: &mut [f64]) {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    ThreadPoolBuilder::new()
-        .num_threads(4)
-        .start_handler(|idx| {
-            let mut cpu_set = CpuSet::new();
-            cpu_set.set(idx).unwrap();
-            sched_setaffinity(Pid::from_raw(0), &cpu_set).unwrap();
-        })
-        .build_global()
-        .unwrap();
+    // `nix` only exposes CpuSet / sched_setaffinity on Linux; on macOS etc. use a plain pool.
+    #[cfg(target_os = "linux")]
+    {
+        ThreadPoolBuilder::new()
+            .num_threads(4)
+            .start_handler(|idx| {
+                let mut cpu_set = CpuSet::new();
+                cpu_set.set(idx).unwrap();
+                sched_setaffinity(Pid::from_raw(0), &cpu_set).unwrap();
+            })
+            .build_global()
+            .unwrap();
 
-    let mut cpu_set = CpuSet::new();
-    cpu_set.set(0).unwrap();
-    sched_setaffinity(Pid::from_raw(0), &cpu_set).unwrap();
+        let mut cpu_set = CpuSet::new();
+        cpu_set.set(0).unwrap();
+        sched_setaffinity(Pid::from_raw(0), &cpu_set).unwrap();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build_global()
+            .unwrap();
+    }
 
     for n in [4, 16, 17, 100, 4567] {
         let mut math = CpuMath::new(PosteriorDensity { dim: n });

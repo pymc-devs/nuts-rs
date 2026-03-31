@@ -66,4 +66,25 @@ arrow = ["dep:arrow", "dep:arrow-schema"]
 name = "sample"
 harness = false
 
+[[test]]
+name = "sample_normal"
+path = "tests/sample_normal.rs"
+required-features = ["zarr"]
+
+[[example]]
+name = "zarr_trace"
+required-features = ["zarr"]
+
+[[example]]
+name = "zarr_async_trace"
+required-features = ["zarr"]
+
+[[example]]
+name = "ndarray_storage"
+required-features = ["ndarray"]
+
+[[example]]
+name = "arrow_trace"
+required-features = ["arrow"]
+
 [workspace]
