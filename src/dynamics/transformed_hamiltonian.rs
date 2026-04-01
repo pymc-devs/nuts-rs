@@ -69,6 +69,11 @@ pub struct TransformedPoint<M: Math> {
     kinetic_energy: f64,
     initial_energy: f64,
     transform_id: i64,
+    /// The step size factor used by the leapfrog step that produced this point.
+    /// For NUTS and static MCLMC this is always `1.0`; for MCLMC with dynamic
+    /// step size reduction it may be `< 1.0`.  Used to compute importance
+    /// weights: `log_weight = log(step_size_factor) - energy_error`.
+    pub(crate) step_size_factor: f64,
 }
 
 impl<M: Math> Debug for TransformedPoint<M> {
@@ -259,13 +264,14 @@ impl<M: Math> TransformedPoint<M> {
     /// Reset the trajectory-tracking fields so that `energy_error()` is measured
     /// relative to the current state (e.g. after a partial momentum refresh).
     ///
-    /// Sets `kinetic_energy = 0`, `index_in_trajectory = 0`, and
-    /// `initial_energy = energy()`.  Used by the MCLMC sampler after each
-    /// isokinetic Langevin refresh.
+    /// Sets `kinetic_energy = 0`, `index_in_trajectory = 0`,
+    /// `initial_energy = energy()`, and `step_size_factor = 1.0`.
+    /// Used by the MCLMC sampler after each isokinetic Langevin refresh.
     pub(crate) fn reset_trajectory_energy(&mut self) {
         self.kinetic_energy = 0.0;
         self.index_in_trajectory = 0;
         self.initial_energy = self.energy();
+        self.step_size_factor = 1.0;
     }
 
     fn init_from_untransformed_position<T: Transformation<M>>(
@@ -378,6 +384,7 @@ impl<M: Math> Point<M> for TransformedPoint<M> {
             kinetic_energy: 0f64,
             transform_id: -1,
             initial_energy: 0f64,
+            step_size_factor: 1.0,
         }
     }
 
@@ -394,6 +401,7 @@ impl<M: Math> Point<M> for TransformedPoint<M> {
             kinetic_energy,
             transform_id,
             initial_energy,
+            step_size_factor,
         } = self;
 
         other.index_in_trajectory = *index_in_trajectory;
@@ -402,6 +410,7 @@ impl<M: Math> Point<M> for TransformedPoint<M> {
         other.kinetic_energy = *kinetic_energy;
         other.transform_id = *transform_id;
         other.initial_energy = *initial_energy;
+        other.step_size_factor = *step_size_factor;
         math.copy_into(untransformed_position, &mut other.untransformed_position);
         math.copy_into(untransformed_gradient, &mut other.untransformed_gradient);
         math.copy_into(transformed_position, &mut other.transformed_position);
@@ -527,6 +536,7 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         math: &mut M,
         start: &State<M, Self::Point>,
         dir: Direction,
+        step_size_factor: f64,
         collector: &mut C,
     ) -> LeapfrogResult<M, Self::Point> {
         let mut out = self.pool().new_state(math);
@@ -540,7 +550,8 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
             Direction::Backward => -1,
         };
 
-        let epsilon = (sign as f64) * self.step_size;
+        let epsilon = (sign as f64) * self.step_size * step_size_factor;
+        out_point.step_size_factor = step_size_factor;
         let kind = self.kinetic_energy_kind;
 
         // --- First velocity half-step ---
@@ -754,17 +765,18 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         self.momentum_decoherence_length.as_mut()
     }
 
-    fn refresh_momentum<R: rand::Rng + ?Sized>(
+    fn partial_momentum_refresh<R: rand::Rng + ?Sized>(
         &mut self,
         math: &mut M,
         state: &mut State<M, Self::Point>,
         rng: &mut R,
-        half_step: f64,
+        factor: f64,
     ) -> Result<(), NutsError> {
         let Some(momentum_decoherence_length) = self.momentum_decoherence_length else {
             return Ok(());
         };
 
+        let half_step = self.step_size * factor / 2.0;
         let n = math.dim() as f64;
         let nu = ((2.0 * half_step / momentum_decoherence_length).exp_m1() / n).sqrt();
 

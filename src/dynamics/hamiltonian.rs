@@ -112,12 +112,19 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
 
     /// Perform one leapfrog step.
     ///
+    /// `step_size_factor` scales the hamiltonian's base step size for this
+    /// step only: `actual_ε = hamiltonian.step_size() * step_size_factor`.
+    /// The actual step size used is stored on the output point as
+    /// `point.step_size`, so callers can compute importance weights as
+    /// `log(point.step_size) - energy_error`.
+    ///
     /// Return either an unrecoverable error, a new state or a divergence.
     fn leapfrog<C: Collector<M, Self::Point>>(
         &mut self,
         math: &mut M,
         start: &State<M, Self::Point>,
         dir: Direction,
+        step_size_factor: f64,
         collector: &mut C,
     ) -> LeapfrogResult<M, Self::Point>;
 
@@ -174,19 +181,21 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
         None
     }
 
-    /// Apply one isokinetic Langevin half-step to the momentum in `state`.
+    /// Apply one isokinetic Langevin partial momentum refresh to `state`.
     ///
-    /// `half_step = step_size / 2`.  When [`Self::momentum_decoherence_length`] returns
-    /// `None` this must be a no-op.  Implementations that support the refresh
-    /// should override this method.
-    fn refresh_momentum<R: rand::Rng + ?Sized>(
+    /// `factor` scales the base step size: the half-step used internally is
+    /// `hamiltonian.step_size() * factor / 2`.  When
+    /// [`Self::momentum_decoherence_length`] returns `None` this must be a
+    /// no-op.  Implementations that support the refresh should override this
+    /// method.
+    fn partial_momentum_refresh<R: rand::Rng + ?Sized>(
         &mut self,
         math: &mut M,
         state: &mut State<M, Self::Point>,
         rng: &mut R,
-        half_step: f64,
+        factor: f64,
     ) -> Result<(), NutsError> {
-        let _ = (math, state, rng, half_step);
+        let _ = (math, state, rng, factor);
         Ok(())
     }
 }
