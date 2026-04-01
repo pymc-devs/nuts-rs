@@ -81,6 +81,12 @@ pub struct MclmcStats<P: HasDims, H: Storable<P>, A: Storable<P>, Pt: Storable<P
     pub draw: u64,
     pub num_steps: u64,
     pub energy_change: f64,
+    /// Unnormalized log importance weight for this draw: `−energy_change`.
+    ///
+    /// Unadjusted MCLMC draws are not exactly from the target distribution;
+    /// reweighting by `exp(log_weight)` (normalized across draws) corrects for
+    /// the bias.  See Robnik & Seljak (2023), arXiv:2212.08549.
+    pub log_weight: f64,
     pub tuning: bool,
     #[storable(flatten)]
     pub hamiltonian: H,
@@ -265,6 +271,7 @@ where
             draw: self.draw_count,
             num_steps: info.num_steps,
             energy_change: info.energy_change,
+            log_weight: -info.energy_change,
             tuning: self.adapt.is_tuning(),
             hamiltonian: hamiltonian_stats,
             adapt: adapt_stats,
