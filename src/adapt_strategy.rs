@@ -456,8 +456,6 @@ mod test {
         let options = NutsOptions {
             maxdepth: 10u64,
             mindepth: 0,
-            store_gradient: true,
-            store_unconstrained: true,
             check_turning: true,
             store_divergences: false,
             target_integration_time: None,
@@ -477,6 +475,8 @@ mod test {
             },
             hamiltonian: (),
             point: TransformedPointStatsOptions {
+                store_gradient: true,
+                store_unconstrained: true,
                 store_transformed: false,
             },
         };

@@ -6,6 +6,7 @@ mod state;
 mod transformed_hamiltonian;
 
 pub use hamiltonian::DivergenceInfo;
+pub use hamiltonian::DivergenceStats;
 pub use hamiltonian::Hamiltonian;
 pub use hamiltonian::Point;
 pub use hamiltonian::{Direction, LeapfrogResult};
