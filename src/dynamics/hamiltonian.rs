@@ -159,4 +159,34 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
 
     fn step_size(&self) -> f64;
     fn step_size_mut(&mut self) -> &mut f64;
+
+    /// The momentum decoherence length `L` used for the isokinetic Langevin
+    /// (partial momentum refresh) step.
+    ///
+    /// - `None` means no refresh is performed (default, used by NUTS).
+    /// - `Some(L)` enables a half-step Ornstein–Uhlenbeck refresh with
+    ///   `ν = sqrt((exp(2·ε/L) − 1) / n)` around each trajectory.
+    fn momentum_decoherence_length(&self) -> Option<f64> {
+        None
+    }
+
+    fn momentum_decoherence_length_mut(&mut self) -> Option<&mut f64> {
+        None
+    }
+
+    /// Apply one isokinetic Langevin half-step to the momentum in `state`.
+    ///
+    /// `half_step = step_size / 2`.  When [`Self::momentum_decoherence_length`] returns
+    /// `None` this must be a no-op.  Implementations that support the refresh
+    /// should override this method.
+    fn refresh_momentum<R: rand::Rng + ?Sized>(
+        &mut self,
+        math: &mut M,
+        state: &mut State<M, Self::Point>,
+        rng: &mut R,
+        half_step: f64,
+    ) -> Result<(), NutsError> {
+        let _ = (math, state, rng, half_step);
+        Ok(())
+    }
 }

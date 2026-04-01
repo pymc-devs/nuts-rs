@@ -147,7 +147,7 @@ pub struct Progress {
 mod private {
     use crate::DiagGradNutsSettings;
 
-    use super::{LowRankNutsSettings, TransformedNutsSettings};
+    use super::{LowRankNutsSettings, MclmcSettings, TransformedNutsSettings};
 
     pub trait Sealed {}
 
@@ -156,6 +156,8 @@ mod private {
     impl Sealed for LowRankNutsSettings {}
 
     impl Sealed for TransformedNutsSettings {}
+
+    impl Sealed for MclmcSettings {}
 }
 
 /// Settings for the NUTS sampler
@@ -205,6 +207,139 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
 pub type DiagGradNutsSettings = NutsSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
 pub type LowRankNutsSettings = NutsSettings<EuclideanAdaptOptions<LowRankSettings>>;
 pub type TransformedNutsSettings = NutsSettings<TransformedSettings>;
+
+/// Settings for the unadjusted Microcanonical Langevin Monte Carlo (MCLMC) sampler.
+///
+/// Step size `ε` and momentum decoherence length `L` are **constants** — no
+/// adaptation of those is performed yet.  The diagonal mass matrix is adapted
+/// during warmup using [`GlobalStrategy`] with [`StepSizeAdaptMethod::Fixed`]
+/// (so the step size is never changed by the adaptation).
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct MclmcSettings {
+    /// Step size ε for the ESH leapfrog integrator.
+    pub step_size: f64,
+    /// Momentum decoherence length L (controls partial momentum refresh rate).
+    /// Set to `f64::INFINITY` to disable momentum refresh entirely.
+    pub momentum_decoherence_length: f64,
+    /// Number of warmup (mass-matrix adaptation) draws.
+    pub num_tune: u64,
+    /// Number of sampling draws after warmup.
+    pub num_draws: u64,
+    /// Number of parallel chains.
+    pub num_chains: usize,
+    /// RNG seed.
+    pub seed: u64,
+    /// Maximum energy error before a step is flagged as a divergence.
+    pub max_energy_error: f64,
+    /// Store each unconstrained parameter vector in the sampler stats.
+    pub store_unconstrained: bool,
+    /// Store the gradient in the sampler stats.
+    pub store_gradient: bool,
+    /// Mass-matrix adaptation options (step-size fields are ignored).
+    pub adapt_options: EuclideanAdaptOptions<DiagAdaptExpSettings>,
+}
+
+impl Default for MclmcSettings {
+    fn default() -> Self {
+        let mut adapt_options = EuclideanAdaptOptions::<DiagAdaptExpSettings>::default();
+        adapt_options.step_size_window = 0.0;
+        adapt_options.step_size_settings = crate::stepsize::StepSizeSettings {
+            adapt_options: crate::stepsize::StepSizeAdaptOptions {
+                method: crate::stepsize::StepSizeAdaptMethod::Fixed(0.5),
+                ..crate::stepsize::StepSizeAdaptOptions::default()
+            },
+            ..crate::stepsize::StepSizeSettings::default()
+        };
+        Self {
+            step_size: 0.5,
+            momentum_decoherence_length: 3.0,
+            num_tune: 400,
+            num_draws: 1000,
+            num_chains: 6,
+            seed: 0,
+            max_energy_error: 1000.0,
+            store_unconstrained: false,
+            store_gradient: false,
+            adapt_options,
+        }
+    }
+}
+
+type DiagMclmcChain<M> =
+    crate::mclmc::MclmcChain<M, ChaCha8Rng, GlobalStrategy<M, DiagAdaptStrategy<M>>>;
+
+impl Settings for MclmcSettings {
+    type Chain<M: Math> = DiagMclmcChain<M>;
+
+    fn new_chain<M: Math, R: Rng + ?Sized>(
+        &self,
+        chain: u64,
+        mut math: M,
+        rng: &mut R,
+    ) -> Self::Chain<M> {
+        use crate::dynamics::KineticEnergyKind;
+        use crate::mclmc::MclmcChain;
+        use crate::stepsize::StepSizeAdaptMethod;
+
+        let num_tune = self.num_tune;
+        // Embed our fixed step_size into the adapt options so that
+        // GlobalStrategy writes it to the hamiltonian (and never changes it).
+        let mut adapt_options = self.adapt_options;
+        adapt_options.step_size_settings.adapt_options.method =
+            StepSizeAdaptMethod::Fixed(self.step_size);
+        let strategy = GlobalStrategy::<M, DiagAdaptStrategy<M>>::new(
+            &mut math,
+            adapt_options,
+            num_tune,
+            chain,
+        );
+        let mass_matrix = DiagMassMatrix::new(
+            &mut math,
+            self.adapt_options.mass_matrix_options.store_mass_matrix,
+        );
+        let mut hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            self.max_energy_error,
+            mass_matrix,
+            KineticEnergyKind::Microcanonical,
+        );
+        hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
+        let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
+        let stats_options = self.stats_options::<M>();
+        MclmcChain::new(math, hamiltonian, strategy, rng, chain, stats_options)
+    }
+
+    fn hint_num_tune(&self) -> usize {
+        self.num_tune as usize
+    }
+
+    fn hint_num_draws(&self) -> usize {
+        self.num_draws as usize
+    }
+
+    fn num_chains(&self) -> usize {
+        self.num_chains
+    }
+
+    fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
+        StatOptions {
+            adapt: GlobalStrategyStatsOptions {
+                step_size: (),
+                mass_matrix: (),
+            },
+            hamiltonian: (),
+            point: TransformedPointStatsOptions {
+                store_gradient: self.store_gradient,
+                store_unconstrained: self.store_unconstrained,
+                store_transformed: false,
+            },
+        }
+    }
+}
 
 impl Default for DiagGradNutsSettings {
     fn default() -> Self {
@@ -1070,10 +1205,10 @@ pub mod test_logps {
     use crate::math::{CpuLogpFunc, LogpError};
     #[cfg(feature = "zarr")]
     use crate::{Model, math::CpuMath};
-    #[cfg(feature = "zarr")]
-    use rand::Rng;
     use anyhow::Result;
     use nuts_storable::HasDims;
+    #[cfg(feature = "zarr")]
+    use rand::Rng;
     use thiserror::Error;
 
     #[derive(Clone, Debug)]
@@ -1237,8 +1372,7 @@ pub mod test_logps {
 mod tests {
     use super::test_logps::NormalLogp;
     use crate::{
-        Chain, DiagGradNutsSettings, math::CpuMath, sample_sequentially,
-        sampler::Settings,
+        Chain, DiagGradNutsSettings, math::CpuMath, sample_sequentially, sampler::Settings,
     };
 
     #[cfg(feature = "zarr")]

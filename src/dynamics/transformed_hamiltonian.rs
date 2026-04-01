@@ -256,6 +256,18 @@ impl<M: Math> TransformedPoint<M> {
         self.kinetic_energy = 0.5 * math.array_vector_dot(&self.velocity, &self.velocity);
     }
 
+    /// Reset the trajectory-tracking fields so that `energy_error()` is measured
+    /// relative to the current state (e.g. after a partial momentum refresh).
+    ///
+    /// Sets `kinetic_energy = 0`, `index_in_trajectory = 0`, and
+    /// `initial_energy = energy()`.  Used by the MCLMC sampler after each
+    /// isokinetic Langevin refresh.
+    pub(crate) fn reset_trajectory_energy(&mut self) {
+        self.kinetic_energy = 0.0;
+        self.index_in_trajectory = 0;
+        self.initial_energy = self.energy();
+    }
+
     fn init_from_untransformed_position<T: Transformation<M>>(
         &mut self,
         transformation: &T,
@@ -402,6 +414,9 @@ pub struct TransformedHamiltonian<M: Math, T: Transformation<M>> {
     ones: M::Vector,
     zeros: M::Vector,
     step_size: f64,
+    /// Momentum decoherence length `L` for the isokinetic Langevin refresh.
+    /// `None` disables the refresh (used by NUTS); `Some(L)` enables it (MCLMC).
+    momentum_decoherence_length: Option<f64>,
     transformation: T,
     max_energy_error: f64,
     pub kinetic_energy_kind: KineticEnergyKind,
@@ -422,6 +437,7 @@ impl<M: Math, T: Transformation<M>> TransformedHamiltonian<M, T> {
         let pool = StatePool::new(math, 10);
         Self {
             step_size: 0f64,
+            momentum_decoherence_length: None,
             ones,
             zeros,
             transformation,
@@ -437,6 +453,10 @@ impl<M: Math, T: Transformation<M>> TransformedHamiltonian<M, T> {
 
     pub fn transformation_mut(&mut self) -> &mut T {
         &mut self.transformation
+    }
+
+    pub fn set_momentum_decoherence_length(&mut self, l: Option<f64>) {
+        self.momentum_decoherence_length = l;
     }
 }
 
@@ -724,5 +744,39 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
 
     fn step_size_mut(&mut self) -> &mut f64 {
         &mut self.step_size
+    }
+
+    fn momentum_decoherence_length(&self) -> Option<f64> {
+        self.momentum_decoherence_length
+    }
+
+    fn momentum_decoherence_length_mut(&mut self) -> Option<&mut f64> {
+        self.momentum_decoherence_length.as_mut()
+    }
+
+    fn refresh_momentum<R: rand::Rng + ?Sized>(
+        &mut self,
+        math: &mut M,
+        state: &mut State<M, Self::Point>,
+        rng: &mut R,
+        half_step: f64,
+    ) -> Result<(), NutsError> {
+        let Some(momentum_decoherence_length) = self.momentum_decoherence_length else {
+            return Ok(());
+        };
+
+        let n = math.dim() as f64;
+        let nu = ((2.0 * half_step / momentum_decoherence_length).exp_m1() / n).sqrt();
+
+        let mut noise = math.new_array();
+        math.array_gaussian(rng, &mut noise, &self.ones);
+
+        let point = state.try_point_mut().map_err(|_| {
+            NutsError::BadInitGrad(anyhow::anyhow!("State in use during momentum refresh").into())
+        })?;
+        math.axpy(&noise, &mut point.velocity, nu);
+        math.array_normalize(&mut point.velocity);
+
+        Ok(())
     }
 }
