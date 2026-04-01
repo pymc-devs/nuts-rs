@@ -54,9 +54,6 @@ pub struct SampleInfo {
     /// Whether the trajectory was terminated because it reached
     /// the maximum tree depth.
     pub reached_maxdepth: bool,
-
-    pub initial_energy: f64,
-    pub draw_energy: f64,
 }
 
 /// A part of the trajectory tree during NUTS sampling.
@@ -243,8 +240,6 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
             depth: self.depth,
             divergence_info,
             reached_maxdepth: maxdepth,
-            initial_energy: self.draw.point().initial_energy(),
-            draw_energy: self.draw.energy(),
         }
     }
 }
@@ -253,8 +248,6 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
 pub struct NutsOptions {
     pub maxdepth: u64,
     pub mindepth: u64,
-    pub store_gradient: bool,
-    pub store_unconstrained: bool,
     pub check_turning: bool,
     pub store_divergences: bool,
     pub target_integration_time: Option<f64>,
@@ -266,8 +259,6 @@ impl Default for NutsOptions {
         NutsOptions {
             maxdepth: 10,
             mindepth: 0,
-            store_gradient: false,
-            store_unconstrained: false,
             check_turning: true,
             store_divergences: false,
             target_integration_time: None,

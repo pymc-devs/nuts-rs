@@ -303,9 +303,7 @@ impl Settings for LowRankNutsSettings {
         let options = NutsOptions {
             maxdepth: self.maxdepth,
             mindepth: self.mindepth,
-            store_gradient: self.store_gradient,
             store_divergences: self.store_divergences,
-            store_unconstrained: self.store_unconstrained,
             check_turning: self.check_turning,
             target_integration_time: self.target_integration_time,
             extra_doublings: self.extra_doublings,
@@ -348,6 +346,8 @@ impl Settings for LowRankNutsSettings {
             },
             hamiltonian: (),
             point: TransformedPointStatsOptions {
+                store_gradient: self.store_gradient,
+                store_unconstrained: self.store_unconstrained,
                 store_transformed: self.store_transformed,
             },
         }
@@ -380,9 +380,7 @@ impl Settings for DiagGradNutsSettings {
         let options = NutsOptions {
             maxdepth: self.maxdepth,
             mindepth: self.mindepth,
-            store_gradient: self.store_gradient,
             store_divergences: self.store_divergences,
-            store_unconstrained: self.store_unconstrained,
             check_turning: self.check_turning,
             target_integration_time: self.target_integration_time,
             extra_doublings: self.extra_doublings,
@@ -425,6 +423,8 @@ impl Settings for DiagGradNutsSettings {
             },
             hamiltonian: (),
             point: TransformedPointStatsOptions {
+                store_gradient: self.store_gradient,
+                store_unconstrained: self.store_unconstrained,
                 store_transformed: self.store_transformed,
             },
         }
@@ -459,9 +459,7 @@ impl Settings for TransformedNutsSettings {
         let options = NutsOptions {
             maxdepth: self.maxdepth,
             mindepth: self.mindepth,
-            store_gradient: self.store_gradient,
             store_divergences: self.store_divergences,
-            store_unconstrained: self.store_unconstrained,
             check_turning: self.check_turning,
             target_integration_time: self.target_integration_time,
             extra_doublings: self.extra_doublings,
@@ -501,6 +499,8 @@ impl Settings for TransformedNutsSettings {
 
     fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
         let point = TransformedPointStatsOptions {
+            store_gradient: self.store_gradient,
+            store_unconstrained: self.store_unconstrained,
             store_transformed: self.store_transformed,
         };
         StatOptions {
@@ -682,7 +682,6 @@ impl<T: TraceStorage> ChainProcess<T> {
                     }
 
                     let now = Instant::now();
-                    //let (point, info) = sampler.draw().unwrap();
                     let (_point, mut draw_data, mut stats, info) = sampler.expanded_draw().unwrap();
 
                     let mut guard = chain_trace

@@ -2,6 +2,8 @@
 
 use std::{fmt::Debug, sync::Arc};
 
+use nuts_derive::Storable;
+
 use rand::{
     Rng, RngExt,
     distr::{Distribution, StandardUniform},
@@ -31,6 +33,35 @@ pub struct DivergenceInfo {
     pub end_idx_in_trajectory: Option<i64>,
     pub start_idx_in_trajectory: Option<i64>,
     pub logp_function_error: Option<Arc<dyn std::error::Error + Send + Sync>>,
+}
+
+/// Per-draw divergence statistics, suitable for storage.
+#[derive(Debug, Storable)]
+pub struct DivergenceStats {
+    pub diverging: bool,
+    #[storable(dims("unconstrained_parameter"))]
+    pub divergence_start: Option<Vec<f64>>,
+    #[storable(dims("unconstrained_parameter"))]
+    pub divergence_start_gradient: Option<Vec<f64>>,
+    #[storable(dims("unconstrained_parameter"))]
+    pub divergence_end: Option<Vec<f64>>,
+    #[storable(dims("unconstrained_parameter"))]
+    pub divergence_momentum: Option<Vec<f64>>,
+}
+
+impl From<Option<&DivergenceInfo>> for DivergenceStats {
+    fn from(info: Option<&DivergenceInfo>) -> Self {
+        DivergenceStats {
+            diverging: info.is_some(),
+            divergence_start: info
+                .and_then(|d| d.start_location.as_ref().map(|v| v.as_ref().to_vec())),
+            divergence_start_gradient: info
+                .and_then(|d| d.start_gradient.as_ref().map(|v| v.as_ref().to_vec())),
+            divergence_end: info.and_then(|d| d.end_location.as_ref().map(|v| v.as_ref().to_vec())),
+            divergence_momentum: info
+                .and_then(|d| d.start_momentum.as_ref().map(|v| v.as_ref().to_vec())),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]

@@ -90,6 +90,14 @@ impl<M: Math> Debug for TransformedPoint<M> {
 
 #[derive(Debug, Storable)]
 pub struct PointStats {
+    pub index_in_trajectory: i64,
+    pub logp: f64,
+    pub energy: f64,
+    pub energy_error: f64,
+    #[storable(dims("unconstrained_parameter"))]
+    pub unconstrained_draw: Option<Vec<f64>>,
+    #[storable(dims("unconstrained_parameter"))]
+    pub gradient: Option<Vec<f64>>,
     pub fisher_distance: f64,
     #[storable(dims("unconstrained_parameter"))]
     pub transformed_position: Option<Vec<f64>>,
@@ -100,6 +108,8 @@ pub struct PointStats {
 
 #[derive(Debug, Clone, Copy)]
 pub struct TransformedPointStatsOptions {
+    pub store_gradient: bool,
+    pub store_unconstrained: bool,
     pub store_transformed: bool,
 }
 
@@ -108,6 +118,16 @@ impl<M: Math> SamplerStats<M> for TransformedPoint<M> {
     type StatsOptions = TransformedPointStatsOptions;
 
     fn extract_stats(&self, math: &mut M, opt: Self::StatsOptions) -> Self::Stats {
+        let unconstrained_draw = if opt.store_unconstrained {
+            Some(math.box_array(&self.untransformed_position).into_vec())
+        } else {
+            None
+        };
+        let gradient = if opt.store_gradient {
+            Some(math.box_array(&self.untransformed_gradient).into_vec())
+        } else {
+            None
+        };
         let mut transformed_position = None;
         let mut transformed_gradient = None;
         if opt.store_transformed {
@@ -117,6 +137,12 @@ impl<M: Math> SamplerStats<M> for TransformedPoint<M> {
         let fisher_distance =
             math.sq_norm_sum(&self.transformed_position, &self.transformed_gradient);
         PointStats {
+            index_in_trajectory: self.index_in_trajectory,
+            logp: self.logp,
+            energy: self.energy(),
+            energy_error: self.energy_error(),
+            unconstrained_draw,
+            gradient,
             fisher_distance,
             transformation_index: self.transform_id,
             transformed_gradient: transformed_gradient.map(|x| x.into_vec()),
