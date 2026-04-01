@@ -237,6 +237,17 @@ pub struct MclmcSettings {
     pub store_gradient: bool,
     /// Mass-matrix adaptation options (step-size fields are ignored).
     pub adapt_options: EuclideanAdaptOptions<DiagAdaptExpSettings>,
+    /// Number of leapfrog steps per draw as a fraction of `L / ε`.
+    /// 
+    ///
+    /// The number of leapfrog steps between collector calls is:
+    /// `round(subsample_frequency * L / ε).max(1)`
+    ///
+    /// - `1.0` (default) — one sample per full trajectory (at the final step).
+    /// - `0.0` — every leapfrog step.
+    /// - Values in between space samples as a fraction of the decoherence
+    ///   length, so the interval scales naturally when `L` or `ε` changes.
+    pub subsample_frequency: f64,
 }
 
 impl Default for MclmcSettings {
@@ -261,6 +272,7 @@ impl Default for MclmcSettings {
             store_unconstrained: false,
             store_gradient: false,
             adapt_options,
+            subsample_frequency: 1.0,
         }
     }
 }
@@ -306,7 +318,15 @@ impl Settings for MclmcSettings {
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
-        MclmcChain::new(math, hamiltonian, strategy, rng, chain, stats_options)
+        MclmcChain::new(
+            math,
+            hamiltonian,
+            strategy,
+            rng,
+            chain,
+            self.subsample_frequency,
+            stats_options,
+        )
     }
 
     fn hint_num_tune(&self) -> usize {

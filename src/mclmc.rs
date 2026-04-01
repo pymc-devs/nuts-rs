@@ -7,19 +7,19 @@
 //!
 //! ## Algorithm (one draw)
 //!
-//! Let `L` be the momentum decoherence length and `ε` the step size.
-//! The number of leapfrog steps per draw is `num_steps = round(L / ε)`.
+//! Let `L` be the momentum decoherence length, `ε` the step size, and `f` the
+//! `subsample_frequency`.  Each call to [`MclmcChain::draw`] runs exactly
+//! `num_steps = round(f · L / ε).max(1)` leapfrog steps:
 //!
-//! 1. **Partial momentum refresh** (half Langevin step):
-//!    - `ν = sqrt((exp(2·ε/L) − 1) / n)`,  `n = dim`
+//! 1. **Partial momentum refresh** (half Langevin step with `half_step = ε/2`):
+//!    - `ν = sqrt((exp(2·half_step/L) − 1) / n)`,  `n = dim`
 //!    - `p ← (p + ν·z) / ‖p + ν·z‖`,  `z ~ N(0, I)`
-//! 2. **`num_steps` ESH leapfrog steps** using
-//!    [`KineticEnergyKind::Microcanonical`] inside [`TransformedHamiltonian`].
+//! 2. **`num_steps` ESH leapfrog steps** — the end state is the draw.
 //! 3. **Partial momentum refresh** again (second half, same ν).
 //!
 //! No Metropolis accept/reject is performed — the draw is always accepted.
-//!
-//! ## Adaptation
+//! With `f = 1` each draw spans one full decoherence length; smaller `f`
+//! produces more frequent (cheaper) draws.
 //!
 //! [`MclmcChain`] is generic over any [`AdaptStrategy`] whose `Hamiltonian`
 //! associated type is a [`TransformedHamiltonian`].  [`MclmcSettings`] wires
@@ -53,24 +53,15 @@ use crate::{
 /// Diagnostic information returned for a single MCLMC draw.
 #[derive(Debug, Clone)]
 pub struct MclmcInfo {
-    /// Accumulated energy change `ΔKE − Δlogp` over the trajectory.
+    /// Accumulated energy change `ΔKE − Δlogp` over the draw's leapfrog steps.
     pub energy_change: f64,
     /// Whether the trajectory hit a divergence.
     pub diverging: bool,
     /// Full divergence details, if any.
     pub divergence_info: Option<DivergenceInfo>,
-    /// Number of leapfrog steps actually taken (may be less than `num_steps`
-    /// if a divergence was encountered).
+    /// Number of leapfrog steps actually taken.
     pub num_steps: u64,
 }
-
-// ── A null leapfrog collector ─────────────────────────────────────────────────
-
-/// Passed to each individual leapfrog call inside the MCLMC loop.
-/// Does nothing — the adaptation collector is driven at the draw level.
-struct LeapfrogNullCollector;
-
-impl<M: Math, P: Point<M>> Collector<M, P> for LeapfrogNullCollector {}
 
 // ── Stats structs ─────────────────────────────────────────────────────────────
 
@@ -123,6 +114,14 @@ where
     rng: R,
     chain: u64,
     draw_count: u64,
+    /// Number of leapfrog steps per draw, expressed as a fraction of `L / ε`.
+    ///
+    /// `num_steps = round(subsample_frequency * L / ε).max(1)`
+    ///
+    /// - `1.0` → one full decoherence length per draw (default).
+    /// - Smaller values → cheaper draws, more frequent adaptation updates.
+    /// Scales naturally when `L` or `ε` is changed by adaptation.
+    subsample_frequency: f64,
     /// NutsOptions kept only to satisfy `AdaptStrategy::adapt`'s signature;
     /// MCLMC does not use tree-related options.
     nuts_options: NutsOptions,
@@ -144,6 +143,7 @@ where
         adapt: A,
         rng: R,
         chain: u64,
+        subsample_frequency: f64,
         stats_options: StatOptions<M, A>,
     ) -> Self {
         let state = hamiltonian.pool().new_state(&mut math);
@@ -156,6 +156,7 @@ where
             rng,
             chain,
             draw_count: 0,
+            subsample_frequency,
             nuts_options: NutsOptions::default(),
             math: math.into(),
             stats_options,
@@ -171,7 +172,10 @@ where
             .hamiltonian
             .momentum_decoherence_length()
             .unwrap_or(f64::INFINITY);
-        let num_steps = (momentum_decoherence_length / step_size).round().max(1.0) as u64;
+        // Each draw runs exactly this many leapfrog steps.
+        let num_steps = (self.subsample_frequency * momentum_decoherence_length / step_size)
+            .round()
+            .max(1.0) as u64;
         let half_eps = step_size * 0.5;
 
         // ── First partial momentum refresh ───────────────────────────────────
@@ -179,7 +183,7 @@ where
             .refresh_momentum(math, &mut self.state, &mut self.rng, half_eps)?;
 
         // Reset the energy baseline to the post-refresh state so that
-        // energy_error() measures drift over this trajectory only.
+        // energy_error() measures drift over this draw only.
         {
             let point = self
                 .state
@@ -189,7 +193,6 @@ where
         }
 
         // ── num_steps ESH leapfrog steps ─────────────────────────────────────
-        let mut lf_collector = LeapfrogNullCollector;
         let mut current = self.state.clone();
         let mut divergence_info: Option<DivergenceInfo> = None;
         let mut steps_taken = 0u64;
@@ -200,7 +203,7 @@ where
                 math,
                 &current,
                 crate::dynamics::Direction::Forward,
-                &mut lf_collector,
+                &mut self.collector,
             ) {
                 LeapfrogResult::Ok(next) => {
                     current = next;
@@ -216,11 +219,18 @@ where
             }
         }
 
+        // Register the end state as the draw for the adaptation collector.
+        let sample_info = crate::nuts::SampleInfo {
+            depth: steps_taken,
+            divergence_info: divergence_info.clone(),
+            reached_maxdepth: false,
+        };
+        self.collector.register_draw(math, &current, &sample_info);
+
         let energy_change = current.point().energy_error();
         let diverging = divergence_info.is_some();
 
         // ── Second partial momentum refresh ──────────────────────────────────
-        // Ensure exclusive access before mutating the momentum.
         let mut next_state = if current.try_point_mut().is_err() {
             self.hamiltonian.copy_state(math, &current)
         } else {
@@ -330,19 +340,8 @@ where
             num_steps: info.num_steps,
         };
 
-        // Drive adaptation (mass-matrix update) from the end state of the trajectory.
-        // We synthesise a minimal SampleInfo so the adapt collector's register_draw
-        // picks up the position/gradient correctly.
-        {
-            let sample_info = crate::nuts::SampleInfo {
-                depth: info.num_steps,
-                divergence_info: info.divergence_info.clone(),
-                reached_maxdepth: false,
-            };
-            self.collector
-                .register_draw(self.math.get_mut(), &state, &sample_info);
-        }
-
+        // The collector was already fed during mclmc_kernel via register_leapfrog
+        // on the sampled steps. Now call adapt with whatever was accumulated.
         {
             let mut math_ = self.math.borrow_mut();
             let math = math_.deref_mut();
