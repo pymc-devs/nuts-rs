@@ -217,7 +217,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
             Direction::Forward => &self.right,
             Direction::Backward => &self.left,
         };
-        let end = match hamiltonian.leapfrog(math, start, direction, collector) {
+        let end = match hamiltonian.leapfrog(math, start, direction, 1.0, collector) {
             LeapfrogResult::Divergence(info) => return Ok(Err(info)),
             LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
             LeapfrogResult::Ok(end) => end,

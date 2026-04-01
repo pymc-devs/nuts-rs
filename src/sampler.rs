@@ -238,7 +238,7 @@ pub struct MclmcSettings {
     /// Mass-matrix adaptation options (step-size fields are ignored).
     pub adapt_options: EuclideanAdaptOptions<DiagAdaptExpSettings>,
     /// Number of leapfrog steps per draw as a fraction of `L / ε`.
-    /// 
+    ///
     ///
     /// The number of leapfrog steps between collector calls is:
     /// `round(subsample_frequency * L / ε).max(1)`
@@ -248,6 +248,12 @@ pub struct MclmcSettings {
     /// - Values in between space samples as a fraction of the decoherence
     ///   length, so the interval scales naturally when `L` or `ε` changes.
     pub subsample_frequency: f64,
+    /// When `true`, use the tree-structured step size retry on divergence:
+    /// halve the step size factor and try 2 steps before doubling back.
+    /// `log_weight` will include `log(step_size)` to correct for the varying
+    /// sampling density. When `false`, divergences are recorded immediately
+    /// without any retry and `log_weight = -energy_change`.
+    pub dynamic_step_size: bool,
 }
 
 impl Default for MclmcSettings {
@@ -273,6 +279,7 @@ impl Default for MclmcSettings {
             store_gradient: false,
             adapt_options,
             subsample_frequency: 1.0,
+            dynamic_step_size: false,
         }
     }
 }
@@ -325,6 +332,7 @@ impl Settings for MclmcSettings {
             rng,
             chain,
             self.subsample_frequency,
+            self.dynamic_step_size,
             stats_options,
         )
     }
