@@ -103,6 +103,7 @@ mod chain;
 mod dynamics;
 mod external_adapt_strategy;
 mod math;
+mod mclmc;
 mod model;
 mod nuts;
 mod sampler;
@@ -119,11 +120,12 @@ pub use adapt_strategy::EuclideanAdaptOptions;
 pub use chain::Chain;
 pub use dynamics::{DivergenceInfo, KineticEnergyKind};
 pub use math::{CpuLogpFunc, CpuMath, CpuMathError, LogpError, Math};
+pub use mclmc::{MclmcChain, MclmcInfo, MclmcStats};
 pub use model::Model;
 pub use nuts::NutsError;
 pub use sampler::{
-    ChainProgress, DiagGradNutsSettings, LowRankNutsSettings, NutsSettings, Progress,
-    ProgressCallback, Sampler, SamplerWaitResult, Settings, TransformedNutsSettings,
+    ChainProgress, DiagGradNutsSettings, LowRankNutsSettings, MclmcSettings, NutsSettings,
+    Progress, ProgressCallback, Sampler, SamplerWaitResult, Settings, TransformedNutsSettings,
     sample_sequentially,
 };
 pub use sampler_stats::SamplerStats;
