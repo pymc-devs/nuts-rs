@@ -120,7 +120,7 @@ pub use chain::Chain;
 pub use dynamics::DivergenceInfo;
 pub use math::{CpuLogpFunc, CpuMath, CpuMathError, LogpError, Math};
 pub use model::Model;
-pub use nuts::NutsError;
+pub use nuts::{NutsError, WalnutsOptions};
 pub use sampler::{
     ChainProgress, DiagGradNutsSettings, LowRankNutsSettings, NutsSettings, Progress,
     ProgressCallback, Sampler, SamplerWaitResult, Settings, TransformedNutsSettings,

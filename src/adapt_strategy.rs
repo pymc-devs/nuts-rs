@@ -326,11 +326,12 @@ where
         start: &State<M, P>,
         end: &State<M, P>,
         divergence_info: Option<&DivergenceInfo>,
+        num_substeps: u64,
     ) {
         self.collector1
-            .register_leapfrog(math, start, end, divergence_info);
+            .register_leapfrog(math, start, end, divergence_info, num_substeps);
         self.collector2
-            .register_leapfrog(math, start, end, divergence_info);
+            .register_leapfrog(math, start, end, divergence_info, num_substeps);
     }
 
     fn register_draw(&mut self, math: &mut M, state: &State<M, P>, info: &crate::nuts::SampleInfo) {
@@ -457,6 +458,7 @@ mod test {
             store_divergences: false,
             target_integration_time: None,
             extra_doublings: 0,
+            walnuts_options: None,
         };
 
         let rng = {
