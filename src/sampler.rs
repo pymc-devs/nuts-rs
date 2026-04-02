@@ -26,7 +26,7 @@ use crate::{
     adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy, GlobalStrategyStatsOptions},
     chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
     dynamics::{KineticEnergyKind, TransformedHamiltonian, TransformedPointStatsOptions},
-    external_adapt_strategy::{ExternalTransformAdaptation, TransformedSettings},
+    external_adapt_strategy::{ExternalTransformAdaptation, FlowSettings},
     model::Model,
     nuts::NutsOptions,
     sampler_stats::{SamplerStats, StatsDims},
@@ -55,6 +55,8 @@ pub trait Settings:
     fn num_chains(&self) -> usize;
     fn seed(&self) -> u64;
     fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions;
+    fn sampler_name(&self) -> &'static str;
+    fn adaptation_name(&self) -> &'static str;
 
     fn stat_names<M: Math>(&self, math: &M) -> Vec<String> {
         let dims = StatsDims::from(math);
@@ -145,25 +147,30 @@ pub struct Progress {
 }
 
 mod private {
-    use crate::DiagGradNutsSettings;
-
-    use super::{LowRankNutsSettings, MclmcSettings, TransformedNutsSettings};
+    use super::{
+        DiagMclmcSettings, DiagNutsSettings, FlowMclmcSettings, FlowNutsSettings,
+        LowRankMclmcSettings, LowRankNutsSettings,
+    };
 
     pub trait Sealed {}
 
-    impl Sealed for DiagGradNutsSettings {}
+    impl Sealed for DiagNutsSettings {}
 
     impl Sealed for LowRankNutsSettings {}
 
-    impl Sealed for TransformedNutsSettings {}
+    impl Sealed for FlowNutsSettings {}
 
-    impl Sealed for MclmcSettings {}
+    impl Sealed for DiagMclmcSettings {}
+
+    impl Sealed for LowRankMclmcSettings {}
+
+    impl Sealed for FlowMclmcSettings {}
 }
 
 /// Settings for the NUTS sampler
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
-    /// The number of tuning steps, where we fit the step size and mass matrix.
+    /// The number of tuning steps, where we fit the step size and geometry.
     pub num_tune: u64,
     /// The number of draws after tuning
     pub num_draws: u64,
@@ -184,7 +191,7 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     pub max_energy_error: f64,
     /// Store detailed information about each divergence in the sampler stats
     pub store_divergences: bool,
-    /// Settings for mass matrix adaptation.
+    /// Settings for geometry adaptation.
     pub adapt_options: A,
     pub check_turning: bool,
     pub target_integration_time: Option<f64>,
@@ -204,24 +211,33 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     pub extra_doublings: u64,
 }
 
-pub type DiagGradNutsSettings = NutsSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
+pub type DiagNutsSettings = NutsSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
+/// Backwards-compatible alias for [`DiagNutsSettings`].
+#[deprecated(since = "0.0.0", note = "Use DiagNutsSettings instead")]
+pub type DiagGradNutsSettings = DiagNutsSettings;
 pub type LowRankNutsSettings = NutsSettings<EuclideanAdaptOptions<LowRankSettings>>;
-pub type TransformedNutsSettings = NutsSettings<TransformedSettings>;
+pub type FlowNutsSettings = NutsSettings<FlowSettings>;
+/// Backwards-compatible alias for [`FlowNutsSettings`].
+#[deprecated(since = "0.0.0", note = "Use FlowNutsSettings instead")]
+pub type TransformedNutsSettings = FlowNutsSettings;
 
 /// Settings for the unadjusted Microcanonical Langevin Monte Carlo (MCLMC) sampler.
 ///
 /// Step size `ε` and momentum decoherence length `L` are **constants** — no
-/// adaptation of those is performed yet.  The diagonal mass matrix is adapted
-/// during warmup using [`GlobalStrategy`] with [`StepSizeAdaptMethod::Fixed`]
-/// (so the step size is never changed by the adaptation).
+/// adaptation of those is performed yet. The geometry is adapted during
+/// warmup using the sampler-specific adaptation strategy, while the step size
+/// remains fixed.
+///
+/// Use the type aliases [`DiagMclmcSettings`], [`LowRankMclmcSettings`], and
+/// [`FlowMclmcSettings`] for concrete configurations.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct MclmcSettings {
+pub struct MclmcSettings<A: Debug + Copy + Default + Serialize> {
     /// Step size ε for the ESH leapfrog integrator.
     pub step_size: f64,
     /// Momentum decoherence length L (controls partial momentum refresh rate).
     /// Set to `f64::INFINITY` to disable momentum refresh entirely.
     pub momentum_decoherence_length: f64,
-    /// Number of warmup (mass-matrix adaptation) draws.
+    /// Number of warmup draws.
     pub num_tune: u64,
     /// Number of sampling draws after warmup.
     pub num_draws: u64,
@@ -235,10 +251,9 @@ pub struct MclmcSettings {
     pub store_unconstrained: bool,
     /// Store the gradient in the sampler stats.
     pub store_gradient: bool,
-    /// Mass-matrix adaptation options (step-size fields are ignored).
-    pub adapt_options: EuclideanAdaptOptions<DiagAdaptExpSettings>,
+    /// Geometry adaptation options (step-size fields are ignored for Euclidean settings).
+    pub adapt_options: A,
     /// Number of leapfrog steps per draw as a fraction of `L / ε`.
-    ///
     ///
     /// The number of leapfrog steps between collector calls is:
     /// `round(subsample_frequency * L / ε).max(1)`
@@ -256,38 +271,94 @@ pub struct MclmcSettings {
     pub dynamic_step_size: bool,
 }
 
-impl Default for MclmcSettings {
+/// MCLMC settings with a diagonal mass matrix adaptation.
+pub type DiagMclmcSettings = MclmcSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
+/// MCLMC settings with a low-rank mass matrix adaptation.
+pub type LowRankMclmcSettings = MclmcSettings<EuclideanAdaptOptions<LowRankSettings>>;
+/// MCLMC settings with a learned flow transformation.
+pub type FlowMclmcSettings = MclmcSettings<FlowSettings>;
+/// Backwards-compatible alias for [`FlowMclmcSettings`].
+#[deprecated(since = "0.0.0", note = "Use FlowMclmcSettings instead")]
+pub type TransformedMclmcSettings = FlowMclmcSettings;
+
+fn usize_hint(value: u64, field: &str) -> usize {
+    value
+        .try_into()
+        .unwrap_or_else(|_| panic!("{field} must be smaller than usize::MAX"))
+}
+
+fn default_diag_mclmc_adapt_options() -> EuclideanAdaptOptions<DiagAdaptExpSettings> {
+    let mut adapt_options = EuclideanAdaptOptions::<DiagAdaptExpSettings>::default();
+    adapt_options.step_size_window = 0.0;
+    adapt_options.step_size_settings = crate::stepsize::StepSizeSettings {
+        adapt_options: crate::stepsize::StepSizeAdaptOptions {
+            method: crate::stepsize::StepSizeAdaptMethod::Fixed(0.5),
+            ..crate::stepsize::StepSizeAdaptOptions::default()
+        },
+        ..crate::stepsize::StepSizeSettings::default()
+    };
+    adapt_options
+}
+
+fn default_low_rank_mclmc_adapt_options() -> EuclideanAdaptOptions<LowRankSettings> {
+    let mut adapt_options = EuclideanAdaptOptions::<LowRankSettings>::default();
+    adapt_options.step_size_window = 0.0;
+    adapt_options.step_size_settings = crate::stepsize::StepSizeSettings {
+        adapt_options: crate::stepsize::StepSizeAdaptOptions {
+            method: crate::stepsize::StepSizeAdaptMethod::Fixed(0.5),
+            ..crate::stepsize::StepSizeAdaptOptions::default()
+        },
+        ..crate::stepsize::StepSizeSettings::default()
+    };
+    adapt_options
+}
+
+fn default_mclmc_settings<A: Debug + Copy + Default + Serialize>(
+    adapt_options: A,
+    num_tune: u64,
+    num_chains: usize,
+    max_energy_error: f64,
+) -> MclmcSettings<A> {
+    MclmcSettings {
+        step_size: 0.5,
+        momentum_decoherence_length: 3.0,
+        num_tune,
+        num_draws: 1000,
+        num_chains,
+        seed: 0,
+        max_energy_error,
+        store_unconstrained: false,
+        store_gradient: false,
+        adapt_options,
+        subsample_frequency: 1.0,
+        dynamic_step_size: false,
+    }
+}
+
+impl Default for DiagMclmcSettings {
     fn default() -> Self {
-        let mut adapt_options = EuclideanAdaptOptions::<DiagAdaptExpSettings>::default();
-        adapt_options.step_size_window = 0.0;
-        adapt_options.step_size_settings = crate::stepsize::StepSizeSettings {
-            adapt_options: crate::stepsize::StepSizeAdaptOptions {
-                method: crate::stepsize::StepSizeAdaptMethod::Fixed(0.5),
-                ..crate::stepsize::StepSizeAdaptOptions::default()
-            },
-            ..crate::stepsize::StepSizeSettings::default()
-        };
-        Self {
-            step_size: 0.5,
-            momentum_decoherence_length: 3.0,
-            num_tune: 400,
-            num_draws: 1000,
-            num_chains: 6,
-            seed: 0,
-            max_energy_error: 1000.0,
-            store_unconstrained: false,
-            store_gradient: false,
-            adapt_options,
-            subsample_frequency: 1.0,
-            dynamic_step_size: false,
-        }
+        default_mclmc_settings(default_diag_mclmc_adapt_options(), 400, 6, 1000.0)
+    }
+}
+
+impl Default for LowRankMclmcSettings {
+    fn default() -> Self {
+        default_mclmc_settings(default_low_rank_mclmc_adapt_options(), 800, 6, 1000.0)
+    }
+}
+
+impl Default for FlowMclmcSettings {
+    fn default() -> Self {
+        default_mclmc_settings(FlowSettings::default(), 1500, 1, 20.0)
     }
 }
 
 type DiagMclmcChain<M> =
     crate::mclmc::MclmcChain<M, ChaCha8Rng, GlobalStrategy<M, DiagAdaptStrategy<M>>>;
+type LowRankMclmcChain<M> =
+    crate::mclmc::MclmcChain<M, ChaCha8Rng, GlobalStrategy<M, LowRankMassMatrixStrategy>>;
 
-impl Settings for MclmcSettings {
+impl Settings for DiagMclmcSettings {
     type Chain<M: Math> = DiagMclmcChain<M>;
 
     fn new_chain<M: Math, R: Rng + ?Sized>(
@@ -338,11 +409,11 @@ impl Settings for MclmcSettings {
     }
 
     fn hint_num_tune(&self) -> usize {
-        self.num_tune as usize
+        usize_hint(self.num_tune, "num_tune")
     }
 
     fn hint_num_draws(&self) -> usize {
-        self.num_draws as usize
+        usize_hint(self.num_draws, "num_draws")
     }
 
     fn num_chains(&self) -> usize {
@@ -360,88 +431,171 @@ impl Settings for MclmcSettings {
                 mass_matrix: (),
             },
             hamiltonian: (),
-            point: TransformedPointStatsOptions {
-                store_gradient: self.store_gradient,
-                store_unconstrained: self.store_unconstrained,
-                store_transformed: false,
-            },
+            point: point_stats_options(self.store_gradient, self.store_unconstrained, false),
         }
+    }
+
+    fn sampler_name(&self) -> &'static str {
+        "mclmc"
+    }
+
+    fn adaptation_name(&self) -> &'static str {
+        "diagonal"
     }
 }
 
-impl Default for DiagGradNutsSettings {
-    fn default() -> Self {
-        Self {
-            num_tune: 400,
-            num_draws: 1000,
-            maxdepth: 10,
-            mindepth: 0,
-            max_energy_error: 1000f64,
-            store_gradient: false,
-            store_unconstrained: false,
-            store_transformed: false,
-            store_divergences: false,
-            adapt_options: EuclideanAdaptOptions::default(),
-            check_turning: true,
-            seed: 0,
-            num_chains: 6,
-            target_integration_time: None,
-            trajectory_kind: KineticEnergyKind::Euclidean,
-            extra_doublings: 0,
+fn default_nuts_settings<A: Debug + Copy + Default + Serialize>(
+    adapt_options: A,
+    num_tune: u64,
+    num_chains: usize,
+    max_energy_error: f64,
+) -> NutsSettings<A> {
+    NutsSettings {
+        num_tune,
+        num_draws: 1000,
+        maxdepth: 10,
+        mindepth: 0,
+        max_energy_error,
+        store_gradient: false,
+        store_unconstrained: false,
+        store_transformed: false,
+        store_divergences: false,
+        adapt_options,
+        check_turning: true,
+        seed: 0,
+        num_chains,
+        target_integration_time: None,
+        trajectory_kind: KineticEnergyKind::Euclidean,
+        extra_doublings: 0,
+    }
+}
+
+impl Settings for LowRankMclmcSettings {
+    type Chain<M: Math> = LowRankMclmcChain<M>;
+
+    fn new_chain<M: Math, R: Rng + ?Sized>(
+        &self,
+        chain: u64,
+        mut math: M,
+        rng: &mut R,
+    ) -> Self::Chain<M> {
+        use crate::dynamics::KineticEnergyKind;
+        use crate::mclmc::MclmcChain;
+        use crate::stepsize::StepSizeAdaptMethod;
+
+        let num_tune = self.num_tune;
+        let mut adapt_options = self.adapt_options;
+        adapt_options.step_size_settings.adapt_options.method =
+            StepSizeAdaptMethod::Fixed(self.step_size);
+        let strategy = GlobalStrategy::<M, LowRankMassMatrixStrategy>::new(
+            &mut math,
+            adapt_options,
+            num_tune,
+            chain,
+        );
+        let mass_matrix = LowRankMassMatrix::new(&mut math, self.adapt_options.mass_matrix_options);
+        let mut hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            self.max_energy_error,
+            mass_matrix,
+            KineticEnergyKind::Microcanonical,
+        );
+        hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
+        let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
+        let stats_options = self.stats_options::<M>();
+        MclmcChain::new(
+            math,
+            hamiltonian,
+            strategy,
+            rng,
+            chain,
+            self.subsample_frequency,
+            self.dynamic_step_size,
+            stats_options,
+        )
+    }
+
+    fn hint_num_tune(&self) -> usize {
+        usize_hint(self.num_tune, "num_tune")
+    }
+
+    fn hint_num_draws(&self) -> usize {
+        usize_hint(self.num_draws, "num_draws")
+    }
+
+    fn num_chains(&self) -> usize {
+        self.num_chains
+    }
+
+    fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
+        StatOptions {
+            adapt: GlobalStrategyStatsOptions {
+                step_size: (),
+                mass_matrix: (),
+            },
+            hamiltonian: (),
+            point: point_stats_options(self.store_gradient, self.store_unconstrained, false),
         }
+    }
+
+    fn sampler_name(&self) -> &'static str {
+        "mclmc"
+    }
+
+    fn adaptation_name(&self) -> &'static str {
+        "low_rank"
+    }
+}
+
+impl Default for DiagNutsSettings {
+    fn default() -> Self {
+        default_nuts_settings(EuclideanAdaptOptions::default(), 400, 6, 1000.0)
     }
 }
 
 impl Default for LowRankNutsSettings {
     fn default() -> Self {
-        let mut vals = Self {
-            num_tune: 800,
-            num_draws: 1000,
-            maxdepth: 10,
-            mindepth: 0,
-            max_energy_error: 1000f64,
-            store_gradient: false,
-            store_unconstrained: false,
-            store_transformed: false,
-            store_divergences: false,
-            adapt_options: EuclideanAdaptOptions::default(),
-            check_turning: true,
-            seed: 0,
-            num_chains: 6,
-            target_integration_time: None,
-            trajectory_kind: KineticEnergyKind::Euclidean,
-            extra_doublings: 0,
-        };
+        let mut vals = default_nuts_settings(EuclideanAdaptOptions::default(), 800, 6, 1000.0);
         vals.adapt_options.mass_matrix_update_freq = 20;
         vals
     }
 }
 
-impl Default for TransformedNutsSettings {
+impl Default for FlowNutsSettings {
     fn default() -> Self {
-        Self {
-            num_tune: 1500,
-            num_draws: 1000,
-            maxdepth: 10,
-            mindepth: 0,
-            max_energy_error: 20f64,
-            store_gradient: false,
-            store_unconstrained: false,
-            store_transformed: false,
-            store_divergences: false,
-            adapt_options: Default::default(),
-            check_turning: true,
-            seed: 0,
-            num_chains: 1,
-            target_integration_time: None,
-            trajectory_kind: KineticEnergyKind::Euclidean,
-            extra_doublings: 0,
-        }
+        default_nuts_settings(FlowSettings::default(), 1500, 1, 20.0)
     }
 }
 
-type DiagGradNutsChain<M> = NutsChain<M, ChaCha8Rng, GlobalStrategy<M, DiagAdaptStrategy<M>>>;
+type DiagNutsChain<M> = NutsChain<M, ChaCha8Rng, GlobalStrategy<M, DiagAdaptStrategy<M>>>;
 type LowRankNutsChain<M> = NutsChain<M, ChaCha8Rng, GlobalStrategy<M, LowRankMassMatrixStrategy>>;
+
+fn nuts_options(settings: &NutsSettings<impl Debug + Copy + Default + Serialize>) -> NutsOptions {
+    NutsOptions {
+        maxdepth: settings.maxdepth,
+        mindepth: settings.mindepth,
+        store_divergences: settings.store_divergences,
+        check_turning: settings.check_turning,
+        target_integration_time: settings.target_integration_time,
+        extra_doublings: settings.extra_doublings,
+    }
+}
+
+fn point_stats_options(
+    store_gradient: bool,
+    store_unconstrained: bool,
+    store_transformed: bool,
+) -> TransformedPointStatsOptions {
+    TransformedPointStatsOptions {
+        store_gradient,
+        store_unconstrained,
+        store_transformed,
+    }
+}
 
 impl Settings for LowRankNutsSettings {
     type Chain<M: Math> = LowRankNutsChain<M>;
@@ -463,14 +617,7 @@ impl Settings for LowRankNutsSettings {
             self.trajectory_kind,
         );
 
-        let options = NutsOptions {
-            maxdepth: self.maxdepth,
-            mindepth: self.mindepth,
-            store_divergences: self.store_divergences,
-            check_turning: self.check_turning,
-            target_integration_time: self.target_integration_time,
-            extra_doublings: self.extra_doublings,
-        };
+        let options = nuts_options(self);
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
 
@@ -486,11 +633,11 @@ impl Settings for LowRankNutsSettings {
     }
 
     fn hint_num_tune(&self) -> usize {
-        self.num_tune as _
+        usize_hint(self.num_tune, "num_tune")
     }
 
     fn hint_num_draws(&self) -> usize {
-        self.num_draws as _
+        usize_hint(self.num_draws, "num_draws")
     }
 
     fn num_chains(&self) -> usize {
@@ -508,17 +655,25 @@ impl Settings for LowRankNutsSettings {
                 step_size: (),
             },
             hamiltonian: (),
-            point: TransformedPointStatsOptions {
-                store_gradient: self.store_gradient,
-                store_unconstrained: self.store_unconstrained,
-                store_transformed: self.store_transformed,
-            },
+            point: point_stats_options(
+                self.store_gradient,
+                self.store_unconstrained,
+                self.store_transformed,
+            ),
         }
+    }
+
+    fn sampler_name(&self) -> &'static str {
+        "nuts"
+    }
+
+    fn adaptation_name(&self) -> &'static str {
+        "low_rank"
     }
 }
 
-impl Settings for DiagGradNutsSettings {
-    type Chain<M: Math> = DiagGradNutsChain<M>;
+impl Settings for DiagNutsSettings {
+    type Chain<M: Math> = DiagNutsChain<M>;
 
     fn new_chain<M: Math, R: Rng + ?Sized>(
         &self,
@@ -540,14 +695,7 @@ impl Settings for DiagGradNutsSettings {
             self.trajectory_kind,
         );
 
-        let options = NutsOptions {
-            maxdepth: self.maxdepth,
-            mindepth: self.mindepth,
-            store_divergences: self.store_divergences,
-            check_turning: self.check_turning,
-            target_integration_time: self.target_integration_time,
-            extra_doublings: self.extra_doublings,
-        };
+        let options = nuts_options(self);
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
 
@@ -563,11 +711,11 @@ impl Settings for DiagGradNutsSettings {
     }
 
     fn hint_num_tune(&self) -> usize {
-        self.num_tune as _
+        usize_hint(self.num_tune, "num_tune")
     }
 
     fn hint_num_draws(&self) -> usize {
-        self.num_draws as _
+        usize_hint(self.num_draws, "num_draws")
     }
 
     fn num_chains(&self) -> usize {
@@ -585,16 +733,24 @@ impl Settings for DiagGradNutsSettings {
                 step_size: (),
             },
             hamiltonian: (),
-            point: TransformedPointStatsOptions {
-                store_gradient: self.store_gradient,
-                store_unconstrained: self.store_unconstrained,
-                store_transformed: self.store_transformed,
-            },
+            point: point_stats_options(
+                self.store_gradient,
+                self.store_unconstrained,
+                self.store_transformed,
+            ),
         }
+    }
+
+    fn sampler_name(&self) -> &'static str {
+        "nuts"
+    }
+
+    fn adaptation_name(&self) -> &'static str {
+        "diagonal"
     }
 }
 
-impl Settings for TransformedNutsSettings {
+impl Settings for FlowNutsSettings {
     type Chain<M: Math> = NutsChain<M, ChaCha8Rng, ExternalTransformAdaptation>;
 
     fn new_chain<M: Math, R: Rng + ?Sized>(
@@ -619,14 +775,7 @@ impl Settings for TransformedNutsSettings {
             self.trajectory_kind,
         );
 
-        let options = NutsOptions {
-            maxdepth: self.maxdepth,
-            mindepth: self.mindepth,
-            store_divergences: self.store_divergences,
-            check_turning: self.check_turning,
-            target_integration_time: self.target_integration_time,
-            extra_doublings: self.extra_doublings,
-        };
+        let options = nuts_options(self);
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
         NutsChain::new(
@@ -641,15 +790,11 @@ impl Settings for TransformedNutsSettings {
     }
 
     fn hint_num_tune(&self) -> usize {
-        self.num_tune
-            .try_into()
-            .expect("num_tune must be smaller than usize::MAX")
+        usize_hint(self.num_tune, "num_tune")
     }
 
     fn hint_num_draws(&self) -> usize {
-        self.num_draws
-            .try_into()
-            .expect("num_draws must be smaller than usize::MAX")
+        usize_hint(self.num_draws, "num_draws")
     }
 
     fn num_chains(&self) -> usize {
@@ -661,22 +806,103 @@ impl Settings for TransformedNutsSettings {
     }
 
     fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
-        let point = TransformedPointStatsOptions {
-            store_gradient: self.store_gradient,
-            store_unconstrained: self.store_unconstrained,
-            store_transformed: self.store_transformed,
-        };
         StatOptions {
             adapt: (),
             hamiltonian: (),
-            point,
+            point: point_stats_options(
+                self.store_gradient,
+                self.store_unconstrained,
+                self.store_transformed,
+            ),
         }
+    }
+
+    fn sampler_name(&self) -> &'static str {
+        "nuts"
+    }
+
+    fn adaptation_name(&self) -> &'static str {
+        "flow"
+    }
+}
+
+impl Settings for FlowMclmcSettings {
+    type Chain<M: Math> = crate::mclmc::MclmcChain<M, ChaCha8Rng, ExternalTransformAdaptation>;
+
+    fn new_chain<M: Math, R: Rng + ?Sized>(
+        &self,
+        chain: u64,
+        mut math: M,
+        rng: &mut R,
+    ) -> Self::Chain<M> {
+        use crate::dynamics::KineticEnergyKind;
+        use crate::mclmc::MclmcChain;
+
+        let num_tune = self.num_tune;
+        let strategy =
+            ExternalTransformAdaptation::new(&mut math, self.adapt_options, num_tune, chain);
+        let params = math
+            .new_transformation(rng, math.dim(), chain)
+            .expect("Failed to create external transformation");
+        let transform = ExternalTransformation::new(params);
+        let mut hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            self.max_energy_error,
+            transform,
+            KineticEnergyKind::Microcanonical,
+        );
+        hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
+
+        let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
+        let stats_options = self.stats_options::<M>();
+        MclmcChain::new(
+            math,
+            hamiltonian,
+            strategy,
+            rng,
+            chain,
+            self.subsample_frequency,
+            self.dynamic_step_size,
+            stats_options,
+        )
+    }
+
+    fn hint_num_tune(&self) -> usize {
+        usize_hint(self.num_tune, "num_tune")
+    }
+
+    fn hint_num_draws(&self) -> usize {
+        usize_hint(self.num_draws, "num_draws")
+    }
+
+    fn num_chains(&self) -> usize {
+        self.num_chains
+    }
+
+    fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
+        StatOptions {
+            adapt: (),
+            hamiltonian: (),
+            point: point_stats_options(self.store_gradient, self.store_unconstrained, false),
+        }
+    }
+
+    fn sampler_name(&self) -> &'static str {
+        "mclmc"
+    }
+
+    fn adaptation_name(&self) -> &'static str {
+        "flow"
     }
 }
 
 pub fn sample_sequentially<'math, M: Math + 'math, R: Rng + ?Sized>(
     math: M,
-    settings: DiagGradNutsSettings,
+    settings: DiagNutsSettings,
     start: &[f64],
     draws: u64,
     chain: u64,
@@ -1400,7 +1626,9 @@ pub mod test_logps {
 mod tests {
     use super::test_logps::NormalLogp;
     use crate::{
-        Chain, DiagGradNutsSettings, math::CpuMath, sample_sequentially, sampler::Settings,
+        Chain, math::CpuMath, sample_sequentially, sampler::DiagMclmcSettings,
+        sampler::DiagNutsSettings, sampler::LowRankMclmcSettings, sampler::LowRankNutsSettings,
+        sampler::Settings,
     };
 
     #[cfg(feature = "zarr")]
@@ -1423,11 +1651,52 @@ mod tests {
     #[cfg(feature = "zarr")]
     use zarrs::storage::store::MemoryStore;
 
+    fn assert_settings_smoke<S: Settings>(settings: S) -> Result<()> {
+        let logp = NormalLogp { dim: 4, mu: 0.1 };
+        let math = CpuMath::new(&logp);
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let stat_names = settings.stat_names(&math);
+        let stat_types = settings.stat_types(&math);
+        assert!(!stat_names.is_empty());
+        assert_eq!(stat_names.len(), stat_types.len());
+
+        let mut chain = settings.new_chain(0, math, &mut rng);
+        chain.set_position(&vec![0.2; 4])?;
+        let (_draw, _info) = chain.draw()?;
+        Ok(())
+    }
+
+    #[test]
+    fn all_settings_smoke() -> Result<()> {
+        assert_settings_smoke(DiagNutsSettings {
+            num_tune: 10,
+            num_draws: 10,
+            ..Default::default()
+        })?;
+        assert_settings_smoke(LowRankNutsSettings {
+            num_tune: 10,
+            num_draws: 10,
+            ..Default::default()
+        })?;
+        assert_settings_smoke(DiagMclmcSettings {
+            num_tune: 10,
+            num_draws: 10,
+            ..Default::default()
+        })?;
+        assert_settings_smoke(LowRankMclmcSettings {
+            num_tune: 10,
+            num_draws: 10,
+            ..Default::default()
+        })?;
+        Ok(())
+    }
+
     #[test]
     fn sample_chain() -> Result<()> {
         let logp = NormalLogp { dim: 10, mu: 0.1 };
         let math = CpuMath::new(&logp);
-        let settings = DiagGradNutsSettings {
+        let settings = DiagNutsSettings {
             num_tune: 100,
             num_draws: 100,
             ..Default::default()
@@ -1459,7 +1728,7 @@ mod tests {
     #[test]
     fn sample_parallel() -> Result<()> {
         let logp = NormalLogp { dim: 100, mu: 0.1 };
-        let settings = DiagGradNutsSettings {
+        let settings = DiagNutsSettings {
             num_tune: 100,
             num_draws: 100,
             seed: 10,
@@ -1527,7 +1796,7 @@ mod tests {
     fn sample_seq() {
         let logp = NormalLogp { dim: 10, mu: 0.1 };
         let math = CpuMath::new(&logp);
-        let settings = DiagGradNutsSettings {
+        let settings = DiagNutsSettings {
             num_tune: 100,
             num_draws: 100,
             ..Default::default()

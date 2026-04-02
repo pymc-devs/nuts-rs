@@ -382,7 +382,7 @@ mod tests {
 
     use crate::{
         Chain, Settings, adapt_strategy::test_logps::NormalLogp, math::CpuMath,
-        sampler::DiagGradNutsSettings,
+        sampler::DiagNutsSettings,
     };
 
     #[test]
@@ -391,7 +391,7 @@ mod tests {
         let func = NormalLogp::new(ndim, 3.);
         let math = CpuMath::new(func);
 
-        let settings = DiagGradNutsSettings::default();
+        let settings = DiagNutsSettings::default();
         let mut rng = rng();
 
         let mut chain = settings.new_chain(0, math, &mut rng);
