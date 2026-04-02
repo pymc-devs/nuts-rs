@@ -465,7 +465,7 @@ mod tests {
         let func = NormalLogp::new(ndim, 3.0);
         let math = CpuMath::new(func);
 
-        let settings = crate::MclmcSettings {
+        let settings = crate::DiagMclmcSettings {
             step_size: 0.5,
             momentum_decoherence_length: 3.0,
             num_tune: 200,
