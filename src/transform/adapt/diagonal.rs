@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 
 use nuts_derive::Storable;
 use rand::Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Math, NutsError, SamplerStats,
@@ -90,7 +90,7 @@ const INIT_LOWER_LIMIT: f64 = 1e-20f64;
 const INIT_UPPER_LIMIT: f64 = 1e20f64;
 
 /// Settings for mass matrix adaptation
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct DiagAdaptExpSettings {
     pub store_mass_matrix: bool,
     pub use_grad_based_estimate: bool,

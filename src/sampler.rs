@@ -6,7 +6,7 @@ use itertools::Itertools;
 use nuts_storable::{HasDims, Storable, Value};
 use rand::{Rng, SeedableRng, rngs::ChaCha8Rng};
 use rayon::{ScopeFifo, ThreadPoolBuilder};
-use serde::Serialize;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -39,7 +39,7 @@ use crate::{
 
 /// All sampler configurations implement this trait
 pub trait Settings:
-    private::Sealed + Clone + Copy + Default + Sync + Send + Serialize + 'static
+    private::Sealed + Clone + Copy + Default + Sync + Send + Serialize + DeserializeOwned + 'static
 {
     type Chain<M: Math>: Chain<M>;
 
@@ -161,7 +161,7 @@ mod private {
 }
 
 /// Settings for the NUTS sampler
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     /// The number of tuning steps, where we fit the step size and mass matrix.
     pub num_tune: u64,
@@ -214,7 +214,7 @@ pub type TransformedNutsSettings = NutsSettings<TransformedSettings>;
 /// adaptation of those is performed yet.  The diagonal mass matrix is adapted
 /// during warmup using [`GlobalStrategy`] with [`StepSizeAdaptMethod::Fixed`]
 /// (so the step size is never changed by the adaptation).
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct MclmcSettings {
     /// Step size ε for the ESH leapfrog integrator.
     pub step_size: f64,

@@ -5,7 +5,7 @@ use std::iter::repeat_n;
 
 use faer::{Col, ColRef, Mat, MatRef};
 use nuts_derive::Storable;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::transform::{DiagMassMatrix, Transformation};
 use crate::{Math, sampler_stats::SamplerStats};
@@ -180,7 +180,7 @@ impl<M: Math> LowRankMassMatrix<M> {
     }
 }
 
-#[derive(Clone, Debug, Copy, Serialize)]
+#[derive(Clone, Debug, Copy, Serialize, Deserialize)]
 pub struct LowRankSettings {
     pub store_mass_matrix: bool,
     pub gamma: f64,
