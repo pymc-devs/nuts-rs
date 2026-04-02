@@ -62,8 +62,7 @@ impl Parse for StorableAttr {
 struct StorableBasicField {
     name: Ident,
     item_type: proc_macro2::TokenStream,
-    is_vec: bool,
-    is_option: bool,
+    value_expr: proc_macro2::TokenStream,
     dims: Vec<LitStr>,
 }
 
@@ -253,141 +252,157 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
             "u64" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::U64 },
-                is_vec: false,
-                is_option: false,
+                value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name)) },
                 dims,
             }),
             "i64" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::I64 },
-                is_vec: false,
-                is_option: false,
+                value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name)) },
                 dims,
             }),
             "f64" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F64 },
-                is_vec: false,
-                is_option: false,
+                value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name)) },
                 dims,
             }),
             "f32" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F32 },
-                is_vec: false,
-                is_option: false,
+                value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name)) },
                 dims,
             }),
             "bool" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::Bool },
-                is_vec: false,
-                is_option: false,
+                value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name)) },
                 dims,
             }),
             "Option < u64 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::U64 },
-                is_vec: false,
-                is_option: true,
+                value_expr: quote! { self.#field_name.map(nuts_storable::Value::from) },
                 dims,
             }),
             "Option < i64 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::I64 },
-                is_vec: false,
-                is_option: true,
+                value_expr: quote! { self.#field_name.map(nuts_storable::Value::from) },
                 dims,
             }),
             "Option < f64 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F64 },
-                is_vec: false,
-                is_option: true,
+                value_expr: quote! { self.#field_name.map(nuts_storable::Value::from) },
                 dims,
             }),
             "Option < f32 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F32 },
-                is_vec: false,
-                is_option: true,
+                value_expr: quote! { self.#field_name.map(nuts_storable::Value::from) },
                 dims,
             }),
             "Option < bool >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::Bool },
-                is_vec: false,
-                is_option: true,
+                value_expr: quote! { self.#field_name.map(nuts_storable::Value::from) },
+                dims,
+            }),
+            "String" => StorableField::Basic(StorableBasicField {
+                name: field_name.clone(),
+                item_type: quote! { nuts_storable::ItemType::String },
+                value_expr: quote! { Some(nuts_storable::Value::ScalarString(self.#field_name.clone())) },
+                dims,
+            }),
+            "Option < String >" => StorableField::Basic(StorableBasicField {
+                name: field_name.clone(),
+                item_type: quote! { nuts_storable::ItemType::String },
+                value_expr: quote! {
+                    self.#field_name
+                        .as_ref()
+                        .map(|v| nuts_storable::Value::ScalarString(v.clone()))
+                },
                 dims,
             }),
             "Vec < u64 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::U64 },
-                is_vec: true,
-                is_option: false,
+                value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name.clone())) },
                 dims,
             }),
             "Vec < i64 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::I64 },
-                is_vec: true,
-                is_option: false,
+                value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name.clone())) },
                 dims,
             }),
             "Vec < f64 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F64 },
-                is_vec: true,
-                is_option: false,
+                value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name.clone())) },
                 dims,
             }),
             "Vec < f32 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F32 },
-                is_vec: true,
-                is_option: false,
+                value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name.clone())) },
                 dims,
             }),
             "Vec < bool >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::Bool },
-                is_vec: true,
-                is_option: false,
+                value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name.clone())) },
                 dims,
             }),
             "Option < Vec < u64 > >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::U64 },
-                is_vec: true,
-                is_option: true,
+                value_expr: quote! {
+                    self.#field_name
+                        .as_ref()
+                        .map(|v| nuts_storable::Value::from(v.clone()))
+                },
                 dims,
             }),
             "Option < Vec < i64 > >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::I64 },
-                is_vec: true,
-                is_option: true,
+                value_expr: quote! {
+                    self.#field_name
+                        .as_ref()
+                        .map(|v| nuts_storable::Value::from(v.clone()))
+                },
                 dims,
             }),
             "Option < Vec < f64 > >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F64 },
-                is_vec: true,
-                is_option: true,
+                value_expr: quote! {
+                    self.#field_name
+                        .as_ref()
+                        .map(|v| nuts_storable::Value::from(v.clone()))
+                },
                 dims,
             }),
             "Option < Vec < f32 > >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F32 },
-                is_vec: true,
-                is_option: true,
+                value_expr: quote! {
+                    self.#field_name
+                        .as_ref()
+                        .map(|v| nuts_storable::Value::from(v.clone()))
+                },
                 dims,
             }),
             "Option< Vec < bool > >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::Bool },
-                is_vec: true,
-                is_option: true,
+                value_expr: quote! {
+                    self.#field_name
+                        .as_ref()
+                        .map(|v| nuts_storable::Value::from(v.clone()))
+                },
                 dims,
             }),
             _ => {
@@ -499,17 +514,8 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
 
     let get_all_exprs = storable_fields.iter().map(|f| match f {
         StorableField::Basic(field) => {
-            let name = &field.name;
-            let name_str = name.to_string();
-            let value_expr = if field.is_option {
-                if field.is_vec {
-                    quote! { self.#name.as_ref().map(|v| nuts_storable::Value::from(v.clone())) }
-                } else {
-                    quote! { self.#name.map(nuts_storable::Value::from) }
-                }
-            } else {
-                quote! { Some(nuts_storable::Value::from(self.#name.clone())) }
-            };
+            let name_str = field.name.to_string();
+            let value_expr = &field.value_expr;
             quote! { result.push((#name_str, #value_expr)); }
         }
         StorableField::Inner(field) => {
