@@ -229,6 +229,7 @@ pub struct StatOptions<M: Math, A: AdaptStrategy<M>> {
     pub adapt: A::StatsOptions,
     pub hamiltonian: <A::Hamiltonian as SamplerStats<M>>::StatsOptions,
     pub point: <<A::Hamiltonian as Hamiltonian<M>>::Point as SamplerStats<M>>::StatsOptions,
+    pub divergence: crate::dynamics::DivergenceStatsOptions,
 }
 
 impl<M, A> Clone for StatOptions<M, A>
@@ -272,7 +273,7 @@ impl<M: Math, R: rand::Rng, A: AdaptStrategy<M>> SamplerStats<M> for NutsChain<M
             hamiltonian: hamiltonian_stats,
             adapt: adapt_stats,
             point: point_stats,
-            divergence: div_info.into(),
+            divergence: (div_info, options.divergence).into(),
             _phantom: PhantomData,
         }
     }

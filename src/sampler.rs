@@ -251,6 +251,10 @@ pub struct MclmcSettings<A: Debug + Copy + Default + Serialize> {
     pub store_unconstrained: bool,
     /// Store the gradient in the sampler stats.
     pub store_gradient: bool,
+    /// Store the transformed gradient and value in the sampler stats
+    pub store_transformed: bool,
+    /// Store detailed information about each divergence in the sampler stats
+    pub store_divergences: bool,
     /// Geometry adaptation options (step-size fields are ignored for Euclidean settings).
     pub adapt_options: A,
     /// Number of leapfrog steps per draw as a fraction of `L / ε`.
@@ -329,6 +333,8 @@ fn default_mclmc_settings<A: Debug + Copy + Default + Serialize>(
         max_energy_error,
         store_unconstrained: false,
         store_gradient: false,
+        store_divergences: false,
+        store_transformed: false,
         adapt_options,
         subsample_frequency: 1.0,
         dynamic_step_size: false,
@@ -431,7 +437,14 @@ impl Settings for DiagMclmcSettings {
                 mass_matrix: (),
             },
             hamiltonian: (),
-            point: point_stats_options(self.store_gradient, self.store_unconstrained, false),
+            point: point_stats_options(
+                self.store_gradient,
+                self.store_unconstrained,
+                self.store_transformed,
+            ),
+            divergence: crate::dynamics::DivergenceStatsOptions {
+                store_divergences: self.store_divergences,
+            },
         }
     }
 
@@ -538,7 +551,14 @@ impl Settings for LowRankMclmcSettings {
                 mass_matrix: (),
             },
             hamiltonian: (),
-            point: point_stats_options(self.store_gradient, self.store_unconstrained, false),
+            point: point_stats_options(
+                self.store_gradient,
+                self.store_unconstrained,
+                self.store_transformed,
+            ),
+            divergence: crate::dynamics::DivergenceStatsOptions {
+                store_divergences: self.store_divergences,
+            },
         }
     }
 
@@ -660,6 +680,9 @@ impl Settings for LowRankNutsSettings {
                 self.store_unconstrained,
                 self.store_transformed,
             ),
+            divergence: crate::dynamics::DivergenceStatsOptions {
+                store_divergences: self.store_divergences,
+            },
         }
     }
 
@@ -738,6 +761,9 @@ impl Settings for DiagNutsSettings {
                 self.store_unconstrained,
                 self.store_transformed,
             ),
+            divergence: crate::dynamics::DivergenceStatsOptions {
+                store_divergences: self.store_divergences,
+            },
         }
     }
 
@@ -814,6 +840,9 @@ impl Settings for FlowNutsSettings {
                 self.store_unconstrained,
                 self.store_transformed,
             ),
+            divergence: crate::dynamics::DivergenceStatsOptions {
+                store_divergences: self.store_divergences,
+            },
         }
     }
 
@@ -887,7 +916,14 @@ impl Settings for FlowMclmcSettings {
         StatOptions {
             adapt: (),
             hamiltonian: (),
-            point: point_stats_options(self.store_gradient, self.store_unconstrained, false),
+            point: point_stats_options(
+                self.store_gradient,
+                self.store_unconstrained,
+                self.store_transformed,
+            ),
+            divergence: crate::dynamics::DivergenceStatsOptions {
+                store_divergences: self.store_divergences,
+            },
         }
     }
 
