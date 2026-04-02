@@ -427,7 +427,10 @@ mod test {
     use crate::{
         Chain, DiagAdaptExpSettings,
         chain::{NutsChain, StatOptions},
-        dynamics::{KineticEnergyKind, TransformedHamiltonian, TransformedPointStatsOptions},
+        dynamics::{
+            DivergenceStatsOptions, KineticEnergyKind, TransformedHamiltonian,
+            TransformedPointStatsOptions,
+        },
         math::CpuMath,
         transform::{DiagAdaptStrategy, DiagMassMatrix},
     };
@@ -478,6 +481,9 @@ mod test {
                 store_gradient: true,
                 store_unconstrained: true,
                 store_transformed: false,
+            },
+            divergence: DivergenceStatsOptions {
+                store_divergences: true,
             },
         };
 

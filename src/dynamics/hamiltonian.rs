@@ -3,7 +3,6 @@
 use std::{fmt::Debug, sync::Arc};
 
 use nuts_derive::Storable;
-
 use rand::{
     Rng, RngExt,
     distr::{Distribution, StandardUniform},
@@ -39,6 +38,7 @@ pub struct DivergenceInfo {
 #[derive(Debug, Storable)]
 pub struct DivergenceStats {
     pub diverging: bool,
+    pub divergence_message: Option<String>,
     #[storable(dims("unconstrained_parameter"))]
     pub divergence_start: Option<Vec<f64>>,
     #[storable(dims("unconstrained_parameter"))]
@@ -47,19 +47,41 @@ pub struct DivergenceStats {
     pub divergence_end: Option<Vec<f64>>,
     #[storable(dims("unconstrained_parameter"))]
     pub divergence_momentum: Option<Vec<f64>>,
+    pub divergence_energy_error: Option<f64>,
 }
 
-impl From<Option<&DivergenceInfo>> for DivergenceStats {
-    fn from(info: Option<&DivergenceInfo>) -> Self {
+#[derive(Debug, Clone, Copy)]
+pub struct DivergenceStatsOptions {
+    pub store_divergences: bool,
+}
+
+impl From<(Option<&DivergenceInfo>, DivergenceStatsOptions)> for DivergenceStats {
+    fn from((info, options): (Option<&DivergenceInfo>, DivergenceStatsOptions)) -> Self {
         DivergenceStats {
             diverging: info.is_some(),
-            divergence_start: info
-                .and_then(|d| d.start_location.as_ref().map(|v| v.as_ref().to_vec())),
-            divergence_start_gradient: info
-                .and_then(|d| d.start_gradient.as_ref().map(|v| v.as_ref().to_vec())),
-            divergence_end: info.and_then(|d| d.end_location.as_ref().map(|v| v.as_ref().to_vec())),
-            divergence_momentum: info
-                .and_then(|d| d.start_momentum.as_ref().map(|v| v.as_ref().to_vec())),
+            divergence_start: if options.store_divergences {
+                info.and_then(|d| d.start_location.as_ref().map(|v| v.as_ref().to_vec()))
+            } else {
+                None
+            },
+            divergence_start_gradient: if options.store_divergences {
+                info.and_then(|d| d.start_gradient.as_ref().map(|v| v.as_ref().to_vec()))
+            } else {
+                None
+            },
+            divergence_end: if options.store_divergences {
+                info.and_then(|d| d.end_location.as_ref().map(|v| v.as_ref().to_vec()))
+            } else {
+                None
+            },
+            divergence_momentum: if options.store_divergences {
+                info.and_then(|d| d.start_momentum.as_ref().map(|v| v.as_ref().to_vec()))
+            } else {
+                None
+            },
+            divergence_message: info
+                .and_then(|d| d.logp_function_error.as_ref().map(|err| err.to_string())),
+            divergence_energy_error: info.and_then(|d| d.energy_error),
         }
     }
 }

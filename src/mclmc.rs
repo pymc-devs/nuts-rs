@@ -355,7 +355,7 @@ where
             hamiltonian: hamiltonian_stats,
             adapt: adapt_stats,
             point: point_stats,
-            divergence: info.divergence_info.as_ref().into(),
+            divergence: (info.divergence_info.as_ref(), options.divergence).into(),
             _phantom: PhantomData,
         }
     }
