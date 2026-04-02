@@ -276,9 +276,12 @@ where
         let diverging = divergence_info.is_some();
 
         if diverging {
-            // On divergence: stay at the pre-trajectory state. The momentum
-            // has already been refreshed at the start of this draw, so just
-            // return it as-is without a second refresh.
+            // On divergence: stay at the pre-trajectory position, but fully
+            // resample the momentum so the next draw does not reuse the
+            // already-refreshed momentum from this failed trajectory.
+            let mut next_state = self.hamiltonian.copy_state(math, &self.state);
+            self.hamiltonian
+                .initialize_trajectory(math, &mut next_state, &mut self.rng)?;
             let energy_change = current.point().energy_error();
             let info = MclmcInfo {
                 energy_change,
@@ -286,7 +289,7 @@ where
                 divergence_info,
                 num_steps: steps_taken,
             };
-            return Ok((self.state.clone(), info));
+            return Ok((next_state, info));
         }
 
         // Register the end state as the draw for the adaptation collector.
