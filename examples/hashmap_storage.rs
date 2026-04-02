@@ -6,8 +6,8 @@ use std::{
 
 use anyhow::Result;
 use nuts_rs::{
-    CpuLogpFunc, CpuMath, CpuMathError, DiagGradNutsSettings, HashMapConfig, LogpError, Model,
-    Sampler, SamplerWaitResult,
+    CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, HashMapConfig, LogpError, Model, Sampler,
+    SamplerWaitResult,
 };
 use nuts_storable::HasDims;
 use rand::{Rng, RngExt};
@@ -143,7 +143,7 @@ fn main() -> Result<()> {
     let num_draws = 200;
 
     // Configure MCMC settings
-    let mut settings = DiagGradNutsSettings::default();
+    let mut settings = DiagNutsSettings::default();
     settings.num_chains = num_chains as _;
     settings.num_tune = num_tune;
     settings.num_draws = num_draws as _;
