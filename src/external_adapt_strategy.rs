@@ -2,7 +2,7 @@
 
 use nuts_derive::Storable;
 use nuts_storable::{HasDims, Storable};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::adapt_strategy::CombinedCollector;
 use crate::chain::AdaptStrategy;
@@ -14,7 +14,7 @@ use crate::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
 use crate::transform::ExternalTransformation;
 use crate::{Math, NutsError};
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct TransformedSettings {
     pub step_size_window: f64,
     pub transform_update_freq: u64,

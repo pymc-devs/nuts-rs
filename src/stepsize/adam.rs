@@ -7,10 +7,10 @@
 
 use std::f64;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Settings for Adam step size adaptation
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct AdamOptions {
     /// First moment decay rate (default: 0.9)
     pub beta1: f64,

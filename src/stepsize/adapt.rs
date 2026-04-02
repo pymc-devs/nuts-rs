@@ -4,7 +4,7 @@ use itertools::Either;
 use nuts_derive::Storable;
 use rand::distr::Uniform;
 use rand::{Rng, RngExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::adam::{Adam, AdamOptions};
 use super::dual_avg::{AcceptanceRateCollector, DualAverage, DualAverageOptions};
@@ -18,7 +18,7 @@ use std::f64;
 use std::fmt::Debug;
 
 /// Method used for step size adaptation
-#[derive(Debug, Clone, Copy, Serialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Default, Deserialize)]
 pub enum StepSizeAdaptMethod {
     /// Use dual averaging for step size adaptation (default)
     #[default]
@@ -29,7 +29,7 @@ pub enum StepSizeAdaptMethod {
 }
 
 /// Options for step size adaptation
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct StepSizeAdaptOptions {
     pub method: StepSizeAdaptMethod,
     /// Dual averaging adaptation options
@@ -106,7 +106,8 @@ impl Strategy {
 
         *hamiltonian.step_size_mut() = self.options.initial_step;
 
-        let state_next = hamiltonian.leapfrog(math, &state, Direction::Forward, 1.0, &mut collector);
+        let state_next =
+            hamiltonian.leapfrog(math, &state, Direction::Forward, 1.0, &mut collector);
 
         let LeapfrogResult::Ok(_) = state_next else {
             return Ok(());
@@ -283,7 +284,7 @@ impl<M: Math> SamplerStats<M> for Strategy {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct StepSizeSettings {
     /// Target acceptance rate
     pub target_accept: f64,

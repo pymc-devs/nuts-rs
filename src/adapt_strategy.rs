@@ -5,7 +5,7 @@ use std::{fmt::Debug, marker::PhantomData};
 use nuts_derive::Storable;
 use nuts_storable::{HasDims, Storable};
 use rand::Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::stepsize::AcceptanceRateCollector;
 use super::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
@@ -38,7 +38,7 @@ pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
     current_window_size: u64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct EuclideanAdaptOptions<S: Debug + Default> {
     pub step_size_settings: StepSizeSettings,
     pub mass_matrix_options: S,
