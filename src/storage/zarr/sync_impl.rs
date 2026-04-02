@@ -396,6 +396,14 @@ impl StorageConfig for ZarrConfig {
             serde_json::Value::String(env!("CARGO_PKG_VERSION").to_string()),
         );
         attrs.insert(
+            "sampler_kind".to_string(),
+            serde_json::Value::String(settings.sampler_name().to_string()),
+        );
+        attrs.insert(
+            "adaptation_kind".to_string(),
+            serde_json::Value::String(settings.adaptation_name().to_string()),
+        );
+        attrs.insert(
             "sampler_settings".to_string(),
             serde_json::to_value(settings).context("Could not serialize sampler settings")?,
         );
