@@ -205,6 +205,22 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
     fn step_size(&self) -> f64;
     fn step_size_mut(&mut self) -> &mut f64;
 
+    /// Return updated hamiltonian stats options to use on the next draw.
+    ///
+    /// Called in `expanded_draw` after stats extraction.  For hamiltonians
+    /// with a trackable transformation, this records the current transformation
+    /// id into the options so the following `extract_stats` call can detect
+    /// whether the mass matrix changed and emit a `transformation_update` event.
+    /// The default passes the current options through unchanged, meaning no
+    /// transformation-update events are ever emitted.
+    fn update_stats_options(
+        &mut self,
+        _math: &mut M,
+        current: <Self as SamplerStats<M>>::StatsOptions,
+    ) -> <Self as SamplerStats<M>>::StatsOptions {
+        current
+    }
+
     /// The momentum decoherence length `L` used for the isokinetic Langevin
     /// (partial momentum refresh) step.
     ///

@@ -56,4 +56,16 @@ pub trait Transformation<M: Math>: SamplerStats<M> + Debug {
     /// A monotonically increasing version counter.  When this changes the
     /// transformed coordinates of a cached point must be recomputed.
     fn transformation_id(&self, math: &mut M) -> i64;
+
+    /// Return the hamiltonian stats options to use on the next draw.
+    ///
+    /// Called after each `extract_stats` to update the stored last-reported
+    /// transformation id for change detection.  Default: pass current through.
+    fn next_stats_options(
+        &self,
+        _math: &mut M,
+        current: <Self as SamplerStats<M>>::StatsOptions,
+    ) -> <Self as SamplerStats<M>>::StatsOptions {
+        current
+    }
 }

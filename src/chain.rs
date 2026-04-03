@@ -193,6 +193,11 @@ where
         let math = math_.deref_mut();
 
         let stats = self.extract_stats(&mut *math, self.stats_options);
+        // Update the stats_options of the hamiltonian. This is used to
+        // store only changes in the transformation.
+        self.stats_options.hamiltonian = self
+            .hamiltonian
+            .update_stats_options(&mut *math, self.stats_options.hamiltonian);
         let expanded = math.expand_vector(&mut self.rng, self.state.point().position())?;
 
         Ok((position, expanded, stats, progress))

@@ -451,7 +451,7 @@ impl Settings for DiagMclmcSettings {
                 step_size: (),
                 mass_matrix: (),
             },
-            hamiltonian: (),
+            hamiltonian: -1,
             point: point_stats_options(
                 self.store_gradient,
                 self.store_unconstrained,
@@ -565,7 +565,7 @@ impl Settings for LowRankMclmcSettings {
                 step_size: (),
                 mass_matrix: (),
             },
-            hamiltonian: (),
+            hamiltonian: -1,
             point: point_stats_options(
                 self.store_gradient,
                 self.store_unconstrained,
@@ -689,7 +689,7 @@ impl Settings for LowRankNutsSettings {
                 mass_matrix: (),
                 step_size: (),
             },
-            hamiltonian: (),
+            hamiltonian: -1,
             point: point_stats_options(
                 self.store_gradient,
                 self.store_unconstrained,
@@ -770,7 +770,7 @@ impl Settings for DiagNutsSettings {
                 mass_matrix: (),
                 step_size: (),
             },
-            hamiltonian: (),
+            hamiltonian: -1,
             point: point_stats_options(
                 self.store_gradient,
                 self.store_unconstrained,
