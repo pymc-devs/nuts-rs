@@ -60,6 +60,8 @@ pub struct Strategy {
     pub last_sym_mean_tree_accept: f64,
     /// Last number of steps
     pub last_n_steps: u64,
+    /// Maximum absolute energy error observed in the last trajectory
+    pub last_max_energy_error: f64,
 }
 
 impl Strategy {
@@ -82,6 +84,7 @@ impl Strategy {
             last_n_steps: 0,
             last_sym_mean_tree_accept: 0.0,
             last_mean_tree_accept: 0.0,
+            last_max_energy_error: 0.0,
         }
     }
 
@@ -187,6 +190,7 @@ impl Strategy {
         self.last_mean_tree_accept = mean;
         self.last_sym_mean_tree_accept = mean_sym;
         self.last_n_steps = n_steps;
+        self.last_max_energy_error = collector.max_energy_error;
     }
 
     pub fn update_estimator_early(&mut self) {
@@ -258,6 +262,7 @@ pub struct Stats {
     pub mean_tree_accept: f64,
     pub mean_tree_accept_sym: f64,
     pub n_steps: u64,
+    pub max_energy_error: f64,
 }
 
 impl<M: Math> SamplerStats<M> for Strategy {
@@ -280,6 +285,7 @@ impl<M: Math> SamplerStats<M> for Strategy {
             mean_tree_accept: self.last_mean_tree_accept,
             mean_tree_accept_sym: self.last_sym_mean_tree_accept,
             n_steps: self.last_n_steps,
+            max_energy_error: self.last_max_energy_error,
         }
     }
 }
