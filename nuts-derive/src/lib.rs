@@ -14,7 +14,10 @@ use syn::{
 
 // Helper struct to parse `#[storable(dims(...))]` or #[storable(flattened)]
 enum StorableAttr {
-    Item(Vec<LitStr>),
+    Item {
+        dims: Vec<LitStr>,
+        event: Option<LitStr>,
+    },
     Flattened(),
     Ignore(),
 }
@@ -23,18 +26,25 @@ impl Parse for StorableAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let metas = Punctuated::<syn::Meta, Token![,]>::parse_terminated(input)?;
 
+        let mut dims = vec![];
+        let mut event = None;
+
         for meta in metas {
             match meta {
                 syn::Meta::List(list) => {
                     if list.path.is_ident("dims") {
-                        return Ok(StorableAttr::Item(
-                            list.nested
-                                .into_iter()
-                                .map(|e| match e {
-                                    syn::NestedMeta::Lit(Lit::Str(s)) => Ok(s),
-                                    _ => Err(syn::Error::new_spanned(e, "Expected string literal")),
-                                })
-                                .collect::<Result<Vec<_>, _>>()?,
+                        dims = list
+                            .nested
+                            .into_iter()
+                            .map(|e| match e {
+                                syn::NestedMeta::Lit(Lit::Str(s)) => Ok(s),
+                                _ => Err(syn::Error::new_spanned(e, "Expected string literal")),
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                    } else {
+                        return Err(syn::Error::new_spanned(
+                            list,
+                            "Unknown list attribute; expected `dims(...)`",
                         ));
                     }
                 }
@@ -45,17 +55,32 @@ impl Parse for StorableAttr {
                     if path.is_ident("ignore") {
                         return Ok(StorableAttr::Ignore());
                     }
-                }
-                _ => {
                     return Err(syn::Error::new_spanned(
-                        meta,
-                        "Unsupported storable attribute. Expected `dims(...)` or `flatten`",
+                        path,
+                        "Unknown path attribute; expected `flatten` or `ignore`",
                     ));
+                }
+                syn::Meta::NameValue(nv) => {
+                    if nv.path.is_ident("event") {
+                        if let Lit::Str(s) = nv.lit {
+                            event = Some(s);
+                        } else {
+                            return Err(syn::Error::new_spanned(
+                                nv.path,
+                                "Expected string literal for `event`",
+                            ));
+                        }
+                    } else {
+                        return Err(syn::Error::new_spanned(
+                            nv.path,
+                            "Unknown attribute; expected `event = \"...\"`",
+                        ));
+                    }
                 }
             }
         }
 
-        Ok(StorableAttr::Item(vec![]))
+        Ok(StorableAttr::Item { dims, event })
     }
 }
 
@@ -64,6 +89,7 @@ struct StorableBasicField {
     item_type: proc_macro2::TokenStream,
     value_expr: proc_macro2::TokenStream,
     dims: Vec<LitStr>,
+    event_dim: Option<LitStr>,
 }
 
 struct StorableInnerField {
@@ -155,7 +181,10 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
             continue; // Skip this field
         }
 
-        let attr = attr.unwrap_or(StorableAttr::Item(vec![]));
+        let attr = attr.unwrap_or(StorableAttr::Item {
+            dims: vec![],
+            event: None,
+        });
 
         if let StorableAttr::Flattened() = attr {
             let path = if let Type::Path(TypePath { path: p, qself: _ }) = ty {
@@ -195,10 +224,10 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
             continue;
         }
 
-        let dims = if let StorableAttr::Item(dims) = attr {
-            dims
+        let (dims, field_event_dim) = if let StorableAttr::Item { dims, event } = attr {
+            (dims, event)
         } else {
-            vec![]
+            unreachable!()
         };
 
         // Check if the field is a generic type parameter
@@ -254,66 +283,77 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
                 item_type: quote! { nuts_storable::ItemType::U64 },
                 value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name)) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "i64" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::I64 },
                 value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name)) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "f64" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F64 },
                 value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name)) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "f32" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F32 },
                 value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name)) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "bool" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::Bool },
                 value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name)) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Option < u64 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::U64 },
                 value_expr: quote! { self.#field_name.map(nuts_storable::Value::from) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Option < i64 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::I64 },
                 value_expr: quote! { self.#field_name.map(nuts_storable::Value::from) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Option < f64 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F64 },
                 value_expr: quote! { self.#field_name.map(nuts_storable::Value::from) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Option < f32 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F32 },
                 value_expr: quote! { self.#field_name.map(nuts_storable::Value::from) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Option < bool >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::Bool },
                 value_expr: quote! { self.#field_name.map(nuts_storable::Value::from) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "String" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::String },
                 value_expr: quote! { Some(nuts_storable::Value::ScalarString(self.#field_name.clone())) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Option < String >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
@@ -324,36 +364,42 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
                         .map(|v| nuts_storable::Value::ScalarString(v.clone()))
                 },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Vec < u64 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::U64 },
                 value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name.clone())) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Vec < i64 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::I64 },
                 value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name.clone())) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Vec < f64 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F64 },
                 value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name.clone())) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Vec < f32 >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::F32 },
                 value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name.clone())) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Vec < bool >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
                 item_type: quote! { nuts_storable::ItemType::Bool },
                 value_expr: quote! { Some(nuts_storable::Value::from(self.#field_name.clone())) },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Option < Vec < u64 > >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
@@ -364,6 +410,7 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
                         .map(|v| nuts_storable::Value::from(v.clone()))
                 },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Option < Vec < i64 > >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
@@ -374,6 +421,7 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
                         .map(|v| nuts_storable::Value::from(v.clone()))
                 },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Option < Vec < f64 > >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
@@ -384,6 +432,7 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
                         .map(|v| nuts_storable::Value::from(v.clone()))
                 },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Option < Vec < f32 > >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
@@ -394,6 +443,7 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
                         .map(|v| nuts_storable::Value::from(v.clone()))
                 },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             "Option< Vec < bool > >" => StorableField::Basic(StorableBasicField {
                 name: field_name.clone(),
@@ -404,6 +454,7 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
                         .map(|v| nuts_storable::Value::from(v.clone()))
                 },
                 dims,
+                event_dim: field_event_dim.clone(),
             }),
             _ => {
                 // Attempt to handle complex generic types that are still Storable
@@ -512,6 +563,38 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
         }
     };
 
+    let event_dim_arms = storable_fields.iter().map(|f| match f {
+        StorableField::Basic(field) => {
+            let name_str = field.name.to_string();
+            if let Some(ev) = &field.event_dim {
+                quote! { #name_str => Some(#ev), }
+            } else {
+                quote! { #name_str => None, }
+            }
+        }
+        StorableField::Inner(field) => {
+            let item_type = &field.item_type;
+            quote! {
+                name if #item_type::names(parent).contains(&name) => {
+                    #item_type::event_dim(parent, name)
+                },
+            }
+        }
+        StorableField::Generic(field) => {
+            let name_str = field.name.to_string();
+            quote! { #name_str => None, }
+        }
+    });
+
+    let event_dim_fn = quote! {
+        fn event_dim(parent: &P, item: &str) -> Option<&'static str> {
+            match item {
+                #(#event_dim_arms)*
+                _ => { panic!("Unknown item: {}", item); }
+            }
+        }
+    };
+
     let get_all_exprs = storable_fields.iter().map(|f| match f {
         StorableField::Basic(field) => {
             let name_str = field.name.to_string();
@@ -559,6 +642,7 @@ pub fn storable_derive(input: TokenStream) -> TokenStream {
             #names_fn
             #item_type_fn
             #dims_fn
+            #event_dim_fn
             #get_all_fn
         }
     };

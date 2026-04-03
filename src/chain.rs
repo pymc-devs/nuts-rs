@@ -273,7 +273,7 @@ impl<M: Math, R: rand::Rng, A: AdaptStrategy<M>> SamplerStats<M> for NutsChain<M
             hamiltonian: hamiltonian_stats,
             adapt: adapt_stats,
             point: point_stats,
-            divergence: (div_info, options.divergence).into(),
+            divergence: (div_info, options.divergence, self.draw_count).into(),
             _phantom: PhantomData,
         }
     }

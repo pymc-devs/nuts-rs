@@ -289,6 +289,34 @@ fn main() -> Result<()> {
                 println!("✓ Async sampling completed in {:?}", start.elapsed());
                 println!("✓ Traces written to Zarr format at '{}'", output_path);
 
+                // Check that divergence stats are stored with the right event dimension.
+                // Open a sync filesystem store for reading since the async object store
+                // does not expose sync read traits.
+                let read_store: zarrs::storage::ReadableListableStorage =
+                    std::sync::Arc::new(zarrs::filesystem::FilesystemStore::new(output_path)?);
+                let div_draw =
+                    zarrs::array::Array::open(read_store, "/sample_stats/divergence_draw")?;
+                let shape = div_draw.shape();
+                assert_eq!(shape[0], num_chains as u64, "expected one row per chain");
+                assert!(
+                    shape[1] <= num_draws as u64,
+                    "event dim should be ≤ num_draws"
+                );
+                let second_dim: Option<&str> = if let Some(names) = div_draw.dimension_names() {
+                    names.get(1).and_then(|n| n.as_deref())
+                } else {
+                    None
+                };
+                assert_eq!(
+                    second_dim,
+                    Some("divergence"),
+                    "second dim should be 'divergence'"
+                );
+                println!(
+                    "✓ Divergence stats: {} divergences stored across {} chains",
+                    shape[1], shape[0]
+                );
+
                 // Provide instructions for analysis
                 println!("\n=== Next Steps ===");
                 println!("To analyze results in Python with ArviZ:");

@@ -133,6 +133,21 @@ pub trait Settings:
         let dims = StatsDims::from(math);
         dims.coords()
     }
+
+    fn stat_event_dims<M: Math>(&self, math: &M) -> Vec<(String, Option<String>)> {
+        let dims = StatsDims::from(math);
+        self.stat_names(math)
+            .into_iter()
+            .map(|name| {
+                let event_dim =
+                    <<Self::Chain<M> as SamplerStats<M>>::Stats as Storable<_>>::event_dim(
+                        &dims, &name,
+                    )
+                    .map(String::from);
+                (name, event_dim)
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone)]
