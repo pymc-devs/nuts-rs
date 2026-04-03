@@ -38,15 +38,19 @@ pub struct DivergenceInfo {
 #[derive(Debug, Storable)]
 pub struct DivergenceStats {
     pub diverging: bool,
+    #[storable(event = "divergence")]
+    pub divergence_draw: Option<u64>,
+    #[storable(event = "divergence")]
     pub divergence_message: Option<String>,
-    #[storable(dims("unconstrained_parameter"))]
+    #[storable(event = "divergence", dims("unconstrained_parameter"))]
     pub divergence_start: Option<Vec<f64>>,
-    #[storable(dims("unconstrained_parameter"))]
+    #[storable(event = "divergence", dims("unconstrained_parameter"))]
     pub divergence_start_gradient: Option<Vec<f64>>,
-    #[storable(dims("unconstrained_parameter"))]
+    #[storable(event = "divergence", dims("unconstrained_parameter"))]
     pub divergence_end: Option<Vec<f64>>,
-    #[storable(dims("unconstrained_parameter"))]
+    #[storable(event = "divergence", dims("unconstrained_parameter"))]
     pub divergence_momentum: Option<Vec<f64>>,
+    #[storable(event = "divergence")]
     pub divergence_energy_error: Option<f64>,
 }
 
@@ -55,10 +59,11 @@ pub struct DivergenceStatsOptions {
     pub store_divergences: bool,
 }
 
-impl From<(Option<&DivergenceInfo>, DivergenceStatsOptions)> for DivergenceStats {
-    fn from((info, options): (Option<&DivergenceInfo>, DivergenceStatsOptions)) -> Self {
+impl From<(Option<&DivergenceInfo>, DivergenceStatsOptions, u64)> for DivergenceStats {
+    fn from((info, options, draw): (Option<&DivergenceInfo>, DivergenceStatsOptions, u64)) -> Self {
         DivergenceStats {
             diverging: info.is_some(),
+            divergence_draw: info.map(|_| draw),
             divergence_start: if options.store_divergences {
                 info.and_then(|d| d.start_location.as_ref().map(|v| v.as_ref().to_vec()))
             } else {
@@ -79,8 +84,19 @@ impl From<(Option<&DivergenceInfo>, DivergenceStatsOptions)> for DivergenceStats
             } else {
                 None
             },
-            divergence_message: info
-                .and_then(|d| d.logp_function_error.as_ref().map(|err| err.to_string())),
+            divergence_message: info.map(|d| {
+                if let Some(err) = &d.logp_function_error {
+                    err.to_string()
+                } else if let Some(energy_err) = d.energy_error {
+                    if energy_err.is_nan() {
+                        "Divergence due to NaN energy error".to_string()
+                    } else {
+                        format!("Divergence due to large energy error: {:.4}", energy_err)
+                    }
+                } else {
+                    "Divergence (unknown cause)".to_string()
+                }
+            }),
             divergence_energy_error: info.and_then(|d| d.energy_error),
         }
     }

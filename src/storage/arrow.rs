@@ -246,12 +246,13 @@ fn create_field_with_shape(
     item_type: ItemType,
     dims: &Vec<String>,
     dim_sizes: &HashMap<String, u64>,
+    event_dim: Option<&str>,
 ) -> Result<Field> {
     let arrow_type = item_type_to_arrow_type(item_type);
 
     if !dims.is_empty() {
         // Multi-dimensional tensor
-        let metadata = HashMap::from([
+        let mut metadata = HashMap::from([
             (
                 "dims".to_string(),
                 dims.iter().cloned().collect::<Vec<_>>().join(","),
@@ -271,12 +272,21 @@ fn create_field_with_shape(
             ),
         ]);
 
+        if let Some(ev) = event_dim {
+            metadata.insert("event_dim".to_string(), ev.to_string());
+        }
+
         let inner_field = Field::new("item", arrow_type, false);
         let field = Field::new_large_list(name, inner_field, true);
         let field = field.with_metadata(metadata);
         Ok(field)
     } else {
-        Ok(Field::new(name, arrow_type, true))
+        let field = Field::new(name, arrow_type, true);
+        if let Some(ev) = event_dim {
+            Ok(field.with_metadata(HashMap::from([("event_dim".to_string(), ev.to_string())])))
+        } else {
+            Ok(field)
+        }
     }
 }
 /// Main storage for Arrow MCMC traces
@@ -287,6 +297,7 @@ pub struct ArrowTraceStorage {
     draw_dims: Vec<(String, Vec<String>)>,
     stat_dim_sizes: HashMap<String, u64>,
     draw_dim_sizes: HashMap<String, u64>,
+    stat_event_dims: Vec<Option<String>>,
     expected_draws: usize,
 }
 
@@ -300,6 +311,7 @@ pub struct ArrowChainStorage {
     draw_dims: Vec<(String, Vec<String>)>,
     stat_dim_sizes: HashMap<String, u64>,
     draw_dim_sizes: HashMap<String, u64>,
+    stat_event_dims: Vec<Option<String>>,
     draw_count: usize,
 }
 
@@ -319,6 +331,7 @@ impl ArrowChainStorage {
         draw_dims: &[(String, Vec<String>)],
         stat_dim_sizes: &HashMap<String, u64>,
         draw_dim_sizes: &HashMap<String, u64>,
+        stat_event_dims: &[Option<String>],
     ) -> Result<Self> {
         let draw_builders = draw_types
             .iter()
@@ -383,6 +396,7 @@ impl ArrowChainStorage {
             draw_dims: draw_dims.to_vec(),
             stat_dim_sizes: stat_dim_sizes.clone(),
             draw_dim_sizes: draw_dim_sizes.clone(),
+            stat_event_dims: stat_event_dims.to_vec(),
             draw_count: 0,
         })
     }
@@ -395,7 +409,7 @@ impl ArrowChainStorage {
             .iter()
             .zip(self.draw_dims.iter())
             .map(|((name, item_type), (_, dims))| {
-                create_field_with_shape(name, *item_type, dims, &self.draw_dim_sizes)
+                create_field_with_shape(name, *item_type, dims, &self.draw_dim_sizes, None)
             })
             .collect::<Result<Vec<Field>>>()?;
 
@@ -419,8 +433,9 @@ impl ArrowChainStorage {
             .stat_types
             .iter()
             .zip(self.stats_dims.iter())
-            .map(|((name, item_type), (_, dims))| {
-                create_field_with_shape(name, *item_type, dims, &self.stat_dim_sizes)
+            .zip(self.stat_event_dims.iter())
+            .map(|(((name, item_type), (_, dims)), ev)| {
+                create_field_with_shape(name, *item_type, dims, &self.stat_dim_sizes, ev.as_deref())
             })
             .collect::<Result<Vec<Field>>>()?;
 
@@ -511,7 +526,7 @@ impl ChainStorage for ArrowChainStorage {
             .iter()
             .zip(self.draw_dims.iter())
             .map(|((name, item_type), (_, dims))| {
-                create_field_with_shape(name, *item_type, dims, &self.draw_dim_sizes)
+                create_field_with_shape(name, *item_type, dims, &self.draw_dim_sizes, None)
             })
             .collect::<Result<Vec<Field>>>()?;
 
@@ -535,8 +550,9 @@ impl ChainStorage for ArrowChainStorage {
             .stat_types
             .iter()
             .zip(self.stats_dims.iter())
-            .map(|((name, item_type), (_, dims))| {
-                create_field_with_shape(name, *item_type, dims, &self.stat_dim_sizes)
+            .zip(self.stat_event_dims.iter())
+            .map(|(((name, item_type), (_, dims)), ev)| {
+                create_field_with_shape(name, *item_type, dims, &self.stat_dim_sizes, ev.as_deref())
             })
             .collect::<Result<Vec<Field>>>()?;
 
@@ -591,6 +607,11 @@ impl StorageConfig for ArrowConfig {
         let draw_dims = settings.data_dims_all(math);
         let stat_dim_sizes = settings.stat_dim_sizes(math);
         let draw_dim_sizes = math.dim_sizes();
+        let stat_event_dims: Vec<Option<String>> = settings
+            .stat_event_dims(math)
+            .into_iter()
+            .map(|(_, ev)| ev)
+            .collect();
 
         // Calculate expected total draws (warmup + sampling)
         let expected_draws = (settings.hint_num_tune() + settings.hint_num_draws()) as usize;
@@ -602,6 +623,7 @@ impl StorageConfig for ArrowConfig {
             draw_dims,
             stat_dim_sizes,
             draw_dim_sizes,
+            stat_event_dims,
             expected_draws,
         })
     }
@@ -620,6 +642,7 @@ impl TraceStorage for ArrowTraceStorage {
             &self.draw_dims,
             &self.stat_dim_sizes,
             &self.draw_dim_sizes,
+            &self.stat_event_dims,
         )
     }
 
