@@ -98,10 +98,34 @@ pub trait HasDims {
     }
 }
 
+/// Trait for types whose fields can be progressively written to a trace backend.
+///
+/// Each field in a `Storable` struct has a *primary dimension* — the dimension
+/// along which one entry is appended per event. For most fields this is the draw
+/// dimension: one value is recorded per MCMC draw. Fields annotated with
+/// `#[storable(event = "name")]` use a different primary dimension, meaning they
+/// only receive a value when that particular event occurs.
+///
+/// For example, divergence statistics use `event = "divergence"`: fields like
+/// `divergence_draw` or `divergence_message` only have a value on draws where a
+/// divergence actually occurred. Storage backends collect these values into a
+/// separate array whose second axis is named after the event (e.g.
+/// `"divergence"`) rather than `"draw"`, and whose length equals the number of
+/// events that occurred rather than the total number of draws.
+///
+/// The struct itself is responsible for ensuring that all fields sharing the
+/// same event dimension produce a value on exactly the same set of draws — the
+/// storage layer does not enforce this.
 pub trait Storable<P: HasDims + ?Sized>: Send + Sync {
     fn names(parent: &P) -> Vec<&str>;
     fn item_type(parent: &P, item: &str) -> ItemType;
     fn dims<'a>(parent: &'a P, item: &str) -> Vec<&'a str>;
+
+    /// Return the name of the primary dimension for the given field, or `None`
+    /// if the field uses the default draw dimension.
+    fn event_dim(_parent: &P, _item: &str) -> Option<&'static str> {
+        None
+    }
 
     fn get_all<'a>(&'a mut self, parent: &'a P) -> Vec<(&'a str, Option<Value>)>;
 }
@@ -117,6 +141,10 @@ impl<P: HasDims> Storable<P> for Vec<f64> {
 
     fn dims<'a>(_parent: &'a P, _item: &str) -> Vec<&'a str> {
         vec!["dim"]
+    }
+
+    fn event_dim(_parent: &P, _item: &str) -> Option<&'static str> {
+        None
     }
 
     fn get_all<'a>(&'a mut self, _parent: &'a P) -> Vec<(&'a str, Option<Value>)> {
@@ -135,6 +163,10 @@ impl<P: HasDims> Storable<P> for () {
 
     fn dims<'a>(_parent: &'a P, _item: &str) -> Vec<&'a str> {
         panic!("No items in unit type")
+    }
+
+    fn event_dim(_parent: &P, _item: &str) -> Option<&'static str> {
+        None
     }
 
     fn get_all(&mut self, _parent: &P) -> Vec<(&str, Option<Value>)> {

@@ -16,6 +16,7 @@ pub enum SampleBufferValue {
     Bool(Vec<bool>),
     I64(Vec<i64>),
     U64(Vec<u64>),
+    String(Vec<String>),
 }
 
 impl SampleBufferValue {
@@ -27,6 +28,7 @@ impl SampleBufferValue {
             SampleBufferValue::Bool(vec) => vec.len(),
             SampleBufferValue::I64(vec) => vec.len(),
             SampleBufferValue::U64(vec) => vec.len(),
+            SampleBufferValue::String(vec) => vec.len(),
         }
     }
 }
@@ -65,7 +67,7 @@ impl SampleBuffer {
             ItemType::U64 => SampleBufferValue::U64(Vec::with_capacity(chunk_size)),
             ItemType::Bool => SampleBufferValue::Bool(Vec::with_capacity(chunk_size)),
             ItemType::I64 => SampleBufferValue::I64(Vec::with_capacity(chunk_size)),
-            ItemType::String => panic!("String type not supported in SampleBuffer"),
+            ItemType::String => SampleBufferValue::String(Vec::with_capacity(chunk_size)),
             ItemType::DateTime64(_) => panic!("DateTime64 type not supported in SampleBuffer"),
             ItemType::TimeDelta64(_) => panic!("TimeDelta64 type not supported in SampleBuffer"),
         };
@@ -106,6 +108,9 @@ impl SampleBuffer {
             SampleBufferValue::I64(vec) => {
                 SampleBufferValue::I64(replace(vec, Vec::with_capacity(vec.len())))
             }
+            SampleBufferValue::String(vec) => {
+                SampleBufferValue::String(replace(vec, Vec::with_capacity(vec.len())))
+            }
         };
 
         let output = Chunk {
@@ -132,6 +137,7 @@ impl SampleBuffer {
             SampleBufferValue::U64(vec) => SampleBufferValue::U64(vec.clone()),
             SampleBufferValue::Bool(vec) => SampleBufferValue::Bool(vec.clone()),
             SampleBufferValue::I64(vec) => SampleBufferValue::I64(vec.clone()),
+            SampleBufferValue::String(vec) => SampleBufferValue::String(vec.clone()),
         };
 
         Some(Chunk {
@@ -156,6 +162,7 @@ impl SampleBuffer {
             (SampleBufferValue::U64(vec), Value::U64(v)) => vec.extend(v),
             (SampleBufferValue::Bool(vec), Value::Bool(v)) => vec.extend(v),
             (SampleBufferValue::I64(vec), Value::I64(v)) => vec.extend(v),
+            (SampleBufferValue::String(vec), Value::ScalarString(s)) => vec.push(s),
             _ => panic!("Mismatched item type"),
         }
         self.len += 1;
@@ -165,6 +172,11 @@ impl SampleBuffer {
         } else {
             None
         }
+    }
+
+    /// Total number of logical entries pushed since the last `reset()`.
+    pub fn total_pushed(&self) -> u64 {
+        self.current_chunk as u64 * self.full_at as u64 + self.len as u64
     }
 }
 
@@ -216,21 +228,23 @@ pub fn create_arrays<TStorage: ?Sized>(
     store: Arc<TStorage>,
     group_path: &str,
     item_types: &Vec<(String, ItemType)>,
-    item_dims: &Vec<(String, Vec<String>)>,
+    item_dims: &Vec<(String, String, Vec<String>)>,
     n_chains: u64,
     n_draws: u64,
     dim_sizes: &HashMap<String, u64>,
     draw_chunk_size: u64,
 ) -> Result<HashMap<String, Array<TStorage>>> {
     let mut arrays = HashMap::new();
-    for ((name1, item_type), (name2, extra_dims)) in item_types.iter().zip(item_dims.iter()) {
+    for ((name1, item_type), (name2, primary_dim, extra_dims)) in
+        item_types.iter().zip(item_dims.iter())
+    {
         assert!(name1 == name2);
         let name = name1;
         if ["draw", "chain"].contains(&name.as_str()) {
             continue;
         }
         let dims = std::iter::once("chain".to_string())
-            .chain(std::iter::once("draw".to_string()))
+            .chain(std::iter::once(primary_dim.clone()))
             .chain(extra_dims.iter().cloned());
         let extra_shape: Result<Vec<u64>> = extra_dims
             .iter()
