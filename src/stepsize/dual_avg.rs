@@ -113,6 +113,7 @@ pub struct AcceptanceRateCollector {
     initial_energy: f64,
     pub(crate) mean: RunningMean,
     pub(crate) mean_sym: RunningMean,
+    pub(crate) max_energy_error: f64,
 }
 
 impl AcceptanceRateCollector {
@@ -121,6 +122,7 @@ impl AcceptanceRateCollector {
             initial_energy: 0.,
             mean: RunningMean::new(),
             mean_sym: RunningMean::new(),
+            max_energy_error: 0.,
         }
     }
 }
@@ -137,6 +139,7 @@ impl<M: Math, P: Point<M>> Collector<M, P> for AcceptanceRateCollector {
             Some(_) => {
                 self.mean.add(0.);
                 self.mean_sym.add(0.);
+                self.max_energy_error = f64::NEG_INFINITY;
             }
             None => {
                 let base_energy = self.initial_energy;
@@ -146,6 +149,10 @@ impl<M: Math, P: Point<M>> Collector<M, P> for AcceptanceRateCollector {
                 self.mean.add(diff.min(0.).exp());
                 self.mean_sym
                     .add(2. * diff.min(0.).exp() / (1. + diff.exp()));
+                let energy_error = diff;
+                if energy_error.abs() > self.max_energy_error.abs() {
+                    self.max_energy_error = energy_error;
+                }
             }
         };
     }
@@ -154,5 +161,6 @@ impl<M: Math, P: Point<M>> Collector<M, P> for AcceptanceRateCollector {
         self.initial_energy = state.energy();
         self.mean.reset();
         self.mean_sym.reset();
+        self.max_energy_error = 0.;
     }
 }
