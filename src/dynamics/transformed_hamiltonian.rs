@@ -753,6 +753,14 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         self.step_size
     }
 
+    fn update_stats_options(
+        &mut self,
+        math: &mut M,
+        current: <Self as SamplerStats<M>>::StatsOptions,
+    ) -> <Self as SamplerStats<M>>::StatsOptions {
+        self.transformation.next_stats_options(math, current)
+    }
+
     fn step_size_mut(&mut self) -> &mut f64 {
         &mut self.step_size
     }
