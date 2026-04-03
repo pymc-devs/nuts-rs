@@ -31,24 +31,38 @@ impl<M: Math> Debug for DiagMassMatrix<M> {
 
 #[derive(Debug, Storable)]
 pub struct DiagMassMatrixStats {
-    #[storable(dims("unconstrained_parameter"))]
+    /// The transformation version counter at the time of this update.
+    /// `Some` only on draws where the transformation changed.
+    #[storable(event = "transformation_update")]
+    pub transformation_update_id: Option<i64>,
+    #[storable(event = "transformation_update", dims("unconstrained_parameter"))]
     pub mass_matrix_inv: Option<Vec<f64>>,
-    #[storable(dims("unconstrained_parameter"))]
+    #[storable(event = "transformation_update", dims("unconstrained_parameter"))]
     pub transformation_mu: Option<Vec<f64>>,
 }
 
 impl<M: Math> SamplerStats<M> for DiagMassMatrix<M> {
     type Stats = DiagMassMatrixStats;
-    type StatsOptions = ();
+    type StatsOptions = i64;
 
-    fn extract_stats(&self, math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
-        if self.store_mass_matrix {
+    fn extract_stats(&self, math: &mut M, last_id: Self::StatsOptions) -> Self::Stats {
+        if self.id != last_id {
             DiagMassMatrixStats {
-                mass_matrix_inv: Some(math.box_array(&self.stds).into_vec()),
-                transformation_mu: Some(math.box_array(&self.mean).into_vec()),
+                transformation_update_id: Some(self.id),
+                mass_matrix_inv: if self.store_mass_matrix {
+                    Some(math.box_array(&self.stds).into_vec())
+                } else {
+                    None
+                },
+                transformation_mu: if self.store_mass_matrix {
+                    Some(math.box_array(&self.mean).into_vec())
+                } else {
+                    None
+                },
             }
         } else {
             DiagMassMatrixStats {
+                transformation_update_id: None,
                 mass_matrix_inv: None,
                 transformation_mu: None,
             }
@@ -207,6 +221,10 @@ impl<M: Math> Transformation<M> for DiagMassMatrix<M> {
     }
 
     fn transformation_id(&self, _math: &mut M) -> i64 {
+        self.id
+    }
+
+    fn next_stats_options(&self, _math: &mut M, _current: i64) -> i64 {
         self.id
     }
 }
