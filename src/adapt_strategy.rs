@@ -476,7 +476,7 @@ mod test {
                 step_size: (),
                 mass_matrix: (),
             },
-            hamiltonian: (),
+            hamiltonian: -1i64,
             point: TransformedPointStatsOptions {
                 store_gradient: true,
                 store_unconstrained: true,
