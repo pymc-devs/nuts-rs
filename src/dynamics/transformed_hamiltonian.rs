@@ -264,11 +264,22 @@ impl<M: Math> TransformedPoint<M> {
     /// Reset the trajectory-tracking fields so that `energy_error()` is measured
     /// relative to the current state (e.g. after a partial momentum refresh).
     ///
-    /// Sets `kinetic_energy = 0`, `index_in_trajectory = 0`,
-    /// `initial_energy = energy()`, and `step_size_factor = 1.0`.
-    /// Used by the MCLMC sampler after each isokinetic Langevin refresh.
-    pub(crate) fn reset_trajectory_energy(&mut self) {
-        self.kinetic_energy = 0.0;
+    /// For [`KineticEnergyKind::Microcanonical`]: sets `kinetic_energy = 0` (the
+    /// accumulated ΔKE accumulator is zeroed for the new trajectory).
+    /// For [`KineticEnergyKind::Euclidean`] / [`KineticEnergyKind::ExactNormal`]:
+    /// recomputes `kinetic_energy = ½‖v‖²` from the current (post-refresh) velocity.
+    ///
+    /// In both cases sets `index_in_trajectory = 0`, `initial_energy = energy()`,
+    /// and `step_size_factor = 1.0`.
+    pub(crate) fn reset_trajectory_energy(&mut self, math: &mut M, kind: KineticEnergyKind) {
+        match kind {
+            KineticEnergyKind::Microcanonical => {
+                self.kinetic_energy = 0.0;
+            }
+            KineticEnergyKind::Euclidean | KineticEnergyKind::ExactNormal => {
+                self.update_kinetic_energy(math);
+            }
+        }
         self.index_in_trajectory = 0;
         self.initial_energy = self.energy();
         self.step_size_factor = 1.0;
@@ -466,6 +477,16 @@ impl<M: Math, T: Transformation<M>> TransformedHamiltonian<M, T> {
 
     pub fn set_momentum_decoherence_length(&mut self, l: Option<f64>) {
         self.momentum_decoherence_length = l;
+    }
+
+    /// Change the kinetic-energy kind (and thus the leapfrog integrator and
+    /// momentum distribution) used by this Hamiltonian.
+    ///
+    /// When switching from [`KineticEnergyKind::Euclidean`] to
+    /// [`KineticEnergyKind::Microcanonical`] the caller is responsible for
+    /// reinitializing the state.
+    pub fn set_kinetic_energy_kind(&mut self, kind: KineticEnergyKind) {
+        self.kinetic_energy_kind = kind;
     }
 }
 
@@ -785,8 +806,6 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         };
 
         let half_step = self.step_size * factor / 2.0;
-        let n = math.dim() as f64;
-        let nu = ((2.0 * half_step / momentum_decoherence_length).exp_m1() / n).sqrt();
 
         let mut noise = math.new_array();
         math.array_gaussian(rng, &mut noise, &self.ones);
@@ -794,8 +813,36 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         let point = state.try_point_mut().map_err(|_| {
             NutsError::BadInitGrad(anyhow::anyhow!("State in use during momentum refresh").into())
         })?;
-        math.axpy(&noise, &mut point.velocity, nu);
-        math.array_normalize(&mut point.velocity);
+
+        match self.kinetic_energy_kind {
+            KineticEnergyKind::Microcanonical => {
+                // Isokinetic Langevin (OU on the unit sphere):
+                // ν = sqrt((exp(2·half_step/L) − 1) / n),  n = dim
+                // p ← (p + ν·z) / ‖p + ν·z‖,  z ~ N(0, I)
+                let n = math.dim() as f64;
+                let nu = ((2.0 * half_step / momentum_decoherence_length).exp_m1() / n).sqrt();
+                math.axpy(&noise, &mut point.velocity, nu);
+                math.array_normalize(&mut point.velocity);
+            }
+            KineticEnergyKind::Euclidean | KineticEnergyKind::ExactNormal => {
+                // Ornstein–Uhlenbeck for Gaussian momentum p ~ N(0, I):
+                //   α = exp(−half_step / L)
+                //   β = sqrt(1 − α²)
+                //   p_new = α · p + β · z,  z ~ N(0, I)
+                //
+                // `axpy_out(x, y, a, out)` computes `out = y + a·x`.
+                // So `axpy_out(&velocity, &zeros, alpha, &mut new_velocity)`
+                // gives `new_velocity = zeros + alpha·velocity = alpha·velocity`.
+                let alpha = (-half_step / momentum_decoherence_length).exp();
+                let beta = (1.0 - alpha * alpha).sqrt();
+                let mut new_velocity = math.new_array();
+                math.axpy_out(&point.velocity, &self.zeros, alpha, &mut new_velocity);
+                math.axpy(&noise, &mut new_velocity, beta);
+                math.copy_into(&new_velocity, &mut point.velocity);
+                // Keep kinetic_energy consistent with the updated velocity.
+                point.update_kinetic_energy(math);
+            }
+        }
 
         Ok(())
     }

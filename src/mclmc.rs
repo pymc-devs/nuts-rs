@@ -20,13 +20,6 @@
 //! No Metropolis accept/reject is performed — the draw is always accepted.
 //! With `f = 1` each draw spans one full decoherence length; smaller `f`
 //! produces more frequent (cheaper) draws.
-//!
-//! [`MclmcChain`] is generic over any [`AdaptStrategy`] whose `Hamiltonian`
-//! associated type is a [`TransformedHamiltonian`].  [`MclmcSettings`] wires
-//! this up to [`GlobalStrategy`] configured with
-//! [`StepSizeAdaptMethod::Fixed`] and `step_size_window = 0.0`, so the full
-//! warmup budget is spent on mass-matrix adaptation and the step size is left
-//! untouched.
 
 use std::{
     cell::{Ref, RefCell},
@@ -38,15 +31,52 @@ use std::{
 use anyhow::Result;
 use nuts_derive::Storable;
 use nuts_storable::{HasDims, Storable};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Math, NutsError,
     chain::{AdaptStrategy, Chain, StatOptions},
-    dynamics::{DivergenceInfo, DivergenceStats, Hamiltonian, Point, State, TransformedPoint},
+    dynamics::{
+        DivergenceInfo, DivergenceStats, Hamiltonian, KineticEnergyKind, Point, State,
+        TransformedHamiltonian, TransformedPoint,
+    },
     nuts::{Collector, NutsOptions},
     sampler::Progress,
     sampler_stats::{SamplerStats, StatsDims},
+    transform::Transformation,
 };
+
+// ── Trajectory kind ───────────────────────────────────────────────────────────
+
+/// Selects which leapfrog integrator and partial momentum refresh are used by
+/// [`MclmcChain`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MclmcTrajectoryKind {
+    /// Microcanonical (ESH) trajectory with isokinetic Langevin momentum
+    /// refresh — original MCLMC (default).
+    ///
+    /// Momentum lives on the unit sphere; the partial refresh is the
+    /// isokinetic Ornstein–Uhlenbeck step that keeps `‖p‖ = 1`.
+    #[default]
+    Microcanonical,
+
+    /// Standard Euclidean HMC trajectory with Ornstein–Uhlenbeck partial
+    /// momentum refresh.
+    ///
+    /// Momentum is Gaussian `N(0, I)`.  The partial refresh is
+    /// `p_new = α·p + sqrt(1−α²)·z`, `z ~ N(0, I)`,
+    /// `α = exp(−ε/(2L))`.
+    Euclidean,
+
+    /// Use the Euclidean trajectory during the early tuning window (the first
+    /// `trajectory_switch_fraction · num_tune` draws), then switch permanently
+    /// to the Microcanonical trajectory for the remainder of warmup and all
+    /// post-warmup draws.
+    ///
+    /// This can ease mass-matrix estimation in the early phase while still
+    /// benefiting from the efficiency of the microcanonical trajectory later.
+    EuclideanEarlyThenMicrocanonical,
+}
 
 // ── Per-draw diagnostic info ──────────────────────────────────────────────────
 
@@ -98,20 +128,14 @@ pub struct MclmcStats<P: HasDims, H: Storable<P>, A: Storable<P>, Pt: Storable<P
 // ── MclmcChain ────────────────────────────────────────────────────────────────
 
 /// Single-chain MCLMC sampler.
-///
-/// Generic over any [`AdaptStrategy`] `A` whose `Hamiltonian` is a
-/// [`TransformedHamiltonian`].  Drives the ESH leapfrog manually (rather than
-/// via the NUTS tree), applies the isokinetic Langevin momentum refresh around
-/// each trajectory, and calls `A::adapt` after every draw so that the
-/// mass-matrix transformation is kept up to date during warmup.
-pub struct MclmcChain<M, R, A>
+pub struct MclmcChain<M, R, A, T>
 where
     M: Math,
     R: rand::Rng,
-    A: AdaptStrategy<M>,
-    A::Hamiltonian: Hamiltonian<M, Point = TransformedPoint<M>>,
+    T: Transformation<M>,
+    A: AdaptStrategy<M, Hamiltonian = TransformedHamiltonian<M, T>>,
 {
-    hamiltonian: A::Hamiltonian,
+    hamiltonian: TransformedHamiltonian<M, T>,
     collector: A::Collector,
     adapt: A,
     state: State<M, TransformedPoint<M>>,
@@ -129,9 +153,15 @@ where
     /// When `true`, use the tree-structured step size retry: on divergence,
     /// halve the step size factor and try to make 2 steps before doubling
     /// back. `log_weight` always includes `log(step_size)` to correct for
-    /// the varying sampling density. When `false`, `MAX_HALVINGS = 0` so
-    /// divergences are recorded immediately without any retry.
+    /// the varying sampling density. When `false`, divergences are recorded
+    /// immediately without any retry and `log_weight = -energy_change`.
     dynamic_step_size: bool,
+    /// Which trajectory kind is currently requested.
+    trajectory_kind: MclmcTrajectoryKind,
+    /// For [`MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical`]: the
+    /// draw index at which to permanently switch from Euclidean to
+    /// Microcanonical.  Ignored for other trajectory kinds.
+    switch_draw: u64,
     /// NutsOptions kept only to satisfy `AdaptStrategy::adapt`'s signature;
     /// MCLMC does not use tree-related options.
     nuts_options: NutsOptions,
@@ -140,21 +170,23 @@ where
     last_info: Option<MclmcInfo>,
 }
 
-impl<M, R, A> MclmcChain<M, R, A>
+impl<M, R, A, T> MclmcChain<M, R, A, T>
 where
     M: Math,
     R: rand::Rng,
-    A: AdaptStrategy<M>,
-    A::Hamiltonian: Hamiltonian<M, Point = TransformedPoint<M>>,
+    T: Transformation<M>,
+    A: AdaptStrategy<M, Hamiltonian = TransformedHamiltonian<M, T>>,
 {
     pub fn new(
         mut math: M,
-        mut hamiltonian: A::Hamiltonian,
+        mut hamiltonian: TransformedHamiltonian<M, T>,
         adapt: A,
         rng: R,
         chain: u64,
         subsample_frequency: f64,
         dynamic_step_size: bool,
+        trajectory_kind: MclmcTrajectoryKind,
+        switch_draw: u64,
         stats_options: StatOptions<M, A>,
     ) -> Self {
         let state = hamiltonian.pool().new_state(&mut math);
@@ -169,6 +201,8 @@ where
             draw_count: 0,
             subsample_frequency,
             dynamic_step_size,
+            trajectory_kind,
+            switch_draw,
             nuts_options: NutsOptions::default(),
             math: math.into(),
             stats_options,
@@ -196,14 +230,16 @@ where
         // Reset the energy baseline to the post-refresh state so that
         // energy_error() measures drift over this draw only.
         {
+            let kind = self.hamiltonian.kinetic_energy_kind;
+
             let point = self
                 .state
                 .try_point_mut()
                 .expect("State has no other references at start of draw");
-            point.reset_trajectory_energy();
+            point.reset_trajectory_energy(math, kind);
         }
 
-        // ── num_steps ESH leapfrog steps with tree-structured step size retry ─
+        // ── num_steps leapfrog steps with tree-structured step size retry ────
         //
         // When `dynamic_step_size` is enabled and a leapfrog step diverges, we
         // halve the step size factor and try to make 2 steps at the smaller
@@ -325,16 +361,16 @@ where
 
 // ── SamplerStats ──────────────────────────────────────────────────────────────
 
-impl<M, R, A> SamplerStats<M> for MclmcChain<M, R, A>
+impl<M, R, A, T> SamplerStats<M> for MclmcChain<M, R, A, T>
 where
     M: Math,
     R: rand::Rng,
-    A: AdaptStrategy<M>,
-    A::Hamiltonian: Hamiltonian<M, Point = TransformedPoint<M>>,
+    T: Transformation<M>,
+    A: AdaptStrategy<M, Hamiltonian = TransformedHamiltonian<M, T>>,
 {
     type Stats = MclmcStats<
         StatsDims,
-        <A::Hamiltonian as SamplerStats<M>>::Stats,
+        <TransformedHamiltonian<M, T> as SamplerStats<M>>::Stats,
         A::Stats,
         <TransformedPoint<M> as SamplerStats<M>>::Stats,
     >;
@@ -371,12 +407,12 @@ where
 
 // ── Chain impl ────────────────────────────────────────────────────────────────
 
-impl<M, R, A> Chain<M> for MclmcChain<M, R, A>
+impl<M, R, A, T> Chain<M> for MclmcChain<M, R, A, T>
 where
     M: Math,
     R: rand::Rng,
-    A: AdaptStrategy<M>,
-    A::Hamiltonian: Hamiltonian<M, Point = TransformedPoint<M>>,
+    T: Transformation<M>,
+    A: AdaptStrategy<M, Hamiltonian = TransformedHamiltonian<M, T>>,
 {
     type AdaptStrategy = A;
 
@@ -391,13 +427,29 @@ where
             &mut self.rng,
         )?;
         self.state = self.hamiltonian.init_state(math, position)?;
-        // Initialise momentum to a random unit vector.
+        // Initialise momentum according to the current trajectory kind.
         self.hamiltonian
             .initialize_trajectory(math, &mut self.state, &mut self.rng)?;
         Ok(())
     }
 
     fn draw(&mut self) -> Result<(Box<[f64]>, Progress)> {
+        // ── Euclidean → Microcanonical switch ─────────────────────────────────
+        // At the configured draw boundary, switch the Hamiltonian to use the
+        // Microcanonical leapfrog and fully resample the momentum from the
+        // correct distribution (unit-sphere), rather than trying to recycle
+        // the Euclidean-Gaussian momentum by projecting it.
+        if self.trajectory_kind == MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical
+            && self.draw_count == self.switch_draw
+            && self.hamiltonian.kinetic_energy_kind != KineticEnergyKind::Microcanonical
+        {
+            self.hamiltonian
+                .set_kinetic_energy_kind(KineticEnergyKind::Microcanonical);
+            let math = self.math.get_mut();
+            self.hamiltonian
+                .initialize_trajectory(math, &mut self.state, &mut self.rng)?;
+        }
+
         let (state, info) = self.mclmc_kernel()?;
 
         let position: Box<[f64]> = {
@@ -470,7 +522,10 @@ where
 mod tests {
     use rand::rng;
 
-    use crate::{Chain, adapt_strategy::test_logps::NormalLogp, math::CpuMath, sampler::Settings};
+    use crate::{
+        Chain, DiagMclmcSettings, MclmcSettings, adapt_strategy::test_logps::NormalLogp,
+        math::CpuMath, sampler::Settings,
+    };
 
     #[test]
     fn mclmc_draws_normal() {
@@ -478,12 +533,12 @@ mod tests {
         let func = NormalLogp::new(ndim, 3.0);
         let math = CpuMath::new(func);
 
-        let settings = crate::DiagMclmcSettings {
+        let settings = DiagMclmcSettings {
             step_size: 0.5,
             momentum_decoherence_length: 3.0,
             num_tune: 200,
             num_draws: 500,
-            ..crate::MclmcSettings::default()
+            ..MclmcSettings::default()
         };
 
         let mut rng = rng();
@@ -498,6 +553,77 @@ mod tests {
         }
 
         // After 500 draws the chain should be exploring near the mean (3.0).
+        let mean: f64 = last_pos.iter().sum::<f64>() / ndim as f64;
+        assert!(
+            (mean - 3.0).abs() < 3.0,
+            "mean {mean} too far from expected 3.0"
+        );
+    }
+
+    #[test]
+    fn mclmc_euclidean_trajectory() {
+        use crate::mclmc::MclmcTrajectoryKind;
+
+        let ndim = 10;
+        let func = NormalLogp::new(ndim, 3.0);
+        let math = CpuMath::new(func);
+
+        let settings = DiagMclmcSettings {
+            step_size: 0.3,
+            momentum_decoherence_length: 3.0,
+            num_tune: 200,
+            num_draws: 500,
+            trajectory_kind: MclmcTrajectoryKind::Euclidean,
+            ..MclmcSettings::default()
+        };
+
+        let mut rng = rng();
+        let mut chain = settings.new_chain(0, math, &mut rng);
+        chain.set_position(&vec![0.0f64; ndim]).unwrap();
+
+        let mut last_pos = vec![0.0f64; ndim];
+        for _ in 0..500 {
+            let (draw, progress) = chain.draw().unwrap();
+            assert!(!progress.diverging, "unexpected divergence");
+            last_pos.copy_from_slice(&draw);
+        }
+
+        let mean: f64 = last_pos.iter().sum::<f64>() / ndim as f64;
+        assert!(
+            (mean - 3.0).abs() < 3.0,
+            "mean {mean} too far from expected 3.0"
+        );
+    }
+
+    #[test]
+    fn mclmc_euclidean_early_then_microcanonical() {
+        use crate::mclmc::MclmcTrajectoryKind;
+
+        let ndim = 10;
+        let func = NormalLogp::new(ndim, 3.0);
+        let math = CpuMath::new(func);
+
+        let settings = DiagMclmcSettings {
+            step_size: 0.5,
+            momentum_decoherence_length: 3.0,
+            num_tune: 200,
+            num_draws: 500,
+            trajectory_kind: MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical,
+            trajectory_switch_fraction: 0.3,
+            ..MclmcSettings::default()
+        };
+
+        let mut rng = rng();
+        let mut chain = settings.new_chain(0, math, &mut rng);
+        chain.set_position(&vec![0.0f64; ndim]).unwrap();
+
+        let mut last_pos = vec![0.0f64; ndim];
+        for _ in 0..500 {
+            let (draw, progress) = chain.draw().unwrap();
+            assert!(!progress.diverging, "unexpected divergence");
+            last_pos.copy_from_slice(&draw);
+        }
+
         let mean: f64 = last_pos.iter().sum::<f64>() / ndim as f64;
         assert!(
             (mean - 3.0).abs() < 3.0,

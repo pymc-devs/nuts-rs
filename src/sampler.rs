@@ -27,6 +27,7 @@ use crate::{
     chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
     dynamics::{KineticEnergyKind, TransformedHamiltonian, TransformedPointStatsOptions},
     external_adapt_strategy::{ExternalTransformAdaptation, FlowSettings},
+    mclmc::MclmcTrajectoryKind,
     model::Model,
     nuts::NutsOptions,
     sampler_stats::{SamplerStats, StatsDims},
@@ -288,6 +289,15 @@ pub struct MclmcSettings<A: Debug + Copy + Default + Serialize> {
     /// sampling density. When `false`, divergences are recorded immediately
     /// without any retry and `log_weight = -energy_change`.
     pub dynamic_step_size: bool,
+    /// Selects which leapfrog integrator and partial-momentum-refresh style
+    /// to use.  See [`MclmcTrajectoryKind`] for the available options.
+    /// Default: [`MclmcTrajectoryKind::Microcanonical`] (original MCLMC).
+    pub trajectory_kind: MclmcTrajectoryKind,
+    /// Fraction of `num_tune` draws at which the trajectory is switched from
+    /// Euclidean to Microcanonical when
+    /// `trajectory_kind == MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical`.
+    /// Ignored for other trajectory kinds.  Default: `0.3`.
+    pub trajectory_switch_fraction: f64,
 }
 
 /// MCLMC settings with a diagonal mass matrix adaptation.
@@ -353,6 +363,8 @@ fn default_mclmc_settings<A: Debug + Copy + Default + Serialize>(
         adapt_options,
         subsample_frequency: 1.0,
         dynamic_step_size: false,
+        trajectory_kind: MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical,
+        trajectory_switch_fraction: 0.3,
     }
 }
 
@@ -374,10 +386,18 @@ impl Default for FlowMclmcSettings {
     }
 }
 
-type DiagMclmcChain<M> =
-    crate::mclmc::MclmcChain<M, ChaCha8Rng, GlobalStrategy<M, DiagAdaptStrategy<M>>>;
-type LowRankMclmcChain<M> =
-    crate::mclmc::MclmcChain<M, ChaCha8Rng, GlobalStrategy<M, LowRankMassMatrixStrategy>>;
+type DiagMclmcChain<M> = crate::mclmc::MclmcChain<
+    M,
+    ChaCha8Rng,
+    GlobalStrategy<M, DiagAdaptStrategy<M>>,
+    DiagMassMatrix<M>,
+>;
+type LowRankMclmcChain<M> = crate::mclmc::MclmcChain<
+    M,
+    ChaCha8Rng,
+    GlobalStrategy<M, LowRankMassMatrixStrategy>,
+    LowRankMassMatrix<M>,
+>;
 
 impl Settings for DiagMclmcSettings {
     type Chain<M: Math> = DiagMclmcChain<M>;
@@ -393,8 +413,6 @@ impl Settings for DiagMclmcSettings {
         use crate::stepsize::StepSizeAdaptMethod;
 
         let num_tune = self.num_tune;
-        // Embed our fixed step_size into the adapt options so that
-        // GlobalStrategy writes it to the hamiltonian (and never changes it).
         let mut adapt_options = self.adapt_options;
         adapt_options.step_size_settings.adapt_options.method =
             StepSizeAdaptMethod::Fixed(self.step_size);
@@ -408,13 +426,19 @@ impl Settings for DiagMclmcSettings {
             &mut math,
             self.adapt_options.mass_matrix_options.store_mass_matrix,
         );
+        let initial_kind = match self.trajectory_kind {
+            MclmcTrajectoryKind::Microcanonical => KineticEnergyKind::Microcanonical,
+            MclmcTrajectoryKind::Euclidean
+            | MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical => KineticEnergyKind::Euclidean,
+        };
         let mut hamiltonian = TransformedHamiltonian::new(
             &mut math,
             self.max_energy_error,
             mass_matrix,
-            KineticEnergyKind::Microcanonical,
+            initial_kind,
         );
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
+        let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
         MclmcChain::new(
@@ -425,6 +449,8 @@ impl Settings for DiagMclmcSettings {
             chain,
             self.subsample_frequency,
             self.dynamic_step_size,
+            self.trajectory_kind,
+            switch_draw,
             stats_options,
         )
     }
@@ -522,13 +548,19 @@ impl Settings for LowRankMclmcSettings {
             chain,
         );
         let mass_matrix = LowRankMassMatrix::new(&mut math, self.adapt_options.mass_matrix_options);
+        let initial_kind = match self.trajectory_kind {
+            MclmcTrajectoryKind::Microcanonical => KineticEnergyKind::Microcanonical,
+            MclmcTrajectoryKind::Euclidean
+            | MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical => KineticEnergyKind::Euclidean,
+        };
         let mut hamiltonian = TransformedHamiltonian::new(
             &mut math,
             self.max_energy_error,
             mass_matrix,
-            KineticEnergyKind::Microcanonical,
+            initial_kind,
         );
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
+        let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
         MclmcChain::new(
@@ -539,6 +571,8 @@ impl Settings for LowRankMclmcSettings {
             chain,
             self.subsample_frequency,
             self.dynamic_step_size,
+            self.trajectory_kind,
+            switch_draw,
             stats_options,
         )
     }
@@ -871,7 +905,12 @@ impl Settings for FlowNutsSettings {
 }
 
 impl Settings for FlowMclmcSettings {
-    type Chain<M: Math> = crate::mclmc::MclmcChain<M, ChaCha8Rng, ExternalTransformAdaptation>;
+    type Chain<M: Math> = crate::mclmc::MclmcChain<
+        M,
+        ChaCha8Rng,
+        ExternalTransformAdaptation,
+        ExternalTransformation<M>,
+    >;
 
     fn new_chain<M: Math, R: Rng + ?Sized>(
         &self,
@@ -889,14 +928,15 @@ impl Settings for FlowMclmcSettings {
             .new_transformation(rng, math.dim(), chain)
             .expect("Failed to create external transformation");
         let transform = ExternalTransformation::new(params);
-        let mut hamiltonian = TransformedHamiltonian::new(
-            &mut math,
-            self.max_energy_error,
-            transform,
-            KineticEnergyKind::Microcanonical,
-        );
+        let initial_kind = match self.trajectory_kind {
+            MclmcTrajectoryKind::Microcanonical => KineticEnergyKind::Microcanonical,
+            MclmcTrajectoryKind::Euclidean
+            | MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical => KineticEnergyKind::Euclidean,
+        };
+        let mut hamiltonian =
+            TransformedHamiltonian::new(&mut math, self.max_energy_error, transform, initial_kind);
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
-
+        let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
         MclmcChain::new(
@@ -907,6 +947,8 @@ impl Settings for FlowMclmcSettings {
             chain,
             self.subsample_frequency,
             self.dynamic_step_size,
+            self.trajectory_kind,
+            switch_draw,
             stats_options,
         )
     }
