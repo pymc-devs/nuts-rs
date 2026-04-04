@@ -431,12 +431,7 @@ impl Settings for DiagMclmcSettings {
             MclmcTrajectoryKind::Euclidean
             | MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical => KineticEnergyKind::Euclidean,
         };
-        let mut hamiltonian = TransformedHamiltonian::new(
-            &mut math,
-            self.max_energy_error,
-            mass_matrix,
-            initial_kind,
-        );
+        let mut hamiltonian = TransformedHamiltonian::new(&mut math, mass_matrix, initial_kind);
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
         let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
@@ -451,6 +446,7 @@ impl Settings for DiagMclmcSettings {
             self.dynamic_step_size,
             self.trajectory_kind,
             switch_draw,
+            self.max_energy_error,
             stats_options,
         )
     }
@@ -553,12 +549,7 @@ impl Settings for LowRankMclmcSettings {
             MclmcTrajectoryKind::Euclidean
             | MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical => KineticEnergyKind::Euclidean,
         };
-        let mut hamiltonian = TransformedHamiltonian::new(
-            &mut math,
-            self.max_energy_error,
-            mass_matrix,
-            initial_kind,
-        );
+        let mut hamiltonian = TransformedHamiltonian::new(&mut math, mass_matrix, initial_kind);
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
         let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
@@ -573,6 +564,7 @@ impl Settings for LowRankMclmcSettings {
             self.dynamic_step_size,
             self.trajectory_kind,
             switch_draw,
+            self.max_energy_error,
             stats_options,
         )
     }
@@ -651,6 +643,7 @@ fn nuts_options(settings: &NutsSettings<impl Debug + Copy + Default + Serialize>
         check_turning: settings.check_turning,
         target_integration_time: settings.target_integration_time,
         extra_doublings: settings.extra_doublings,
+        max_energy_error: settings.max_energy_error,
     }
 }
 
@@ -678,13 +671,7 @@ impl Settings for LowRankNutsSettings {
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
         let mass_matrix = LowRankMassMatrix::new(&mut math, self.adapt_options.mass_matrix_options);
-        let max_energy_error = self.max_energy_error;
-        let hamiltonian = TransformedHamiltonian::new(
-            &mut math,
-            max_energy_error,
-            mass_matrix,
-            self.trajectory_kind,
-        );
+        let hamiltonian = TransformedHamiltonian::new(&mut math, mass_matrix, self.trajectory_kind);
 
         let options = nuts_options(self);
 
@@ -759,13 +746,7 @@ impl Settings for DiagNutsSettings {
             &mut math,
             self.adapt_options.mass_matrix_options.store_mass_matrix,
         );
-        let max_energy_error = self.max_energy_error;
-        let potential = TransformedHamiltonian::new(
-            &mut math,
-            max_energy_error,
-            mass_matrix,
-            self.trajectory_kind,
-        );
+        let potential = TransformedHamiltonian::new(&mut math, mass_matrix, self.trajectory_kind);
 
         let options = nuts_options(self);
 
@@ -835,7 +816,6 @@ impl Settings for FlowNutsSettings {
         mut rng: &mut R,
     ) -> Self::Chain<M> {
         let num_tune = self.num_tune;
-        let max_energy_error = self.max_energy_error;
 
         let strategy =
             ExternalTransformAdaptation::new(&mut math, self.adapt_options, num_tune, chain);
@@ -843,12 +823,7 @@ impl Settings for FlowNutsSettings {
             .new_transformation(rng, math.dim(), chain)
             .expect("Failed to create external transformation");
         let transform = ExternalTransformation::new(params);
-        let hamiltonian = TransformedHamiltonian::new(
-            &mut math,
-            max_energy_error,
-            transform,
-            self.trajectory_kind,
-        );
+        let hamiltonian = TransformedHamiltonian::new(&mut math, transform, self.trajectory_kind);
 
         let options = nuts_options(self);
 
@@ -933,8 +908,7 @@ impl Settings for FlowMclmcSettings {
             MclmcTrajectoryKind::Euclidean
             | MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical => KineticEnergyKind::Euclidean,
         };
-        let mut hamiltonian =
-            TransformedHamiltonian::new(&mut math, self.max_energy_error, transform, initial_kind);
+        let mut hamiltonian = TransformedHamiltonian::new(&mut math, transform, initial_kind);
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
         let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
@@ -949,6 +923,7 @@ impl Settings for FlowMclmcSettings {
             self.dynamic_step_size,
             self.trajectory_kind,
             switch_draw,
+            self.max_energy_error,
             stats_options,
         )
     }
