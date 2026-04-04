@@ -4,22 +4,6 @@
 //! (Robnik, De Luca, Silverstein & Seljak 2023), using the isokinetic Langevin
 //! (Ornstein–Uhlenbeck) momentum refresh from the
 //! [BlackJAX](https://github.com/blackjax-devs/blackjax) implementation.
-//!
-//! ## Algorithm (one draw)
-//!
-//! Let `L` be the momentum decoherence length, `ε` the step size, and `f` the
-//! `subsample_frequency`.  Each call to [`MclmcChain::draw`] runs exactly
-//! `num_steps = round(f · L / ε).max(1)` leapfrog steps:
-//!
-//! 1. **Partial momentum refresh** (half Langevin step with `half_step = ε/2`):
-//!    - `ν = sqrt((exp(2·half_step/L) − 1) / n)`,  `n = dim`
-//!    - `p ← (p + ν·z) / ‖p + ν·z‖`,  `z ~ N(0, I)`
-//! 2. **`num_steps` ESH leapfrog steps** — the end state is the draw.
-//! 3. **Partial momentum refresh** again (second half, same ν).
-//!
-//! No Metropolis accept/reject is performed — the draw is always accepted.
-//! With `f = 1` each draw spans one full decoherence length; smaller `f`
-//! produces more frequent (cheaper) draws.
 
 use std::{
     cell::{Ref, RefCell},
@@ -28,9 +12,10 @@ use std::{
     ops::DerefMut,
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use nuts_derive::Storable;
 use nuts_storable::{HasDims, Storable};
+use rand_distr::num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -91,6 +76,7 @@ pub struct MclmcInfo {
     pub divergence_info: Option<DivergenceInfo>,
     /// Number of leapfrog steps actually taken.
     pub num_steps: u64,
+    pub average_step_size: f64,
 }
 
 // ── Stats structs ─────────────────────────────────────────────────────────────
@@ -119,6 +105,7 @@ pub struct MclmcStats<P: HasDims, H: Storable<P>, A: Storable<P>, Pt: Storable<P
     pub adapt: A,
     #[storable(flatten)]
     pub point: Pt,
+    pub average_step_size: f64,
     #[storable(flatten)]
     pub divergence: DivergenceStats,
     #[storable(ignore)]
@@ -162,6 +149,7 @@ where
     /// draw index at which to permanently switch from Euclidean to
     /// Microcanonical.  Ignored for other trajectory kinds.
     switch_draw: u64,
+    max_energy_error: f64,
     /// NutsOptions kept only to satisfy `AdaptStrategy::adapt`'s signature;
     /// MCLMC does not use tree-related options.
     nuts_options: NutsOptions,
@@ -188,6 +176,7 @@ where
         dynamic_step_size: bool,
         trajectory_kind: MclmcTrajectoryKind,
         switch_draw: u64,
+        max_energy_error: f64,
         stats_options: StatOptions<M, A>,
     ) -> Self {
         let state = hamiltonian.pool().new_state(&mut math);
@@ -210,33 +199,31 @@ where
             stats_options,
             last_info: None,
             tmp_velocity,
+            max_energy_error,
         }
     }
 
-    fn mclmc_kernel(&mut self) -> Result<(State<M, TransformedPoint<M>>, MclmcInfo)> {
+    fn mclmc_kernel(
+        &mut self,
+        resample_velocity: bool,
+    ) -> Result<(State<M, TransformedPoint<M>>, MclmcInfo)> {
         let math = self.math.get_mut();
 
         let base_step_size = self.hamiltonian.step_size();
-        let momentum_decoherence_length = self
+        let num_base_steps: u64 = self
             .hamiltonian
             .momentum_decoherence_length()
-            .unwrap_or(f64::INFINITY);
-        // Each draw runs exactly this many leapfrog steps at the base step size.
-        let num_steps = (self.subsample_frequency * momentum_decoherence_length / base_step_size)
-            .round()
-            .max(1.0) as u64;
-
-        // Reset the kinetic-energy accumulator so that energy() at the draw
-        // start is a clean baseline for MclmcInfo.energy_change.
-        {
-            let kind = self.hamiltonian.kinetic_energy_kind;
-
-            let point = self
-                .state
-                .try_point_mut()
-                .expect("State has no other references at start of draw");
-            point.reset_trajectory_energy(math, kind);
-        }
+            .map(|length| {
+                let num_steps = (self.subsample_frequency * length / base_step_size)
+                    .round()
+                    .max(1.0)
+                    .min(1e6);
+                if !num_steps.is_finite() {
+                    bail!("Invalid number of integration steps");
+                }
+                Ok(num_steps as u64)
+            })
+            .unwrap_or(Ok(1))?;
 
         // ── num_steps leapfrog steps with tree-structured step size retry ────
         //
@@ -246,11 +233,27 @@ where
         // halve again. We cap the depth to MAX_HALVINGS; beyond that we record
         // a real divergence.  When `dynamic_step_size` is false MAX_HALVINGS=0
         // so any divergence is recorded immediately.
-        let max_halvings: u32 = if self.dynamic_step_size { 10 } else { 0 };
+        let max_halvings: u64 = if self.dynamic_step_size { 10 } else { 0 };
 
         use crate::dynamics::LeapfrogResult;
 
+        // TODO make this copy conditional
         let mut current = self.hamiltonian.copy_state(math, &self.state);
+
+        self.hamiltonian.initialize_trajectory(
+            math,
+            &mut current,
+            resample_velocity,
+            &mut self.rng,
+        )?;
+
+        let ones = {
+            let mut ones = math.new_array();
+            math.fill_array(&mut ones, 1.0);
+            ones
+        };
+        let mut momentum_noise = math.new_array();
+        math.array_gaussian(&mut self.rng, &mut momentum_noise, &ones);
 
         // Capture the draw-start energy once; used at the end to compute
         // MclmcInfo.energy_change independently of the per-step baselines.
@@ -260,54 +263,71 @@ where
         let mut steps_taken = 0u64;
 
         // `factor` is the current step size multiplier (always a power of 2).
-        // `debt` is how many steps we still owe at the current factor before
-        // we're allowed to double back up.
         let mut factor = 1.0_f64;
-        let mut halvings: u32 = 0;
-        let mut debt: u32 = 0; // steps remaining at the current halved level
 
-        let mut remaining = num_steps;
+        let mut remaining_stack: Vec<u64> = Vec::with_capacity(max_halvings.try_into().unwrap());
+
+        let mut remaining = num_base_steps;
+        let mut time = 0.0;
+
         while remaining > 0 {
-            // debt == 2 indicates a previous unsuccessful leapfrog
-            if debt != 2 {
-                math.copy_into(&current.point().velocity, &mut self.tmp_velocity);
-            } else {
-                // Restore the old velocity and refresh momentum with smaller factor
-                // TODO: I think we should reuse the original gaussian noise?
-                math.copy_into(
-                    &self.tmp_velocity,
-                    &mut current.try_point_mut().unwrap().velocity,
-                );
-            }
-            self.hamiltonian
-                .partial_momentum_refresh(math, &mut current, &mut self.rng, factor)?;
+            // Store the current momentum in case we need to try again
+            // with smaller step size
+            math.copy_into(&current.point().velocity, &mut self.tmp_velocity);
+
+            self.hamiltonian.partial_momentum_refresh(
+                math,
+                &mut current,
+                &momentum_noise,
+                &mut self.rng,
+                factor,
+            )?;
 
             // Use the post-refresh energy as the divergence baseline so that
             // the leapfrog's energy_error measures only this single step's
             // integration error (O(ε²)), not the cumulative drift from the
             // draw start.  Without this, many small steps with a tight
             // max_energy_error threshold can exhaust all halvings because the
-            // accumulated baseline already sits at the threshold.
+            // accumulated baseline already sits near the threshold.
             let step_baseline = current.point().energy();
-            let next = match self.hamiltonian.leapfrog(
+            // We normalize the max energy error by the length of the step
+            match self.hamiltonian.leapfrog(
                 math,
                 &current,
                 Direction::Forward,
                 factor,
                 step_baseline,
+                // TODO: Should not include subsample_freq?
+                self.max_energy_error * factor / num_base_steps.to_f64().unwrap(),
                 &mut self.collector,
             ) {
                 LeapfrogResult::Ok(mut next) => {
+                    math.array_gaussian(&mut self.rng, &mut momentum_noise, &ones);
                     self.hamiltonian.partial_momentum_refresh(
                         math,
                         &mut next,
+                        &momentum_noise,
                         &mut self.rng,
                         factor,
                     )?;
-                    next
+                    // Sample for next momentum refresh
+                    math.array_gaussian(&mut self.rng, &mut momentum_noise, &ones);
+                    current = next;
+                    steps_taken += 1;
+                    remaining -= 1;
+                    time += factor * base_step_size;
+
+                    while remaining == 0 {
+                        if let Some(prev_remaining) = remaining_stack.pop() {
+                            remaining = prev_remaining - 1;
+                            factor *= 2.0;
+                        } else {
+                            break;
+                        }
+                    }
                 }
                 LeapfrogResult::Divergence(info) => {
-                    if halvings >= max_halvings {
+                    if remaining_stack.len() >= max_halvings.try_into().unwrap() {
                         // Genuinely diverged — give up.
                         divergence_info = Some(info);
                         break;
@@ -315,53 +335,49 @@ where
                     // Halve the step size and require 2 successful steps before
                     // we're allowed to double back.
                     factor *= 0.5;
-                    halvings += 1;
-                    debt = 2;
-                    remaining += 1;
-                    continue;
+                    remaining_stack.push(remaining);
+                    remaining = 2;
+
+                    // Restore the previous momentum for retry
+                    math.copy_into(
+                        &self.tmp_velocity,
+                        &mut current.try_point_mut().unwrap().velocity,
+                    );
+                    // We don't refresh the momentum noise, so that the old
+                    // noise is reused in the retry.
                 }
                 LeapfrogResult::Err(e) => {
                     return Err(NutsError::LogpFailure(e.into()).into());
                 }
-            };
-
-            current = next;
-            steps_taken += 1;
-            remaining -= 1;
-
-            if debt > 0 {
-                debt -= 1;
-                // Paid off our debt at this level — double back up.
-                if debt == 0 && halvings > 0 {
-                    factor *= 2.0;
-                    halvings -= 1;
-                    // If we're back at a halved level, we need to pay off that
-                    // level's debt too (it had one step already paid, one remaining).
-                    if halvings > 0 {
-                        debt = 1;
-                    }
-                }
             }
         }
 
-        let diverging = divergence_info.is_some();
-
-        if diverging {
+        if divergence_info.is_some() {
             // On divergence: stay at the pre-trajectory position, but fully
-            // resample the momentum so the next draw does not reuse the
-            // already-refreshed momentum from this failed trajectory.
+            // resample the momentum so the next draw does not reuse
+            // momentum from this failed trajectory.
             let mut next_state = self.hamiltonian.copy_state(math, &self.state);
             self.hamiltonian
-                .initialize_trajectory(math, &mut next_state, &mut self.rng)?;
+                .initialize_trajectory(math, &mut next_state, true, &mut self.rng)?;
             let energy_change = current.point().energy() - draw_start_energy;
             let info = MclmcInfo {
                 energy_change,
                 diverging: true,
-                divergence_info,
+                // TODO: This clone is annoing, get rid of it.
+                divergence_info: divergence_info.clone(),
                 num_steps: steps_taken,
+                average_step_size: time / steps_taken.to_f64().unwrap(),
             };
+            let sample_info = crate::nuts::SampleInfo {
+                depth: steps_taken,
+                divergence_info,
+                reached_maxdepth: false,
+            };
+            self.collector.register_draw(math, &current, &sample_info);
             return Ok((next_state, info));
         }
+
+        assert!(steps_taken >= num_base_steps);
 
         // Register the end state as the draw for the adaptation collector.
         let sample_info = crate::nuts::SampleInfo {
@@ -371,22 +387,19 @@ where
         };
         self.collector.register_draw(math, &current, &sample_info);
 
-        let energy_change = current.point().energy() - draw_start_energy;
-
-        let next_state = if current.try_point_mut().is_err() {
-            self.hamiltonian.copy_state(math, &current)
-        } else {
-            current
-        };
+        // TODO: In the euclidian case this includes the change in kinetic
+        // energy due to the momentum refresh, but it really shouldn't.
+        let energy_change = current.point().energy_error();
 
         let info = MclmcInfo {
             energy_change,
             diverging: false,
             divergence_info: None,
             num_steps: steps_taken,
+            average_step_size: time / steps_taken.to_f64().unwrap(),
         };
 
-        Ok((next_state, info))
+        Ok((current, info))
     }
 }
 
@@ -420,11 +433,12 @@ where
             draw: self.draw_count,
             num_steps: info.num_steps,
             energy_change: info.energy_change,
-            log_weight: self.state.point().step_size_factor.ln() - info.energy_change,
+            log_weight: info.energy_change,
             tuning: self.adapt.is_tuning(),
             hamiltonian: hamiltonian_stats,
             adapt: adapt_stats,
             point: point_stats,
+            average_step_size: info.average_step_size,
             divergence: (
                 info.divergence_info.as_ref(),
                 options.divergence,
@@ -460,7 +474,7 @@ where
         self.state = self.hamiltonian.init_state(math, position)?;
         // Initialise momentum according to the current trajectory kind.
         self.hamiltonian
-            .initialize_trajectory(math, &mut self.state, &mut self.rng)?;
+            .initialize_trajectory(math, &mut self.state, true, &mut self.rng)?;
         Ok(())
     }
 
@@ -470,18 +484,19 @@ where
         // Microcanonical leapfrog and fully resample the momentum from the
         // correct distribution (unit-sphere), rather than trying to recycle
         // the Euclidean-Gaussian momentum by projecting it.
-        if self.trajectory_kind == MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical
+        let resample_velocity = if self.trajectory_kind
+            == MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical
             && self.draw_count == self.switch_draw
             && self.hamiltonian.kinetic_energy_kind != KineticEnergyKind::Microcanonical
         {
             self.hamiltonian
                 .set_kinetic_energy_kind(KineticEnergyKind::Microcanonical);
-            let math = self.math.get_mut();
-            self.hamiltonian
-                .initialize_trajectory(math, &mut self.state, &mut self.rng)?;
-        }
+            true
+        } else {
+            false
+        };
 
-        let (state, info) = self.mclmc_kernel()?;
+        let (state, info) = self.mclmc_kernel(resample_velocity)?;
 
         let position: Box<[f64]> = {
             let mut math_ = self.math.borrow_mut();

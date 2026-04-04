@@ -261,30 +261,6 @@ impl<M: Math> TransformedPoint<M> {
         self.kinetic_energy = 0.5 * math.array_vector_dot(&self.velocity, &self.velocity);
     }
 
-    /// Reset the trajectory-tracking fields so that `energy_error()` is measured
-    /// relative to the current state (e.g. after a partial momentum refresh).
-    ///
-    /// For [`KineticEnergyKind::Microcanonical`]: sets `kinetic_energy = 0` (the
-    /// accumulated ΔKE accumulator is zeroed for the new trajectory).
-    /// For [`KineticEnergyKind::Euclidean`] / [`KineticEnergyKind::ExactNormal`]:
-    /// recomputes `kinetic_energy = ½‖v‖²` from the current (post-refresh) velocity.
-    ///
-    /// In both cases sets `index_in_trajectory = 0`, `initial_energy = energy()`,
-    /// and `step_size_factor = 1.0`.
-    pub(crate) fn reset_trajectory_energy(&mut self, math: &mut M, kind: KineticEnergyKind) {
-        match kind {
-            KineticEnergyKind::Microcanonical => {
-                self.kinetic_energy = 0.0;
-            }
-            KineticEnergyKind::Euclidean | KineticEnergyKind::ExactNormal => {
-                self.update_kinetic_energy(math);
-            }
-        }
-        self.index_in_trajectory = 0;
-        self.initial_energy = self.energy();
-        self.step_size_factor = 1.0;
-    }
-
     fn init_from_untransformed_position<T: Transformation<M>>(
         &mut self,
         transformation: &T,
@@ -438,18 +414,12 @@ pub struct TransformedHamiltonian<M: Math, T: Transformation<M>> {
     /// `None` disables the refresh (used by NUTS); `Some(L)` enables it (MCLMC).
     momentum_decoherence_length: Option<f64>,
     transformation: T,
-    max_energy_error: f64,
     pub kinetic_energy_kind: KineticEnergyKind,
     pool: StatePool<M, TransformedPoint<M>>,
 }
 
 impl<M: Math, T: Transformation<M>> TransformedHamiltonian<M, T> {
-    pub fn new(
-        math: &mut M,
-        max_energy_error: f64,
-        transformation: T,
-        kinetic_energy_kind: KineticEnergyKind,
-    ) -> Self {
+    pub fn new(math: &mut M, transformation: T, kinetic_energy_kind: KineticEnergyKind) -> Self {
         let mut ones = math.new_array();
         math.fill_array(&mut ones, 1f64);
         let mut zeros = math.new_array();
@@ -461,7 +431,6 @@ impl<M: Math, T: Transformation<M>> TransformedHamiltonian<M, T> {
             ones,
             zeros,
             transformation,
-            max_energy_error,
             kinetic_energy_kind,
             pool,
         }
@@ -559,6 +528,7 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         dir: Direction,
         step_size_factor: f64,
         energy_baseline: f64,
+        max_energy_error: f64,
         collector: &mut C,
     ) -> LeapfrogResult<M, Self::Point> {
         let mut out = self.pool().new_state(math);
@@ -620,9 +590,9 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         let energy_error = out_point.energy() - energy_baseline;
         let bad_energy = match self.kinetic_energy_kind {
             KineticEnergyKind::Euclidean | KineticEnergyKind::ExactNormal => {
-                energy_error > self.max_energy_error
+                energy_error > max_energy_error
             }
-            KineticEnergyKind::Microcanonical => energy_error.abs() >= self.max_energy_error,
+            KineticEnergyKind::Microcanonical => energy_error.abs() >= max_energy_error,
         };
         if bad_energy | !energy_error.is_finite() {
             let divergence_info = DivergenceInfo {
@@ -718,16 +688,19 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         &self,
         math: &mut M,
         state: &mut State<M, Self::Point>,
+        resample_velocity: bool,
         rng: &mut R,
     ) -> Result<(), NutsError> {
         let point = state.try_point_mut().expect("State has other references");
 
-        // Sample raw isotropic Gaussian momentum.
-        math.array_gaussian(rng, &mut point.velocity, &self.ones);
+        if resample_velocity {
+            // Sample raw isotropic Gaussian momentum.
+            math.array_gaussian(rng, &mut point.velocity, &self.ones);
 
-        // For Microcanonical HMC the momentum must lie on the unit sphere.
-        if self.kinetic_energy_kind == KineticEnergyKind::Microcanonical {
-            math.array_normalize(&mut point.velocity);
+            // For Microcanonical HMC the momentum must lie on the unit sphere.
+            if self.kinetic_energy_kind == KineticEnergyKind::Microcanonical {
+                math.array_normalize(&mut point.velocity);
+            }
         }
 
         let current_transform_id = self.transformation().transformation_id(math);
@@ -805,7 +778,8 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         &mut self,
         math: &mut M,
         state: &mut State<M, Self::Point>,
-        rng: &mut R,
+        noise: &M::Vector,
+        _rng: &mut R,
         factor: f64,
     ) -> Result<(), NutsError> {
         let Some(momentum_decoherence_length) = self.momentum_decoherence_length else {
@@ -813,10 +787,6 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         };
 
         let half_step = self.step_size * factor / 2.0;
-
-        // TODO: Avoid array allocation
-        let mut noise = math.new_array();
-        math.array_gaussian(rng, &mut noise, &self.ones);
 
         let point = state.try_point_mut().map_err(|_| {
             NutsError::BadInitGrad(anyhow::anyhow!("State in use during momentum refresh").into())
