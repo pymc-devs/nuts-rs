@@ -1,16 +1,23 @@
 //! High-level sampler entry points: `Settings` presets, the parallel `Sampler`,
 //! and `sample_sequentially` for running one or many chains.
 
-use anyhow::{Context, Result, bail};
-use itertools::Itertools;
+use anyhow::Result;
 use nuts_storable::{HasDims, Storable, Value};
 use rand::{Rng, SeedableRng, rngs::ChaCha8Rng};
-use rayon::{ScopeFifo, ThreadPoolBuilder};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::{collections::HashMap, fmt::Debug, time::Duration};
+
+#[cfg(feature = "parallel")]
+use anyhow::{Context, bail};
+#[cfg(feature = "parallel")]
+use itertools::Itertools;
+#[cfg(feature = "parallel")]
+use std::ops::Deref;
+
+#[cfg(feature = "parallel")]
+use rayon::{ScopeFifo, ThreadPoolBuilder};
+#[cfg(feature = "parallel")]
 use std::{
-    collections::HashMap,
-    fmt::Debug,
-    ops::Deref,
     sync::{
         Arc, Mutex,
         mpsc::{
@@ -18,7 +25,7 @@ use std::{
         },
     },
     thread::{JoinHandle, spawn},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use crate::{
@@ -28,15 +35,16 @@ use crate::{
     dynamics::{KineticEnergyKind, TransformedHamiltonian, TransformedPointStatsOptions},
     external_adapt_strategy::{ExternalTransformAdaptation, FlowSettings},
     mclmc::MclmcTrajectoryKind,
-    model::Model,
     nuts::NutsOptions,
     sampler_stats::{SamplerStats, StatsDims},
-    storage::{ChainStorage, StorageConfig, TraceStorage},
     transform::{
         DiagAdaptStrategy, DiagMassMatrix, ExternalTransformation, LowRankMassMatrix,
         LowRankMassMatrixStrategy, LowRankSettings,
     },
 };
+
+#[cfg(feature = "parallel")]
+use crate::{model::Model, storage::{ChainStorage, StorageConfig, TraceStorage}};
 
 /// All sampler configurations implement this trait
 pub trait Settings:
@@ -1039,11 +1047,13 @@ impl ChainProgress {
     }
 }
 
+#[cfg(feature = "parallel")]
 enum ChainCommand {
     Resume,
     Pause,
 }
 
+#[cfg(feature = "parallel")]
 struct ChainProcess<T>
 where
     T: TraceStorage,
@@ -1053,6 +1063,7 @@ where
     progress: Arc<Mutex<ChainProgress>>,
 }
 
+#[cfg(feature = "parallel")]
 impl<T: TraceStorage> ChainProcess<T> {
     fn finalize_many(trace: T, chains: Vec<Self>) -> Result<(Option<anyhow::Error>, T::Finalized)> {
         let finalized_chain_traces = chains
@@ -1212,6 +1223,7 @@ impl<T: TraceStorage> ChainProcess<T> {
     }
 }
 
+#[cfg(feature = "parallel")]
 #[derive(Debug)]
 enum SamplerCommand {
     Pause,
@@ -1221,18 +1233,21 @@ enum SamplerCommand {
     Inspect,
 }
 
+#[cfg(feature = "parallel")]
 enum SamplerResponse<T: Send + 'static> {
     Ok(),
     Progress(Box<[ChainProgress]>),
     Inspect(T),
 }
 
+#[cfg(feature = "parallel")]
 pub enum SamplerWaitResult<F: Send + 'static> {
     Trace(F),
     Timeout(Sampler<F>),
     Err(anyhow::Error, Option<F>),
 }
 
+#[cfg(feature = "parallel")]
 pub struct Sampler<F: Send + 'static> {
     main_thread: JoinHandle<Result<(Option<anyhow::Error>, F)>>,
     commands: SyncSender<SamplerCommand>,
@@ -1240,11 +1255,13 @@ pub struct Sampler<F: Send + 'static> {
     results: Receiver<Result<()>>,
 }
 
+#[cfg(feature = "parallel")]
 pub struct ProgressCallback {
     pub callback: Box<dyn FnMut(Duration, Box<[ChainProgress]>) + Send>,
     pub rate: Duration,
 }
 
+#[cfg(feature = "parallel")]
 impl<F: Send + 'static> Sampler<F> {
     pub fn new<M, S, C, T>(
         model: M,
