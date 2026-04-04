@@ -558,6 +558,7 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         start: &State<M, Self::Point>,
         dir: Direction,
         step_size_factor: f64,
+        energy_baseline: f64,
         collector: &mut C,
     ) -> LeapfrogResult<M, Self::Point> {
         let mut out = self.pool().new_state(math);
@@ -616,8 +617,14 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
 
         out_point.index_in_trajectory = start.index_in_trajectory() + sign;
 
-        let energy_error = out_point.energy_error();
-        if (energy_error > self.max_energy_error) | !energy_error.is_finite() {
+        let energy_error = out_point.energy() - energy_baseline;
+        let bad_energy = match self.kinetic_energy_kind {
+            KineticEnergyKind::Euclidean | KineticEnergyKind::ExactNormal => {
+                energy_error > self.max_energy_error
+            }
+            KineticEnergyKind::Microcanonical => energy_error.abs() >= self.max_energy_error,
+        };
+        if bad_energy | !energy_error.is_finite() {
             let divergence_info = DivergenceInfo {
                 logp_function_error: None,
                 start_location: Some(math.box_array(start.point().position())),
@@ -807,6 +814,7 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
 
         let half_step = self.step_size * factor / 2.0;
 
+        // TODO: Avoid array allocation
         let mut noise = math.new_array();
         math.array_gaussian(rng, &mut noise, &self.ones);
 
