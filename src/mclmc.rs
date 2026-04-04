@@ -37,7 +37,7 @@ use crate::{
     Math, NutsError,
     chain::{AdaptStrategy, Chain, StatOptions},
     dynamics::{
-        DivergenceInfo, DivergenceStats, Hamiltonian, KineticEnergyKind, Point, State,
+        Direction, DivergenceInfo, DivergenceStats, Hamiltonian, KineticEnergyKind, Point, State,
         TransformedHamiltonian, TransformedPoint,
     },
     nuts::{Collector, NutsOptions},
@@ -168,6 +168,7 @@ where
     math: RefCell<M>,
     stats_options: StatOptions<M, A>,
     last_info: Option<MclmcInfo>,
+    tmp_velocity: M::Vector,
 }
 
 impl<M, R, A, T> MclmcChain<M, R, A, T>
@@ -191,6 +192,7 @@ where
     ) -> Self {
         let state = hamiltonian.pool().new_state(&mut math);
         let collector = adapt.new_collector(&mut math);
+        let tmp_velocity = math.new_array();
         Self {
             hamiltonian,
             collector,
@@ -207,6 +209,7 @@ where
             math: math.into(),
             stats_options,
             last_info: None,
+            tmp_velocity,
         }
     }
 
@@ -223,12 +226,8 @@ where
             .round()
             .max(1.0) as u64;
 
-        // ── First partial momentum refresh ───────────────────────────────────
-        self.hamiltonian
-            .partial_momentum_refresh(math, &mut self.state, &mut self.rng, 1.0)?;
-
-        // Reset the energy baseline to the post-refresh state so that
-        // energy_error() measures drift over this draw only.
+        // Reset the kinetic-energy accumulator so that energy() at the draw
+        // start is a clean baseline for MclmcInfo.energy_change.
         {
             let kind = self.hamiltonian.kinetic_energy_kind;
 
@@ -251,7 +250,12 @@ where
 
         use crate::dynamics::LeapfrogResult;
 
-        let mut current = self.state.clone();
+        let mut current = self.hamiltonian.copy_state(math, &self.state);
+
+        // Capture the draw-start energy once; used at the end to compute
+        // MclmcInfo.energy_change independently of the per-step baselines.
+        let draw_start_energy = current.point().energy();
+
         let mut divergence_info: Option<DivergenceInfo> = None;
         let mut steps_taken = 0u64;
 
@@ -264,14 +268,44 @@ where
 
         let mut remaining = num_steps;
         while remaining > 0 {
+            // debt == 2 indicates a previous unsuccessful leapfrog
+            if debt != 2 {
+                math.copy_into(&current.point().velocity, &mut self.tmp_velocity);
+            } else {
+                // Restore the old velocity and refresh momentum with smaller factor
+                // TODO: I think we should reuse the original gaussian noise?
+                math.copy_into(
+                    &self.tmp_velocity,
+                    &mut current.try_point_mut().unwrap().velocity,
+                );
+            }
+            self.hamiltonian
+                .partial_momentum_refresh(math, &mut current, &mut self.rng, factor)?;
+
+            // Use the post-refresh energy as the divergence baseline so that
+            // the leapfrog's energy_error measures only this single step's
+            // integration error (O(ε²)), not the cumulative drift from the
+            // draw start.  Without this, many small steps with a tight
+            // max_energy_error threshold can exhaust all halvings because the
+            // accumulated baseline already sits at the threshold.
+            let step_baseline = current.point().energy();
             let next = match self.hamiltonian.leapfrog(
                 math,
                 &current,
-                crate::dynamics::Direction::Forward,
+                Direction::Forward,
                 factor,
+                step_baseline,
                 &mut self.collector,
             ) {
-                LeapfrogResult::Ok(next) => next,
+                LeapfrogResult::Ok(mut next) => {
+                    self.hamiltonian.partial_momentum_refresh(
+                        math,
+                        &mut next,
+                        &mut self.rng,
+                        factor,
+                    )?;
+                    next
+                }
                 LeapfrogResult::Divergence(info) => {
                     if halvings >= max_halvings {
                         // Genuinely diverged — give up.
@@ -283,6 +317,7 @@ where
                     factor *= 0.5;
                     halvings += 1;
                     debt = 2;
+                    remaining += 1;
                     continue;
                 }
                 LeapfrogResult::Err(e) => {
@@ -318,7 +353,7 @@ where
             let mut next_state = self.hamiltonian.copy_state(math, &self.state);
             self.hamiltonian
                 .initialize_trajectory(math, &mut next_state, &mut self.rng)?;
-            let energy_change = current.point().energy_error();
+            let energy_change = current.point().energy() - draw_start_energy;
             let info = MclmcInfo {
                 energy_change,
                 diverging: true,
@@ -336,17 +371,13 @@ where
         };
         self.collector.register_draw(math, &current, &sample_info);
 
-        let energy_change = current.point().energy_error();
+        let energy_change = current.point().energy() - draw_start_energy;
 
-        // ── Second partial momentum refresh ──────────────────────────────────
-        let mut next_state = if current.try_point_mut().is_err() {
+        let next_state = if current.try_point_mut().is_err() {
             self.hamiltonian.copy_state(math, &current)
         } else {
             current
         };
-
-        self.hamiltonian
-            .partial_momentum_refresh(math, &mut next_state, &mut self.rng, 1.0)?;
 
         let info = MclmcInfo {
             energy_change,

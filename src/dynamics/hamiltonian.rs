@@ -151,10 +151,9 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
     /// Perform one leapfrog step.
     ///
     /// `step_size_factor` scales the hamiltonian's base step size for this
-    /// step only: `actual_ε = hamiltonian.step_size() * step_size_factor`.
-    /// The actual step size used is stored on the output point as
-    /// `point.step_size`, so callers can compute importance weights as
-    /// `log(point.step_size) - energy_error`.
+    /// step only.
+    /// `energy_baseline` is the energy value against which the divergence
+    /// check (`|energy_error| >= max_energy_error`) is evaluated.
     ///
     /// Return either an unrecoverable error, a new state or a divergence.
     fn leapfrog<C: Collector<M, Self::Point>>(
@@ -163,6 +162,7 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
         start: &State<M, Self::Point>,
         dir: Direction,
         step_size_factor: f64,
+        energy_baseline: f64,
         collector: &mut C,
     ) -> LeapfrogResult<M, Self::Point>;
 
