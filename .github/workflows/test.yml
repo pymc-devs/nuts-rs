@@ -24,3 +24,12 @@ jobs:
       - run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
       - run: cargo build --verbose --all-features
       - run: cargo test --verbose --all-features
+  wasm32:
+    name: wasm32 check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      - run: rustup update stable && rustup default stable
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo check --target wasm32-unknown-unknown --no-default-features

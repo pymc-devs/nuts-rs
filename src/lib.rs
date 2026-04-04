@@ -128,9 +128,11 @@ pub use nuts::NutsError;
 pub use sampler::{
     ChainProgress, DiagGradNutsSettings, DiagMclmcSettings, DiagNutsSettings, FlowMclmcSettings,
     FlowNutsSettings, LowRankMclmcSettings, LowRankNutsSettings, MclmcSettings, NutsSettings,
-    Progress, ProgressCallback, Sampler, SamplerWaitResult, Settings, TransformedMclmcSettings,
+    Progress, Settings, TransformedMclmcSettings,
     TransformedNutsSettings, sample_sequentially,
 };
+#[cfg(feature = "parallel")]
+pub use sampler::{ProgressCallback, Sampler, SamplerWaitResult};
 pub use sampler_stats::SamplerStats;
 
 #[allow(deprecated)]
