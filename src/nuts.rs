@@ -118,7 +118,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         H: Hamiltonian<M>,
         R: rand::Rng + ?Sized,
     {
-        let mut other = match self.single_step(math, hamiltonian, direction, collector) {
+        let mut other = match self.single_step(math, hamiltonian, direction, options, collector) {
             Ok(Ok(tree)) => tree,
             Ok(Err(info)) => return ExtendResult::Diverging(self, info),
             Err(err) => return ExtendResult::Err(err),
@@ -211,6 +211,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         math: &mut M,
         hamiltonian: &mut H,
         direction: Direction,
+        options: &NutsOptions,
         collector: &mut C,
     ) -> Result<std::result::Result<NutsTree<M, H, C>, DivergenceInfo>> {
         let start = match direction {
@@ -223,6 +224,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
             direction,
             1.0,
             start.point().initial_energy(),
+            options.max_energy_error,
             collector,
         ) {
             LeapfrogResult::Divergence(info) => return Ok(Err(info)),
@@ -259,6 +261,7 @@ pub struct NutsOptions {
     pub store_divergences: bool,
     pub target_integration_time: Option<f64>,
     pub extra_doublings: u64,
+    pub max_energy_error: f64,
 }
 
 impl Default for NutsOptions {
@@ -270,6 +273,7 @@ impl Default for NutsOptions {
             store_divergences: false,
             target_integration_time: None,
             extra_doublings: 0,
+            max_energy_error: 1000.0,
         }
     }
 }
@@ -288,7 +292,7 @@ where
     R: rand::Rng + ?Sized,
     C: Collector<M, H::Point>,
 {
-    hamiltonian.initialize_trajectory(math, init, rng)?;
+    hamiltonian.initialize_trajectory(math, init, true, rng)?;
     collector.register_init(math, init, options);
 
     let mut tree = NutsTree::new(init.clone());

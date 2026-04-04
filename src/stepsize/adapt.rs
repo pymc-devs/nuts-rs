@@ -101,7 +101,7 @@ impl Strategy {
             return Ok(());
         };
         let mut state = hamiltonian.init_state(math, position)?;
-        hamiltonian.initialize_trajectory(math, &mut state, rng)?;
+        hamiltonian.initialize_trajectory(math, &mut state, true, rng)?;
 
         let mut collector = AcceptanceRateCollector::new();
 
@@ -115,6 +115,7 @@ impl Strategy {
             Direction::Forward,
             1.0,
             state.point().initial_energy(),
+            1000.0,
             &mut collector,
         );
 
@@ -138,6 +139,7 @@ impl Strategy {
                 dir,
                 1.0,
                 state.point().initial_energy(),
+                1000.0,
                 &mut collector,
             );
             let LeapfrogResult::Ok(_) = state_next else {

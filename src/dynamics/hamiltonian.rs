@@ -163,6 +163,7 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
         dir: Direction,
         step_size_factor: f64,
         energy_baseline: f64,
+        max_energy_error: f64,
         collector: &mut C,
     ) -> LeapfrogResult<M, Self::Point>;
 
@@ -195,6 +196,7 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
         &self,
         math: &mut M,
         state: &mut State<M, Self::Point>,
+        resaple_velocity: bool,
         rng: &mut R,
     ) -> Result<(), NutsError>;
 
@@ -246,10 +248,11 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
         &mut self,
         math: &mut M,
         state: &mut State<M, Self::Point>,
+        noise: &M::Vector,
         rng: &mut R,
         factor: f64,
     ) -> Result<(), NutsError> {
-        let _ = (math, state, rng, factor);
+        let _ = (math, state, noise, rng, factor);
         Ok(())
     }
 }

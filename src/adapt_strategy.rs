@@ -446,15 +446,9 @@ mod test {
             GlobalStrategy::<_, DiagAdaptStrategy<_>>::new(&mut math, options, num_tune, 0u64);
 
         let mass_matrix = DiagMassMatrix::new(&mut math, true);
-        let max_energy_error = 1000f64;
 
         let hamiltonian: TransformedHamiltonian<_, DiagMassMatrix<CpuMath<NormalLogp>>> =
-            TransformedHamiltonian::new(
-                &mut math,
-                max_energy_error,
-                mass_matrix,
-                KineticEnergyKind::Euclidean,
-            );
+            TransformedHamiltonian::new(&mut math, mass_matrix, KineticEnergyKind::Euclidean);
 
         let options = NutsOptions {
             maxdepth: 10u64,
@@ -463,6 +457,7 @@ mod test {
             store_divergences: false,
             target_integration_time: None,
             extra_doublings: 0,
+            max_energy_error: 1000.0,
         };
 
         let rng = {
