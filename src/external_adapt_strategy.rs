@@ -2,7 +2,7 @@
 
 use nuts_derive::Storable;
 use nuts_storable::{HasDims, Storable};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::adapt_strategy::CombinedCollector;
 use crate::chain::AdaptStrategy;
@@ -14,8 +14,8 @@ use crate::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
 use crate::transform::ExternalTransformation;
 use crate::{Math, NutsError};
 
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct TransformedSettings {
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct FlowSettings {
     pub step_size_window: f64,
     pub transform_update_freq: u64,
     pub use_orbit_for_training: bool,
@@ -23,7 +23,11 @@ pub struct TransformedSettings {
     pub transform_train_max_energy_error: f64,
 }
 
-impl Default for TransformedSettings {
+/// Backwards-compatible alias for [`FlowSettings`].
+#[deprecated(since = "0.0.0", note = "Use FlowSettings instead")]
+pub type TransformedSettings = FlowSettings;
+
+impl Default for FlowSettings {
     fn default() -> Self {
         Self {
             step_size_window: 0.07f64,
@@ -37,7 +41,7 @@ impl Default for TransformedSettings {
 
 pub struct ExternalTransformAdaptation {
     step_size: StepSizeStrategy,
-    options: TransformedSettings,
+    options: FlowSettings,
     num_tune: u64,
     final_window_size: u64,
     tuning: bool,
@@ -154,7 +158,7 @@ impl<M: Math> AdaptStrategy<M> for ExternalTransformAdaptation {
     type Collector =
         CombinedCollector<M, TransformedPoint<M>, AcceptanceRateCollector, DrawCollector<M>>;
 
-    type Options = TransformedSettings;
+    type Options = FlowSettings;
 
     fn new(_math: &mut M, options: Self::Options, num_tune: u64, chain: u64) -> Self {
         let step_size = StepSizeStrategy::new(options.step_size_settings);

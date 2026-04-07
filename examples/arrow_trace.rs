@@ -17,8 +17,8 @@ use std::{
 
 use anyhow::Result;
 use nuts_rs::{
-    ArrowConfig, CpuLogpFunc, CpuMath, CpuMathError, DiagGradNutsSettings, LogpError, Model,
-    Sampler, SamplerWaitResult, Storable,
+    ArrowConfig, CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, LogpError, Model, Sampler,
+    SamplerWaitResult, Storable,
 };
 use nuts_storable::{HasDims, Value};
 use rand::{Rng, RngExt};
@@ -236,7 +236,7 @@ fn main() -> Result<()> {
 
     // Configure MCMC settings
     // DiagGradNutsSettings provides sensible defaults for the NUTS sampler
-    let mut settings = DiagGradNutsSettings::default();
+    let mut settings = DiagNutsSettings::default();
     settings.num_chains = num_chains as _;
     settings.num_tune = num_tune;
     settings.num_draws = num_draws as _;

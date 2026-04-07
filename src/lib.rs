@@ -9,7 +9,7 @@
 //! ## Usage
 //!
 //! ```
-//! use nuts_rs::{CpuLogpFunc, CpuMath, LogpError, DiagGradNutsSettings, Chain, Progress,
+//! use nuts_rs::{CpuLogpFunc, CpuMath, LogpError, DiagNutsSettings, Chain, Progress,
 //! Settings, HasDims};
 //! use thiserror::Error;
 //! use rand::rng;
@@ -65,7 +65,7 @@
 //! }
 //!
 //! // We get the default sampler arguments
-//! let mut settings = DiagGradNutsSettings::default();
+//! let mut settings = DiagNutsSettings::default();
 //!
 //! // and modify as we like
 //! settings.num_tune = 1000;
@@ -103,6 +103,7 @@ mod chain;
 mod dynamics;
 mod external_adapt_strategy;
 mod math;
+mod mclmc;
 mod model;
 mod nuts;
 mod sampler;
@@ -117,18 +118,23 @@ pub use rand;
 
 pub use adapt_strategy::EuclideanAdaptOptions;
 pub use chain::Chain;
-pub use dynamics::DivergenceInfo;
+pub use dynamics::{DivergenceInfo, KineticEnergyKind};
 pub use math::{CpuLogpFunc, CpuMath, CpuMathError, LogpError, Math};
+pub use mclmc::{MclmcChain, MclmcInfo, MclmcStats, MclmcTrajectoryKind};
 pub use model::Model;
 pub use nuts::NutsError;
+
+#[allow(deprecated)]
 pub use sampler::{
-    ChainProgress, DiagGradNutsSettings, LowRankNutsSettings, NutsSettings, Progress,
-    ProgressCallback, Sampler, SamplerWaitResult, Settings, TransformedNutsSettings,
-    sample_sequentially,
+    ChainProgress, DiagGradNutsSettings, DiagMclmcSettings, DiagNutsSettings, FlowMclmcSettings,
+    FlowNutsSettings, LowRankMclmcSettings, LowRankNutsSettings, MclmcSettings, NutsSettings,
+    Progress, ProgressCallback, Sampler, SamplerWaitResult, Settings, TransformedMclmcSettings,
+    TransformedNutsSettings, sample_sequentially,
 };
 pub use sampler_stats::SamplerStats;
 
-pub use external_adapt_strategy::TransformedSettings;
+#[allow(deprecated)]
+pub use external_adapt_strategy::{FlowSettings, TransformedSettings};
 pub use stepsize::{AdamOptions, StepSizeAdaptMethod, StepSizeAdaptOptions, StepSizeSettings};
 pub use transform::DiagAdaptExpSettings;
 pub use transform::LowRankSettings;

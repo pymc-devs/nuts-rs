@@ -5,7 +5,7 @@ use std::iter::repeat_n;
 
 use faer::{Col, ColRef, Mat, MatRef};
 use nuts_derive::Storable;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::transform::{DiagMassMatrix, Transformation};
 use crate::{Math, sampler_stats::SamplerStats};
@@ -180,7 +180,7 @@ impl<M: Math> LowRankMassMatrix<M> {
     }
 }
 
-#[derive(Clone, Debug, Copy, Serialize)]
+#[derive(Clone, Debug, Copy, Serialize, Deserialize)]
 pub struct LowRankSettings {
     pub store_mass_matrix: bool,
     pub gamma: f64,
@@ -199,49 +199,63 @@ impl Default for LowRankSettings {
 
 #[derive(Debug, Storable)]
 pub struct MatrixStats {
-    #[storable(dims("unconstrained_parameter"))]
+    /// The transformation version counter at the time of this update.
+    /// `Some` only on draws where the transformation changed.
+    #[storable(event = "transformation_update")]
+    pub transformation_update_id: Option<i64>,
+    #[storable(event = "transformation_update", dims("unconstrained_parameter"))]
     pub mass_matrix_eigvals: Option<Vec<f64>>,
-    #[storable(dims("unconstrained_parameter"))]
+    #[storable(event = "transformation_update", dims("unconstrained_parameter"))]
     pub mass_matrix_stds: Option<Vec<f64>>,
-    pub num_eigenvalues: u64,
+    #[storable(event = "transformation_update")]
+    pub num_eigenvalues: Option<u64>,
 }
 
 impl<M: Math> SamplerStats<M> for LowRankMassMatrix<M> {
     type Stats = MatrixStats;
-    type StatsOptions = ();
+    type StatsOptions = i64;
 
-    fn extract_stats(&self, math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
-        if self.settings.store_mass_matrix {
-            let stds = Some(math.box_array(self.diag.stds()));
-            let eigvals = self
-                .inner
-                .as_ref()
-                .map(|inner| math.eigs_as_array(&inner.vals_sqrt));
-            let mut eigvals = eigvals.map(|x| x.into_vec());
-            if let Some(ref mut eigvals) = eigvals {
-                eigvals.extend(repeat_n(
-                    f64::NAN,
-                    stds.as_ref().unwrap().len() - eigvals.len(),
-                ));
-            }
-            MatrixStats {
-                mass_matrix_eigvals: eigvals,
-                mass_matrix_stds: stds.map(|x| x.into_vec()),
-                num_eigenvalues: self
-                    .inner
+    fn extract_stats(&self, math: &mut M, last_id: Self::StatsOptions) -> Self::Stats {
+        if self.id != last_id {
+            let num_eigenvalues = Some(
+                self.inner
                     .as_ref()
                     .map(|inner| inner.num_eigenvalues)
                     .unwrap_or(0),
+            );
+            if self.settings.store_mass_matrix {
+                let stds = Some(math.box_array(self.diag.stds()));
+                let eigvals = self
+                    .inner
+                    .as_ref()
+                    .map(|inner| math.eigs_as_array(&inner.vals_sqrt));
+                let mut eigvals = eigvals.map(|x| x.into_vec());
+                if let Some(ref mut eigvals) = eigvals {
+                    eigvals.extend(repeat_n(
+                        f64::NAN,
+                        stds.as_ref().unwrap().len() - eigvals.len(),
+                    ));
+                }
+                MatrixStats {
+                    transformation_update_id: Some(self.id),
+                    mass_matrix_eigvals: eigvals,
+                    mass_matrix_stds: stds.map(|x| x.into_vec()),
+                    num_eigenvalues,
+                }
+            } else {
+                MatrixStats {
+                    transformation_update_id: Some(self.id),
+                    mass_matrix_eigvals: None,
+                    mass_matrix_stds: None,
+                    num_eigenvalues,
+                }
             }
         } else {
             MatrixStats {
+                transformation_update_id: None,
                 mass_matrix_eigvals: None,
                 mass_matrix_stds: None,
-                num_eigenvalues: self
-                    .inner
-                    .as_ref()
-                    .map(|inner| inner.num_eigenvalues)
-                    .unwrap_or(0),
+                num_eigenvalues: None,
             }
         }
     }
@@ -290,6 +304,10 @@ impl<M: Math> Transformation<M> for LowRankMassMatrix<M> {
     }
 
     fn transformation_id(&self, _math: &mut M) -> i64 {
+        self.id
+    }
+
+    fn next_stats_options(&self, _math: &mut M, _current: i64) -> i64 {
         self.id
     }
 }

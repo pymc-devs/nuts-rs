@@ -1,6 +1,6 @@
 //! Nesterov dual-averaging algorithm for tuning the leapfrog step size toward a target acceptance rate.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     dynamics::{DivergenceInfo, Point, State},
@@ -8,15 +8,15 @@ use crate::{
     nuts::{Collector, NutsOptions},
 };
 
-// log(pi)
-const MAX_LOG_STEP_SIZE: f64 = 1.1447298858494002;
-
 /// Settings for step size adaptation
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct DualAverageOptions {
     pub k: f64,
     pub t0: f64,
     pub gamma: f64,
+    /// Maximum allowed step size. The dual-averaging update is clamped so that
+    /// the step size never exceeds this value. Defaults to π.
+    pub max_step_size: f64,
 }
 
 impl Default for DualAverageOptions {
@@ -25,6 +25,7 @@ impl Default for DualAverageOptions {
             k: 0.75,
             t0: 10.,
             gamma: 0.05,
+            max_step_size: std::f64::consts::PI,
         }
     }
 }
@@ -55,7 +56,7 @@ impl DualAverage {
         let w = 1. / (self.count as f64 + self.settings.t0);
         self.hbar = (1. - w) * self.hbar + w * (target - accept_stat);
         self.log_step = self.mu - self.hbar * (self.count as f64).sqrt() / self.settings.gamma;
-        self.log_step = self.log_step.min(MAX_LOG_STEP_SIZE);
+        self.log_step = self.log_step.min(self.settings.max_step_size.ln());
         let mk = (self.count as f64).powf(-self.settings.k);
         self.log_step_adapted = mk * self.log_step + (1. - mk) * self.log_step_adapted;
         self.count += 1;
@@ -112,6 +113,7 @@ pub struct AcceptanceRateCollector {
     initial_energy: f64,
     pub(crate) mean: RunningMean,
     pub(crate) mean_sym: RunningMean,
+    pub(crate) max_energy_error: f64,
 }
 
 impl AcceptanceRateCollector {
@@ -120,6 +122,7 @@ impl AcceptanceRateCollector {
             initial_energy: 0.,
             mean: RunningMean::new(),
             mean_sym: RunningMean::new(),
+            max_energy_error: 0.,
         }
     }
 }
@@ -136,6 +139,7 @@ impl<M: Math, P: Point<M>> Collector<M, P> for AcceptanceRateCollector {
             Some(_) => {
                 self.mean.add(0.);
                 self.mean_sym.add(0.);
+                self.max_energy_error = f64::NEG_INFINITY;
             }
             None => {
                 let base_energy = self.initial_energy;
@@ -145,6 +149,10 @@ impl<M: Math, P: Point<M>> Collector<M, P> for AcceptanceRateCollector {
                 self.mean.add(diff.min(0.).exp());
                 self.mean_sym
                     .add(2. * diff.min(0.).exp() / (1. + diff.exp()));
+                let energy_error = diff;
+                if energy_error.abs() > self.max_energy_error.abs() {
+                    self.max_energy_error = energy_error;
+                }
             }
         };
     }
@@ -153,5 +161,6 @@ impl<M: Math, P: Point<M>> Collector<M, P> for AcceptanceRateCollector {
         self.initial_energy = state.energy();
         self.mean.reset();
         self.mean_sym.reset();
+        self.max_energy_error = 0.;
     }
 }

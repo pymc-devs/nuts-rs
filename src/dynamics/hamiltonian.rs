@@ -2,6 +2,7 @@
 
 use std::{fmt::Debug, sync::Arc};
 
+use nuts_derive::Storable;
 use rand::{
     Rng, RngExt,
     distr::{Distribution, StandardUniform},
@@ -31,6 +32,74 @@ pub struct DivergenceInfo {
     pub end_idx_in_trajectory: Option<i64>,
     pub start_idx_in_trajectory: Option<i64>,
     pub logp_function_error: Option<Arc<dyn std::error::Error + Send + Sync>>,
+}
+
+/// Per-draw divergence statistics, suitable for storage.
+#[derive(Debug, Storable)]
+pub struct DivergenceStats {
+    pub diverging: bool,
+    #[storable(event = "divergence")]
+    pub divergence_draw: Option<u64>,
+    #[storable(event = "divergence")]
+    pub divergence_message: Option<String>,
+    #[storable(event = "divergence", dims("unconstrained_parameter"))]
+    pub divergence_start: Option<Vec<f64>>,
+    #[storable(event = "divergence", dims("unconstrained_parameter"))]
+    pub divergence_start_gradient: Option<Vec<f64>>,
+    #[storable(event = "divergence", dims("unconstrained_parameter"))]
+    pub divergence_end: Option<Vec<f64>>,
+    #[storable(event = "divergence", dims("unconstrained_parameter"))]
+    pub divergence_momentum: Option<Vec<f64>>,
+    #[storable(event = "divergence")]
+    pub divergence_energy_error: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DivergenceStatsOptions {
+    pub store_divergences: bool,
+}
+
+impl From<(Option<&DivergenceInfo>, DivergenceStatsOptions, u64)> for DivergenceStats {
+    fn from((info, options, draw): (Option<&DivergenceInfo>, DivergenceStatsOptions, u64)) -> Self {
+        DivergenceStats {
+            diverging: info.is_some(),
+            divergence_draw: info.map(|_| draw),
+            divergence_start: if options.store_divergences {
+                info.and_then(|d| d.start_location.as_ref().map(|v| v.as_ref().to_vec()))
+            } else {
+                None
+            },
+            divergence_start_gradient: if options.store_divergences {
+                info.and_then(|d| d.start_gradient.as_ref().map(|v| v.as_ref().to_vec()))
+            } else {
+                None
+            },
+            divergence_end: if options.store_divergences {
+                info.and_then(|d| d.end_location.as_ref().map(|v| v.as_ref().to_vec()))
+            } else {
+                None
+            },
+            divergence_momentum: if options.store_divergences {
+                info.and_then(|d| d.start_momentum.as_ref().map(|v| v.as_ref().to_vec()))
+            } else {
+                None
+            },
+            divergence_message: info.map(|d| {
+                if let Some(err) = &d.logp_function_error {
+                    err.to_string()
+                } else if let Some(energy_err) = d.energy_error {
+                    if energy_err.is_nan() {
+                        "Divergence due to NaN energy error".to_string()
+                    } else {
+                        format!("Divergence due to large energy error: {:.4}", energy_err)
+                    }
+                } else {
+                    "Divergence (unknown cause)".to_string()
+                }
+            }),
+            divergence_energy_error: info.and_then(|d| d.energy_error),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -81,12 +150,20 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
 
     /// Perform one leapfrog step.
     ///
+    /// `step_size_factor` scales the hamiltonian's base step size for this
+    /// step only.
+    /// `energy_baseline` is the energy value against which the divergence
+    /// check (`|energy_error| >= max_energy_error`) is evaluated.
+    ///
     /// Return either an unrecoverable error, a new state or a divergence.
     fn leapfrog<C: Collector<M, Self::Point>>(
         &mut self,
         math: &mut M,
         start: &State<M, Self::Point>,
         dir: Direction,
+        step_size_factor: f64,
+        energy_baseline: f64,
+        max_energy_error: f64,
         collector: &mut C,
     ) -> LeapfrogResult<M, Self::Point>;
 
@@ -119,6 +196,7 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
         &self,
         math: &mut M,
         state: &mut State<M, Self::Point>,
+        resaple_velocity: bool,
         rng: &mut R,
     ) -> Result<(), NutsError>;
 
@@ -128,4 +206,53 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
 
     fn step_size(&self) -> f64;
     fn step_size_mut(&mut self) -> &mut f64;
+
+    /// Return updated hamiltonian stats options to use on the next draw.
+    ///
+    /// Called in `expanded_draw` after stats extraction.  For hamiltonians
+    /// with a trackable transformation, this records the current transformation
+    /// id into the options so the following `extract_stats` call can detect
+    /// whether the mass matrix changed and emit a `transformation_update` event.
+    /// The default passes the current options through unchanged, meaning no
+    /// transformation-update events are ever emitted.
+    fn update_stats_options(
+        &mut self,
+        _math: &mut M,
+        current: <Self as SamplerStats<M>>::StatsOptions,
+    ) -> <Self as SamplerStats<M>>::StatsOptions {
+        current
+    }
+
+    /// The momentum decoherence length `L` used for the isokinetic Langevin
+    /// (partial momentum refresh) step.
+    ///
+    /// - `None` means no refresh is performed (default, used by NUTS).
+    /// - `Some(L)` enables a half-step Ornstein–Uhlenbeck refresh with
+    ///   `ν = sqrt((exp(2·ε/L) − 1) / n)` around each trajectory.
+    fn momentum_decoherence_length(&self) -> Option<f64> {
+        None
+    }
+
+    fn momentum_decoherence_length_mut(&mut self) -> Option<&mut f64> {
+        None
+    }
+
+    /// Apply one isokinetic Langevin partial momentum refresh to `state`.
+    ///
+    /// `factor` scales the base step size: the half-step used internally is
+    /// `hamiltonian.step_size() * factor / 2`.  When
+    /// [`Self::momentum_decoherence_length`] returns `None` this must be a
+    /// no-op.  Implementations that support the refresh should override this
+    /// method.
+    fn partial_momentum_refresh<R: rand::Rng + ?Sized>(
+        &mut self,
+        math: &mut M,
+        state: &mut State<M, Self::Point>,
+        noise: &M::Vector,
+        rng: &mut R,
+        factor: f64,
+    ) -> Result<(), NutsError> {
+        let _ = (math, state, noise, rng, factor);
+        Ok(())
+    }
 }

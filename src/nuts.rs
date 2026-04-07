@@ -54,9 +54,6 @@ pub struct SampleInfo {
     /// Whether the trajectory was terminated because it reached
     /// the maximum tree depth.
     pub reached_maxdepth: bool,
-
-    pub initial_energy: f64,
-    pub draw_energy: f64,
 }
 
 /// A part of the trajectory tree during NUTS sampling.
@@ -121,7 +118,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         H: Hamiltonian<M>,
         R: rand::Rng + ?Sized,
     {
-        let mut other = match self.single_step(math, hamiltonian, direction, collector) {
+        let mut other = match self.single_step(math, hamiltonian, direction, options, collector) {
             Ok(Ok(tree)) => tree,
             Ok(Err(info)) => return ExtendResult::Diverging(self, info),
             Err(err) => return ExtendResult::Err(err),
@@ -214,13 +211,22 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         math: &mut M,
         hamiltonian: &mut H,
         direction: Direction,
+        options: &NutsOptions,
         collector: &mut C,
     ) -> Result<std::result::Result<NutsTree<M, H, C>, DivergenceInfo>> {
         let start = match direction {
             Direction::Forward => &self.right,
             Direction::Backward => &self.left,
         };
-        let end = match hamiltonian.leapfrog(math, start, direction, collector) {
+        let end = match hamiltonian.leapfrog(
+            math,
+            start,
+            direction,
+            1.0,
+            start.point().initial_energy(),
+            options.max_energy_error,
+            collector,
+        ) {
             LeapfrogResult::Divergence(info) => return Ok(Err(info)),
             LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
             LeapfrogResult::Ok(end) => end,
@@ -243,8 +249,6 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
             depth: self.depth,
             divergence_info,
             reached_maxdepth: maxdepth,
-            initial_energy: self.draw.point().initial_energy(),
-            draw_energy: self.draw.energy(),
         }
     }
 }
@@ -253,12 +257,11 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
 pub struct NutsOptions {
     pub maxdepth: u64,
     pub mindepth: u64,
-    pub store_gradient: bool,
-    pub store_unconstrained: bool,
     pub check_turning: bool,
     pub store_divergences: bool,
     pub target_integration_time: Option<f64>,
     pub extra_doublings: u64,
+    pub max_energy_error: f64,
 }
 
 impl Default for NutsOptions {
@@ -266,12 +269,11 @@ impl Default for NutsOptions {
         NutsOptions {
             maxdepth: 10,
             mindepth: 0,
-            store_gradient: false,
-            store_unconstrained: false,
             check_turning: true,
             store_divergences: false,
             target_integration_time: None,
             extra_doublings: 0,
+            max_energy_error: 1000.0,
         }
     }
 }
@@ -290,7 +292,7 @@ where
     R: rand::Rng + ?Sized,
     C: Collector<M, H::Point>,
 {
-    hamiltonian.initialize_trajectory(math, init, rng)?;
+    hamiltonian.initialize_trajectory(math, init, true, rng)?;
     collector.register_init(math, init, options);
 
     let mut tree = NutsTree::new(init.clone());
@@ -391,7 +393,7 @@ mod tests {
 
     use crate::{
         Chain, Settings, adapt_strategy::test_logps::NormalLogp, math::CpuMath,
-        sampler::DiagGradNutsSettings,
+        sampler::DiagNutsSettings,
     };
 
     #[test]
@@ -400,7 +402,7 @@ mod tests {
         let func = NormalLogp::new(ndim, 3.);
         let math = CpuMath::new(func);
 
-        let settings = DiagGradNutsSettings::default();
+        let settings = DiagNutsSettings::default();
         let mut rng = rng();
 
         let mut chain = settings.new_chain(0, math, &mut rng);

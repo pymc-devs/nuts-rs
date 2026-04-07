@@ -63,6 +63,7 @@ pub struct ZarrTraceStorage {
     draw_chunk_size: u64,
     param_types: Vec<(String, ItemType)>,
     draw_types: Vec<(String, ItemType)>,
+    event_dim_of_stat: HashMap<String, String>,
 }
 
 /// Per-chain storage for Zarr MCMC traces
@@ -72,6 +73,8 @@ pub struct ZarrChainStorage {
     arrays: Arc<ArrayCollection>,
     chain: u64,
     last_sample_was_warmup: bool,
+    event_dim_of_stat: HashMap<String, String>,
+    warmup_event_counts: HashMap<String, u64>,
 }
 
 /// Write a chunk of data to a Zarr array
@@ -89,6 +92,19 @@ fn store_zarr_chunk(array: &Array, data: Chunk, chain_chunk_index: u64) -> Resul
         return Ok(());
     }
 
+    if let SampleBufferValue::String(v) = data.values {
+        let start = vec![
+            chain_chunk_index,
+            data.chunk_idx as u64 * data.full_at as u64,
+        ];
+        let shape = vec![1u64, data.len as u64];
+        let subset = ArraySubset::new_with_start_shape(start, shape)
+            .context("Failed to build string chunk subset")?;
+        return array
+            .store_array_subset(&subset, &v)
+            .context(format!("Failed to store string chunk for {}", array.path()));
+    }
+
     let result = if data.is_full() {
         match data.values {
             SampleBufferValue::F64(v) => array.store_chunk(&chunk, &v),
@@ -96,6 +112,7 @@ fn store_zarr_chunk(array: &Array, data: Chunk, chain_chunk_index: u64) -> Resul
             SampleBufferValue::U64(v) => array.store_chunk(&chunk, &v),
             SampleBufferValue::I64(v) => array.store_chunk(&chunk, &v),
             SampleBufferValue::Bool(v) => array.store_chunk(&chunk, &v),
+            SampleBufferValue::String(_) => unreachable!(),
         }
     } else {
         let mut shape: Vec<_> = array.shape().iter().cloned().collect();
@@ -124,6 +141,7 @@ fn store_zarr_chunk(array: &Array, data: Chunk, chain_chunk_index: u64) -> Resul
                 assert!(v.len() == chunk_subset.num_elements_usize());
                 array.store_chunk_subset(&chunk, &chunk_subset, &v)
             }
+            SampleBufferValue::String(_) => unreachable!(),
         }
     };
 
@@ -144,6 +162,7 @@ impl ZarrChainStorage {
         draw_types: &Vec<(String, ItemType)>,
         buffer_size: u64,
         chain: u64,
+        event_dim_of_stat: HashMap<String, String>,
     ) -> Self {
         let draw_buffers = draw_types
             .iter()
@@ -160,6 +179,8 @@ impl ZarrChainStorage {
             arrays,
             chain,
             last_sample_was_warmup: true,
+            event_dim_of_stat,
+            warmup_event_counts: HashMap::new(),
         }
     }
 
@@ -203,7 +224,7 @@ impl ZarrChainStorage {
 }
 
 impl ChainStorage for ZarrChainStorage {
-    type Finalized = ();
+    type Finalized = HashMap<String, (u64, u64)>;
 
     fn record_sample(
         &mut self,
@@ -214,6 +235,17 @@ impl ChainStorage for ZarrChainStorage {
     ) -> Result<()> {
         let is_first_draw = self.last_sample_was_warmup && !info.tuning;
         if is_first_draw {
+            {
+                let mut seen = std::collections::HashSet::new();
+                for (field, dim) in &self.event_dim_of_stat {
+                    if seen.insert(dim.as_str()) {
+                        if let Some(buf) = self.stats_buffers.get(field.as_str()) {
+                            self.warmup_event_counts
+                                .insert(dim.clone(), buf.total_pushed());
+                        }
+                    }
+                }
+            }
             for (key, buffer) in self.draw_buffers.iter_mut() {
                 if let Some(chunk) = buffer.reset() {
                     store_zarr_chunk(&self.arrays.warmup_draw_arrays[key], chunk, self.chain)?;
@@ -244,6 +276,16 @@ impl ChainStorage for ZarrChainStorage {
 
     /// Flush remaining samples and finalize storage
     fn finalize(self) -> Result<Self::Finalized> {
+        let mut seen = std::collections::HashSet::new();
+        let mut sample_counts: HashMap<String, u64> = HashMap::new();
+        for (field, dim) in &self.event_dim_of_stat {
+            if seen.insert(dim.as_str()) {
+                if let Some(buf) = self.stats_buffers.get(field.as_str()) {
+                    sample_counts.insert(dim.clone(), buf.total_pushed());
+                }
+            }
+        }
+
         for (key, mut buffer) in self.draw_buffers.into_iter() {
             if let Some(chunk) = buffer.reset() {
                 let array = if self.last_sample_was_warmup {
@@ -264,7 +306,44 @@ impl ChainStorage for ZarrChainStorage {
                 store_zarr_chunk(array, chunk, self.chain)?;
             }
         }
-        Ok(())
+
+        let counts = self
+            .event_dim_of_stat
+            .values()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .map(|dim| {
+                let w = self
+                    .warmup_event_counts
+                    .get(dim.as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let s = sample_counts.get(dim.as_str()).copied().unwrap_or(0);
+                (dim.clone(), (w, s))
+            })
+            .collect();
+        Ok(counts)
+    }
+
+    fn inspect(&self) -> Result<Option<Self::Finalized>> {
+        let mut seen = std::collections::HashSet::new();
+        let mut counts = HashMap::new();
+        for (field, dim) in &self.event_dim_of_stat {
+            if seen.insert(dim.as_str()) {
+                let s = self
+                    .stats_buffers
+                    .get(field.as_str())
+                    .map(|b| b.total_pushed())
+                    .unwrap_or(0);
+                let w = self
+                    .warmup_event_counts
+                    .get(dim.as_str())
+                    .copied()
+                    .unwrap_or(0);
+                counts.insert(dim.clone(), (w, s));
+            }
+        }
+        Ok(Some(counts))
     }
 
     /// Write current buffer contents to storage without modifying the buffers
@@ -371,11 +450,30 @@ impl StorageConfig for ZarrConfig {
         let param_types = settings.stat_types(math);
         let draw_types = settings.data_types(math);
 
-        let param_dims = settings.stat_dims_all(math);
-        let draw_dims = settings.data_dims_all(math);
-
         let draw_dim_sizes = math.dim_sizes();
         let stat_dim_sizes = settings.stat_dim_sizes(math);
+
+        let stat_event_dims_vec = settings.stat_event_dims(math);
+
+        let param_dims: Vec<(String, String, Vec<String>)> = settings
+            .stat_dims_all(math)
+            .into_iter()
+            .zip(stat_event_dims_vec.iter())
+            .map(|((name, extra), (_, ev))| {
+                (name, ev.as_deref().unwrap_or("draw").to_string(), extra)
+            })
+            .collect();
+
+        let draw_dims: Vec<(String, String, Vec<String>)> = settings
+            .data_dims_all(math)
+            .into_iter()
+            .map(|(name, extra)| (name, "draw".to_string(), extra))
+            .collect();
+
+        let event_dim_of_stat: HashMap<String, String> = stat_event_dims_vec
+            .iter()
+            .filter_map(|(name, opt)| opt.as_ref().map(|d| (name.clone(), d.clone())))
+            .collect();
 
         let mut group_path = self.group_path.unwrap_or_else(|| "".to_string());
         if !group_path.ends_with('/') {
@@ -394,6 +492,14 @@ impl StorageConfig for ZarrConfig {
         attrs.insert(
             "sampler_version".to_string(),
             serde_json::Value::String(env!("CARGO_PKG_VERSION").to_string()),
+        );
+        attrs.insert(
+            "sampler_kind".to_string(),
+            serde_json::Value::String(settings.sampler_name().to_string()),
+        );
+        attrs.insert(
+            "adaptation_kind".to_string(),
+            serde_json::Value::String(settings.adaptation_name().to_string()),
         );
         attrs.insert(
             "sampler_settings".to_string(),
@@ -502,6 +608,7 @@ impl StorageConfig for ZarrConfig {
             param_types,
             draw_types,
             draw_chunk_size,
+            event_dim_of_stat,
         })
     }
 }
@@ -518,6 +625,7 @@ impl TraceStorage for ZarrTraceStorage {
             &self.draw_types,
             self.draw_chunk_size,
             chain_id as _,
+            self.event_dim_of_stat.clone(),
         ))
     }
 
@@ -525,9 +633,54 @@ impl TraceStorage for ZarrTraceStorage {
         self,
         traces: Vec<Result<<Self::ChainStorage as ChainStorage>::Finalized>>,
     ) -> Result<(Option<anyhow::Error>, Self::Finalized)> {
+        let mut warmup_counts: HashMap<String, Vec<u64>> = HashMap::new();
+        let mut sample_counts: HashMap<String, Vec<u64>> = HashMap::new();
         for trace in traces {
-            if let Err(err) = trace {
-                return Ok((Some(err), ()));
+            match trace {
+                Err(e) => return Ok((Some(e), ())),
+                Ok(c) => {
+                    for (dim, (w, s)) in c {
+                        warmup_counts.entry(dim.clone()).or_default().push(w);
+                        sample_counts.entry(dim.clone()).or_default().push(s);
+                    }
+                }
+            }
+        }
+        let max_sample: HashMap<String, u64> = sample_counts
+            .iter()
+            .map(|(dim, counts)| (dim.clone(), *counts.iter().max().unwrap_or(&0)))
+            .collect();
+        let max_warmup: HashMap<String, u64> = warmup_counts
+            .iter()
+            .map(|(dim, counts)| (dim.clone(), *counts.iter().max().unwrap_or(&0)))
+            .collect();
+
+        let mut arrays = Arc::try_unwrap(self.arrays).unwrap_or_else(|_| {
+            panic!("ArrayCollection still has multiple references at finalize")
+        });
+
+        for (field_name, event_dim) in &self.event_dim_of_stat {
+            if let Some(&max) = max_sample.get(event_dim) {
+                if let Some(array) = arrays.sample_param_arrays.get_mut(field_name) {
+                    let mut shape = array.shape().to_vec();
+                    shape[1] = max;
+                    array
+                        .set_shape(shape)
+                        .context("Failed to resize event array")?
+                        .store_metadata()
+                        .context("Failed to store resized array metadata")?;
+                }
+            }
+            if let Some(&max) = max_warmup.get(event_dim) {
+                if let Some(array) = arrays.warmup_param_arrays.get_mut(field_name) {
+                    let mut shape = array.shape().to_vec();
+                    shape[1] = max;
+                    array
+                        .set_shape(shape)
+                        .context("Failed to resize warmup event array")?
+                        .store_metadata()
+                        .context("Failed to store resized warmup array metadata")?;
+                }
             }
         }
         Ok((None, ()))

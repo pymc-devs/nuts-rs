@@ -5,8 +5,8 @@ use std::{
 
 use anyhow::Context;
 use nuts_rs::{
-    CpuLogpFunc, CpuMath, DiagAdaptExpSettings, DiagGradNutsSettings, EuclideanAdaptOptions,
-    LogpError, LowRankNutsSettings, Model, Sampler, SamplerWaitResult, ZarrConfig,
+    CpuLogpFunc, CpuMath, DiagAdaptExpSettings, DiagNutsSettings, EuclideanAdaptOptions, LogpError,
+    LowRankNutsSettings, Model, Sampler, SamplerWaitResult, ZarrConfig,
 };
 use nuts_storable::HasDims;
 use rand::prelude::Rng;
@@ -115,7 +115,7 @@ impl Model for NormalModel {
 fn sample() -> anyhow::Result<Arc<MemoryStore>> {
     let mu = vec![0.5; 100];
     let model = NormalModel::new(mu.into());
-    let settings = DiagGradNutsSettings {
+    let settings = DiagNutsSettings {
         seed: 42,
         num_chains: 6,
         ..Default::default()
@@ -138,7 +138,7 @@ fn sample() -> anyhow::Result<Arc<MemoryStore>> {
 fn sample_debug_stats() -> anyhow::Result<Arc<dyn ReadableListableStorageTraits>> {
     let mu = vec![0.5; 100];
     let model = NormalModel::new(mu.into());
-    let settings = DiagGradNutsSettings {
+    let settings = DiagNutsSettings {
         seed: 42,
         num_chains: 6,
         store_gradient: true,

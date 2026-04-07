@@ -18,7 +18,7 @@ use std::{
 
 use anyhow::Result;
 use nuts_rs::{
-    CpuLogpFunc, CpuMath, CpuMathError, DiagGradNutsSettings, LogpError, Model, Sampler,
+    CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, LogpError, Model, Sampler,
     SamplerWaitResult, Storable, ZarrConfig,
 };
 use nuts_storable::{HasDims, Value};
@@ -242,7 +242,7 @@ fn main() -> Result<()> {
 
     // Configure MCMC settings
     // DiagGradNutsSettings provides sensible defaults for the NUTS sampler
-    let mut settings = DiagGradNutsSettings::default();
+    let mut settings = DiagNutsSettings::default();
     settings.num_chains = num_chains as _;
     settings.num_tune = num_tune;
     settings.num_draws = num_draws as _;
@@ -282,6 +282,32 @@ fn main() -> Result<()> {
             SamplerWaitResult::Trace(_) => {
                 println!("✓ Sampling completed in {:?}", start.elapsed());
                 println!("✓ Traces written to Zarr format at '{}'", output_path);
+
+                // Check that divergence stats are stored with the right event dimension.
+                // The second axis should be named "divergence" and trimmed to the actual
+                // number of divergences (≤ num_draws).
+                let div_draw =
+                    zarrs::array::Array::open(store.clone(), "/sample_stats/divergence_draw")?;
+                let shape = div_draw.shape();
+                assert_eq!(shape[0], num_chains as u64, "expected one row per chain");
+                assert!(
+                    shape[1] <= num_draws as u64,
+                    "event dim should be ≤ num_draws"
+                );
+                let second_dim: Option<&str> = if let Some(names) = div_draw.dimension_names() {
+                    names.get(1).and_then(|n| n.as_deref())
+                } else {
+                    None
+                };
+                assert_eq!(
+                    second_dim,
+                    Some("divergence"),
+                    "second dim should be 'divergence'"
+                );
+                println!(
+                    "✓ Divergence stats: {} divergences stored across {} chains",
+                    shape[1], shape[0]
+                );
 
                 // Provide instructions for analysis
                 println!("\n=== Next Steps ===");

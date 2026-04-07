@@ -4,7 +4,7 @@ use itertools::Either;
 use nuts_derive::Storable;
 use rand::distr::Uniform;
 use rand::{Rng, RngExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::adam::{Adam, AdamOptions};
 use super::dual_avg::{AcceptanceRateCollector, DualAverage, DualAverageOptions};
@@ -18,7 +18,7 @@ use std::f64;
 use std::fmt::Debug;
 
 /// Method used for step size adaptation
-#[derive(Debug, Clone, Copy, Serialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Default, Deserialize)]
 pub enum StepSizeAdaptMethod {
     /// Use dual averaging for step size adaptation (default)
     #[default]
@@ -29,7 +29,7 @@ pub enum StepSizeAdaptMethod {
 }
 
 /// Options for step size adaptation
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct StepSizeAdaptOptions {
     pub method: StepSizeAdaptMethod,
     /// Dual averaging adaptation options
@@ -60,6 +60,8 @@ pub struct Strategy {
     pub last_sym_mean_tree_accept: f64,
     /// Last number of steps
     pub last_n_steps: u64,
+    /// Maximum absolute energy error observed in the last trajectory
+    pub last_max_energy_error: f64,
 }
 
 impl Strategy {
@@ -82,6 +84,7 @@ impl Strategy {
             last_n_steps: 0,
             last_sym_mean_tree_accept: 0.0,
             last_mean_tree_accept: 0.0,
+            last_max_energy_error: 0.0,
         }
     }
 
@@ -98,7 +101,7 @@ impl Strategy {
             return Ok(());
         };
         let mut state = hamiltonian.init_state(math, position)?;
-        hamiltonian.initialize_trajectory(math, &mut state, rng)?;
+        hamiltonian.initialize_trajectory(math, &mut state, true, rng)?;
 
         let mut collector = AcceptanceRateCollector::new();
 
@@ -106,7 +109,15 @@ impl Strategy {
 
         *hamiltonian.step_size_mut() = self.options.initial_step;
 
-        let state_next = hamiltonian.leapfrog(math, &state, Direction::Forward, &mut collector);
+        let state_next = hamiltonian.leapfrog(
+            math,
+            &state,
+            Direction::Forward,
+            1.0,
+            state.point().initial_energy(),
+            1000.0,
+            &mut collector,
+        );
 
         let LeapfrogResult::Ok(_) = state_next else {
             return Ok(());
@@ -122,7 +133,15 @@ impl Strategy {
         for _ in 0..100 {
             let mut collector = AcceptanceRateCollector::new();
             collector.register_init(math, &state, options);
-            let state_next = hamiltonian.leapfrog(math, &state, dir, &mut collector);
+            let state_next = hamiltonian.leapfrog(
+                math,
+                &state,
+                dir,
+                1.0,
+                state.point().initial_energy(),
+                1000.0,
+                &mut collector,
+            );
             let LeapfrogResult::Ok(_) = state_next else {
                 *hamiltonian.step_size_mut() = self.options.initial_step;
                 return Ok(());
@@ -186,6 +205,7 @@ impl Strategy {
         self.last_mean_tree_accept = mean;
         self.last_sym_mean_tree_accept = mean_sym;
         self.last_n_steps = n_steps;
+        self.last_max_energy_error = collector.max_energy_error;
     }
 
     pub fn update_estimator_early(&mut self) {
@@ -257,6 +277,7 @@ pub struct Stats {
     pub mean_tree_accept: f64,
     pub mean_tree_accept_sym: f64,
     pub n_steps: u64,
+    pub max_energy_error: f64,
 }
 
 impl<M: Math> SamplerStats<M> for Strategy {
@@ -279,11 +300,12 @@ impl<M: Math> SamplerStats<M> for Strategy {
             mean_tree_accept: self.last_mean_tree_accept,
             mean_tree_accept_sym: self.last_sym_mean_tree_accept,
             n_steps: self.last_n_steps,
+            max_energy_error: self.last_max_energy_error,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct StepSizeSettings {
     /// Target acceptance rate
     pub target_accept: f64,

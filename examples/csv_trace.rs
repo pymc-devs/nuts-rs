@@ -17,7 +17,7 @@ use std::{
 
 use anyhow::Result;
 use nuts_rs::{
-    CpuLogpFunc, CpuMath, CpuMathError, CsvConfig, DiagGradNutsSettings, LogpError, Model, Sampler,
+    CpuLogpFunc, CpuMath, CpuMathError, CsvConfig, DiagNutsSettings, LogpError, Model, Sampler,
     SamplerWaitResult, Storable,
 };
 use nuts_storable::{HasDims, Value};
@@ -230,7 +230,7 @@ fn main() -> Result<()> {
 
     // Configure MCMC settings
     // DiagGradNutsSettings provides sensible defaults for the NUTS sampler
-    let mut settings = DiagGradNutsSettings::default();
+    let mut settings = DiagNutsSettings::default();
     settings.num_chains = num_chains as _;
     settings.num_tune = num_tune;
     settings.num_draws = num_draws as _;

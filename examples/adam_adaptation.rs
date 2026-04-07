@@ -4,7 +4,7 @@
 //! for adapting the step size in NUTS.
 
 use nuts_rs::{
-    AdamOptions, Chain, CpuLogpFunc, CpuMath, DiagGradNutsSettings, LogpError, Settings,
+    AdamOptions, Chain, CpuLogpFunc, CpuMath, DiagNutsSettings, LogpError, Settings,
     StepSizeAdaptMethod,
 };
 use nuts_storable::HasDims;
@@ -76,7 +76,7 @@ fn main() {
     println!("Running NUTS with Adam step size adaptation...");
 
     // Create sampler settings with Adam optimizer
-    let mut settings = DiagGradNutsSettings::default();
+    let mut settings = DiagNutsSettings::default();
 
     // Configure for Adam adaptation
     settings

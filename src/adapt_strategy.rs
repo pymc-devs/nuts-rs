@@ -5,7 +5,7 @@ use std::{fmt::Debug, marker::PhantomData};
 use nuts_derive::Storable;
 use nuts_storable::{HasDims, Storable};
 use rand::Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::stepsize::AcceptanceRateCollector;
 use super::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
@@ -38,7 +38,7 @@ pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
     current_window_size: u64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct EuclideanAdaptOptions<S: Debug + Default> {
     pub step_size_settings: StepSizeSettings,
     pub mass_matrix_options: S,
@@ -427,7 +427,10 @@ mod test {
     use crate::{
         Chain, DiagAdaptExpSettings,
         chain::{NutsChain, StatOptions},
-        dynamics::{TransformedHamiltonian, TransformedPointStatsOptions},
+        dynamics::{
+            DivergenceStatsOptions, KineticEnergyKind, TransformedHamiltonian,
+            TransformedPointStatsOptions,
+        },
         math::CpuMath,
         transform::{DiagAdaptStrategy, DiagMassMatrix},
     };
@@ -443,20 +446,18 @@ mod test {
             GlobalStrategy::<_, DiagAdaptStrategy<_>>::new(&mut math, options, num_tune, 0u64);
 
         let mass_matrix = DiagMassMatrix::new(&mut math, true);
-        let max_energy_error = 1000f64;
 
         let hamiltonian: TransformedHamiltonian<_, DiagMassMatrix<CpuMath<NormalLogp>>> =
-            TransformedHamiltonian::new(&mut math, max_energy_error, mass_matrix, false);
+            TransformedHamiltonian::new(&mut math, mass_matrix, KineticEnergyKind::Euclidean);
 
         let options = NutsOptions {
             maxdepth: 10u64,
             mindepth: 0,
-            store_gradient: true,
-            store_unconstrained: true,
             check_turning: true,
             store_divergences: false,
             target_integration_time: None,
             extra_doublings: 0,
+            max_energy_error: 1000.0,
         };
 
         let rng = {
@@ -470,9 +471,14 @@ mod test {
                 step_size: (),
                 mass_matrix: (),
             },
-            hamiltonian: (),
+            hamiltonian: -1i64,
             point: TransformedPointStatsOptions {
+                store_gradient: true,
+                store_unconstrained: true,
                 store_transformed: false,
+            },
+            divergence: DivergenceStatsOptions {
+                store_divergences: true,
             },
         };
 
