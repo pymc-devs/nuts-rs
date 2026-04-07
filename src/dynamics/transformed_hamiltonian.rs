@@ -192,7 +192,7 @@ impl<M: Math> TransformedPoint<M> {
         if !math.array_all_finite(&self.transformed_position) {
             return false;
         }
-        if !math.array_all_finite_and_nonzero(&self.transformed_gradient) {
+        if !math.array_all_finite(&self.transformed_gradient) {
             return false;
         }
         if !math.array_all_finite(&self.untransformed_gradient) {
