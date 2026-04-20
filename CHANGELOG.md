@@ -2,6 +2,94 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.0] - 2026-04-20
+
+### Bug Fixes
+
+- Gate cargo test/example targets behind zarr feature (#61) (Eliot Carlson)
+
+- Left over warnings (Adrian Seyboldt)
+
+- Reinitialize total momentum on divergence in mclmc (Adrian Seyboldt)
+
+- Incorrect momentum refresh in mclmc (Adrian Seyboldt)
+
+- Mclmc fix various small issues (Adrian Seyboldt)
+
+- Change mclmc defaults (Adrian Seyboldt)
+
+- Zarr string did not need to be optional (Adrian Seyboldt)
+
+
+### Documentation
+
+- Add small docstrings to all modules (Adrian Seyboldt)
+
+- Add experimental markers for mclmc (Adrian Seyboldt)
+
+
+### Features
+
+- Switch random number generator to ChaCha8 (Adrian Seyboldt)
+
+- Speed up mass matrix transformations (Adrian Seyboldt)
+
+- Implement target integration time option in nuts (Adrian Seyboldt)
+
+- Implement trajectory relative to normal dist in transformed hmc (Adrian Seyboldt)
+
+- Grow adaptation windows in second phase (Adrian Seyboldt)
+
+- Add extra_doublings parameter (Adrian Seyboldt)
+
+- Experimental microcanonical update (Adrian Seyboldt)
+
+- Implement MCLMC (Adrian Seyboldt)
+
+- Add mclmc sample weight (Adrian Seyboldt)
+
+- Add options to control collection frequency in mclmc (Adrian Seyboldt)
+
+- Implement dynamic step size in mclmc (Adrian Seyboldt)
+
+- Implement deserialize for Settings (Adrian Seyboldt)
+
+- Add missing mclmc sampler settings (Adrian Seyboldt)
+
+- Store sampler and adaptation in zarr attr (Adrian Seyboldt)
+
+- Better nuts-derive with support for strings (Adrian Seyboldt)
+
+- Store divergence message (Adrian Seyboldt)
+
+- Store sample stats that appear occisionally with different dims (Adrian Seyboldt)
+
+- Store transformation updates sparsely (Adrian Seyboldt)
+
+- Add max_energy_error diagnostic (Adrian Seyboldt)
+
+- Use standard hmc early in mclmc (Adrian Seyboldt)
+
+
+### Miscellaneous Tasks
+
+- Remove duplicate runs (#54) (Will Dean)
+
+
+### Refactor
+
+- Only use transformed hamiltonian (Adrian Seyboldt)
+
+- Restructure directories (Adrian Seyboldt)
+
+- Move some sampler stats to proper places (Adrian Seyboldt)
+
+
+### Styling
+
+- Clippy fixes (Adrian Seyboldt)
+
+
 ## [0.17.4] - 2026-02-18
 
 ### Bug Fixes
