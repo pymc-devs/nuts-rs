@@ -22,7 +22,7 @@ use std::{
 };
 
 use crate::{
-    DiagAdaptExpSettings, Math,
+    DiagAdaptExpSettings, Math, StepSizeAdaptMethod,
     adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy, GlobalStrategyStatsOptions},
     chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
     dynamics::{KineticEnergyKind, TransformedHamiltonian, TransformedPointStatsOptions},
@@ -316,32 +316,6 @@ fn usize_hint(value: u64, field: &str) -> usize {
         .unwrap_or_else(|_| panic!("{field} must be smaller than usize::MAX"))
 }
 
-fn default_diag_mclmc_adapt_options() -> EuclideanAdaptOptions<DiagAdaptExpSettings> {
-    let mut adapt_options = EuclideanAdaptOptions::<DiagAdaptExpSettings>::default();
-    adapt_options.step_size_window = 0.0;
-    adapt_options.step_size_settings = crate::stepsize::StepSizeSettings {
-        adapt_options: crate::stepsize::StepSizeAdaptOptions {
-            method: crate::stepsize::StepSizeAdaptMethod::Fixed(0.5),
-            ..crate::stepsize::StepSizeAdaptOptions::default()
-        },
-        ..crate::stepsize::StepSizeSettings::default()
-    };
-    adapt_options
-}
-
-fn default_low_rank_mclmc_adapt_options() -> EuclideanAdaptOptions<LowRankSettings> {
-    let mut adapt_options = EuclideanAdaptOptions::<LowRankSettings>::default();
-    adapt_options.step_size_window = 0.0;
-    adapt_options.step_size_settings = crate::stepsize::StepSizeSettings {
-        adapt_options: crate::stepsize::StepSizeAdaptOptions {
-            method: crate::stepsize::StepSizeAdaptMethod::Fixed(0.5),
-            ..crate::stepsize::StepSizeAdaptOptions::default()
-        },
-        ..crate::stepsize::StepSizeSettings::default()
-    };
-    adapt_options
-}
-
 fn default_mclmc_settings<A: Debug + Copy + Default + Serialize>(
     adapt_options: A,
     num_tune: u64,
@@ -362,7 +336,7 @@ fn default_mclmc_settings<A: Debug + Copy + Default + Serialize>(
         store_transformed: false,
         adapt_options,
         subsample_frequency: 1.0,
-        dynamic_step_size: false,
+        dynamic_step_size: true,
         trajectory_kind: MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical,
         trajectory_switch_fraction: 0.3,
     }
@@ -370,13 +344,18 @@ fn default_mclmc_settings<A: Debug + Copy + Default + Serialize>(
 
 impl Default for DiagMclmcSettings {
     fn default() -> Self {
-        default_mclmc_settings(default_diag_mclmc_adapt_options(), 400, 6, 1000.0)
+        let mut adapt_options = EuclideanAdaptOptions::default();
+        adapt_options.step_size_settings.adapt_options.method = StepSizeAdaptMethod::Fixed(0.5);
+        default_mclmc_settings(adapt_options, 400, 6, 1000.0)
     }
 }
 
 impl Default for LowRankMclmcSettings {
     fn default() -> Self {
-        default_mclmc_settings(default_low_rank_mclmc_adapt_options(), 800, 6, 1000.0)
+        let mut adapt_options = EuclideanAdaptOptions::default();
+        adapt_options.early_mass_matrix_switch_freq = 20;
+        adapt_options.step_size_settings.adapt_options.method = StepSizeAdaptMethod::Fixed(0.5);
+        default_mclmc_settings(adapt_options, 800, 6, 1000.0)
     }
 }
 
@@ -474,11 +453,16 @@ impl Settings for DiagMclmcSettings {
                 mass_matrix: (),
             },
             hamiltonian: -1,
-            point: point_stats_options(
-                self.store_gradient,
-                self.store_unconstrained,
-                self.store_transformed,
-            ),
+            point: {
+                let store_gradient = self.store_gradient;
+                let store_unconstrained = self.store_unconstrained;
+                let store_transformed = self.store_transformed;
+                TransformedPointStatsOptions {
+                    store_gradient,
+                    store_unconstrained,
+                    store_transformed,
+                }
+            },
             divergence: crate::dynamics::DivergenceStatsOptions {
                 store_divergences: self.store_divergences,
             },
@@ -592,11 +576,16 @@ impl Settings for LowRankMclmcSettings {
                 mass_matrix: (),
             },
             hamiltonian: -1,
-            point: point_stats_options(
-                self.store_gradient,
-                self.store_unconstrained,
-                self.store_transformed,
-            ),
+            point: {
+                let store_gradient = self.store_gradient;
+                let store_unconstrained = self.store_unconstrained;
+                let store_transformed = self.store_transformed;
+                TransformedPointStatsOptions {
+                    store_gradient,
+                    store_unconstrained,
+                    store_transformed,
+                }
+            },
             divergence: crate::dynamics::DivergenceStatsOptions {
                 store_divergences: self.store_divergences,
             },
@@ -644,18 +633,6 @@ fn nuts_options(settings: &NutsSettings<impl Debug + Copy + Default + Serialize>
         target_integration_time: settings.target_integration_time,
         extra_doublings: settings.extra_doublings,
         max_energy_error: settings.max_energy_error,
-    }
-}
-
-fn point_stats_options(
-    store_gradient: bool,
-    store_unconstrained: bool,
-    store_transformed: bool,
-) -> TransformedPointStatsOptions {
-    TransformedPointStatsOptions {
-        store_gradient,
-        store_unconstrained,
-        store_transformed,
     }
 }
 
@@ -711,11 +688,16 @@ impl Settings for LowRankNutsSettings {
                 step_size: (),
             },
             hamiltonian: -1,
-            point: point_stats_options(
-                self.store_gradient,
-                self.store_unconstrained,
-                self.store_transformed,
-            ),
+            point: {
+                let store_gradient = self.store_gradient;
+                let store_unconstrained = self.store_unconstrained;
+                let store_transformed = self.store_transformed;
+                TransformedPointStatsOptions {
+                    store_gradient,
+                    store_unconstrained,
+                    store_transformed,
+                }
+            },
             divergence: crate::dynamics::DivergenceStatsOptions {
                 store_divergences: self.store_divergences,
             },
@@ -786,11 +768,16 @@ impl Settings for DiagNutsSettings {
                 step_size: (),
             },
             hamiltonian: -1,
-            point: point_stats_options(
-                self.store_gradient,
-                self.store_unconstrained,
-                self.store_transformed,
-            ),
+            point: {
+                let store_gradient = self.store_gradient;
+                let store_unconstrained = self.store_unconstrained;
+                let store_transformed = self.store_transformed;
+                TransformedPointStatsOptions {
+                    store_gradient,
+                    store_unconstrained,
+                    store_transformed,
+                }
+            },
             divergence: crate::dynamics::DivergenceStatsOptions {
                 store_divergences: self.store_divergences,
             },
@@ -859,11 +846,16 @@ impl Settings for FlowNutsSettings {
         StatOptions {
             adapt: (),
             hamiltonian: (),
-            point: point_stats_options(
-                self.store_gradient,
-                self.store_unconstrained,
-                self.store_transformed,
-            ),
+            point: {
+                let store_gradient = self.store_gradient;
+                let store_unconstrained = self.store_unconstrained;
+                let store_transformed = self.store_transformed;
+                TransformedPointStatsOptions {
+                    store_gradient,
+                    store_unconstrained,
+                    store_transformed,
+                }
+            },
             divergence: crate::dynamics::DivergenceStatsOptions {
                 store_divergences: self.store_divergences,
             },
@@ -948,11 +940,16 @@ impl Settings for FlowMclmcSettings {
         StatOptions {
             adapt: (),
             hamiltonian: (),
-            point: point_stats_options(
-                self.store_gradient,
-                self.store_unconstrained,
-                self.store_transformed,
-            ),
+            point: {
+                let store_gradient = self.store_gradient;
+                let store_unconstrained = self.store_unconstrained;
+                let store_transformed = self.store_transformed;
+                TransformedPointStatsOptions {
+                    store_gradient,
+                    store_unconstrained,
+                    store_transformed,
+                }
+            },
             divergence: crate::dynamics::DivergenceStatsOptions {
                 store_divergences: self.store_divergences,
             },
