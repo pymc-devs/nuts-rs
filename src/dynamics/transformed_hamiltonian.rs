@@ -572,8 +572,9 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
                 start_idx_in_trajectory: Some(start.point().index_in_trajectory()),
                 end_idx_in_trajectory: None,
                 energy_error: None,
+                non_reversible: false,
             };
-            collector.register_leapfrog(math, start, &out, Some(&div_info));
+            collector.register_leapfrog(math, start, &out, Some(&div_info), step_size_splits);
             return LeapfrogResult::Divergence(div_info);
         }
 
@@ -604,12 +605,19 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
                 start_idx_in_trajectory: Some(start.index_in_trajectory()),
                 end_idx_in_trajectory: Some(out.index_in_trajectory()),
                 energy_error: Some(energy_error),
+                non_reversible: false,
             };
-            collector.register_leapfrog(math, start, &out, Some(&divergence_info));
+            collector.register_leapfrog(
+                math,
+                start,
+                &out,
+                Some(&divergence_info),
+                step_size_splits,
+            );
             return LeapfrogResult::Divergence(divergence_info);
         }
 
-        collector.register_leapfrog(math, start, &out, None);
+        collector.register_leapfrog(math, start, &out, None, step_size_splits);
 
         LeapfrogResult::Ok(out)
     }
@@ -823,5 +831,9 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         }
 
         Ok(())
+    }
+
+    fn max_energy_error(&self) -> f64 {
+        self.max_energy_error
     }
 }

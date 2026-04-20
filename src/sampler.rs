@@ -29,7 +29,7 @@ use crate::{
     external_adapt_strategy::{ExternalTransformAdaptation, FlowSettings},
     mclmc::MclmcTrajectoryKind,
     model::Model,
-    nuts::NutsOptions,
+    nuts::{NutsOptions, WalnutsOptions},
     sampler_stats::{SamplerStats, StatsDims},
     storage::{ChainStorage, StorageConfig, TraceStorage},
     transform::{
@@ -225,6 +225,7 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     /// be used to increase the effective sample size at the cost of more
     /// expensive sampling.
     pub extra_doublings: u64,
+    pub walnuts_options: Option<WalnutsOptions>,
 }
 
 pub type DiagNutsSettings = NutsSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
@@ -516,6 +517,7 @@ fn default_nuts_settings<A: Debug + Copy + Default + Serialize>(
         target_integration_time: None,
         trajectory_kind: KineticEnergyKind::Euclidean,
         extra_doublings: 0,
+        walnuts_options: None,
     }
 }
 
@@ -648,6 +650,7 @@ fn nuts_options(settings: &NutsSettings<impl Debug + Copy + Default + Serialize>
         target_integration_time: settings.target_integration_time,
         extra_doublings: settings.extra_doublings,
         max_energy_error: settings.max_energy_error,
+        walnuts_options: settings.walnuts_options,
     }
 }
 
