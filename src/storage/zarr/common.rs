@@ -269,7 +269,7 @@ pub fn create_arrays<TStorage: ?Sized>(
             ItemType::U64 => data_type::uint64(),
             ItemType::I64 => data_type::int64(),
             ItemType::Bool => data_type::bool(),
-            ItemType::String => data_type::optional(data_type::string()),
+            ItemType::String => data_type::string(),
             ItemType::DateTime64(unit) => {
                 let unit = match unit {
                     nuts_storable::DateTimeUnit::Seconds => NumpyTimeUnit::Second,
