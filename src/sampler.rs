@@ -239,6 +239,12 @@ pub type TransformedNutsSettings = FlowNutsSettings;
 
 /// Settings for the unadjusted Microcanonical Langevin Monte Carlo (MCLMC) sampler.
 ///
+/// > ⚠️ **Experimental — use with caution**: The MCLMC sampler and all of its
+/// > variants are highly experimental. They have not been thoroughly validated
+/// > and may **not return correct posteriors**. The API, defaults, and
+/// > adaptation behaviour are all subject to breaking changes at any time.
+/// > Do not use these samplers in production or for results you rely on.
+///
 /// Step size `ε` and momentum decoherence length `L` are **constants** — no
 /// adaptation of those is performed yet. The geometry is adapted during
 /// warmup using the sampler-specific adaptation strategy, while the step size
@@ -301,10 +307,19 @@ pub struct MclmcSettings<A: Debug + Copy + Default + Serialize> {
 }
 
 /// MCLMC settings with a diagonal mass matrix adaptation.
+///
+/// > ⚠️ **Experimental — use with caution**: Highly experimental. Correctness
+/// > of the returned posteriors has not been verified. May change at any time.
 pub type DiagMclmcSettings = MclmcSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
 /// MCLMC settings with a low-rank mass matrix adaptation.
+///
+/// > ⚠️ **Experimental — use with caution**: Highly experimental. Correctness
+/// > of the returned posteriors has not been verified. May change at any time.
 pub type LowRankMclmcSettings = MclmcSettings<EuclideanAdaptOptions<LowRankSettings>>;
 /// MCLMC settings with a learned flow transformation.
+///
+/// > ⚠️ **Experimental — use with caution**: Highly experimental. Correctness
+/// > of the returned posteriors has not been verified. May change at any time.
 pub type FlowMclmcSettings = MclmcSettings<FlowSettings>;
 /// Backwards-compatible alias for [`FlowMclmcSettings`].
 #[deprecated(since = "0.0.0", note = "Use FlowMclmcSettings instead")]
