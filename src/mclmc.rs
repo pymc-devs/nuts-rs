@@ -1,5 +1,11 @@
 //! Unadjusted Microcanonical Langevin Monte Carlo (MCLMC) sampler.
 //!
+//! > ⚠️ **Experimental — use with caution**: The MCLMC sampler and all of its
+//! > variants are highly experimental. They have not been thoroughly validated
+//! > and may **not return correct posteriors**. The API, defaults, and
+//! > adaptation behaviour are all subject to breaking changes at any time.
+//! > Do not use these samplers in production or for results you rely on.
+//!
 //! This module implements the **unadjusted** version of the MCLMC algorithm
 //! (Robnik, De Luca, Silverstein & Seljak 2023), using the isokinetic Langevin
 //! (Ornstein–Uhlenbeck) momentum refresh from the
