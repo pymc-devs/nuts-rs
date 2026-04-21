@@ -5,10 +5,11 @@ use std::{
 
 use anyhow::Context;
 use nuts_rs::{
-    CpuLogpFunc, CpuMath, DiagAdaptExpSettings, DiagNutsSettings, EuclideanAdaptOptions, LogpError,
-    LowRankNutsSettings, Model, Sampler, SamplerWaitResult, ZarrConfig,
+    Chain, CpuLogpFunc, CpuMath, DiagAdaptExpSettings, DiagNutsSettings, EuclideanAdaptOptions,
+    LogpError, LowRankNutsSettings, Model, Sampler, SamplerWaitResult, Settings, ZarrConfig,
 };
 use nuts_storable::HasDims;
+use rand::SeedableRng;
 use rand::prelude::Rng;
 use rand_distr::{Distribution, StandardNormal};
 use thiserror::Error;
@@ -16,6 +17,95 @@ use zarrs::{
     array::{Array, ArraySubset},
     storage::{ReadableListableStorageTraits, store::MemoryStore},
 };
+
+/// A correlated multivariate normal with covariance Σ = I + rank1_scale * ones * ones^T.
+///
+/// By the Woodbury identity the precision matrix is
+///   Σ⁻¹ = I - c * ones * ones^T,  where c = rank1_scale / (1 + rank1_scale * dim).
+///
+/// This gives a non-trivial rank-1 correlation structure that the low-rank mass-matrix
+/// adaptation should be able to recover exactly (up to numerical precision) once the
+/// estimation window contains more draws than the dimensionality.
+struct CorrelatedNormalLogp {
+    dim: usize,
+    mu: Vec<f64>,
+    /// Coefficient `c` in the precision matrix I - c * ones * ones^T.
+    prec_rank1_coeff: f64,
+}
+
+impl CorrelatedNormalLogp {
+    fn new(dim: usize, rank1_scale: f64) -> Self {
+        let prec_rank1_coeff = rank1_scale / (1.0 + rank1_scale * dim as f64);
+        Self {
+            dim,
+            mu: vec![0.0; dim],
+            prec_rank1_coeff,
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+enum CorrelatedNormalLogpError {}
+
+impl LogpError for CorrelatedNormalLogpError {
+    fn is_recoverable(&self) -> bool {
+        true
+    }
+}
+
+impl HasDims for CorrelatedNormalLogp {
+    fn dim_sizes(&self) -> std::collections::HashMap<String, u64> {
+        std::collections::HashMap::from([
+            ("unconstrained_parameter".to_string(), self.dim as u64),
+            ("dim".to_string(), self.dim as u64),
+        ])
+    }
+}
+
+impl CpuLogpFunc for CorrelatedNormalLogp {
+    type LogpError = CorrelatedNormalLogpError;
+    type FlowParameters = ();
+    type ExpandedVector = Vec<f64>;
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn logp(&mut self, position: &[f64], grad: &mut [f64]) -> Result<f64, Self::LogpError> {
+        let n = position.len();
+        assert_eq!(grad.len(), n);
+
+        // diff = position - mu; sum_diff = ones^T diff
+        let sum_diff: f64 = position
+            .iter()
+            .zip(self.mu.iter())
+            .map(|(p, m)| p - m)
+            .sum();
+        let rank1_term = self.prec_rank1_coeff * sum_diff;
+
+        // gradient[i] = -(Λ diff)[i] = -(diff[i] - c * sum_diff)
+        // logp        = -0.5 * diff^T Λ diff
+        let mut logp = 0f64;
+        for i in 0..n {
+            let diff = position[i] - self.mu[i];
+            let prec_times_diff = diff - rank1_term;
+            grad[i] = -prec_times_diff;
+            logp -= 0.5 * diff * prec_times_diff;
+        }
+        Ok(logp)
+    }
+
+    fn expand_vector<R>(
+        &mut self,
+        _rng: &mut R,
+        array: &[f64],
+    ) -> Result<Self::ExpandedVector, nuts_rs::CpuMathError>
+    where
+        R: rand::Rng + ?Sized,
+    {
+        Ok(array.to_vec())
+    }
+}
 
 struct NormalLogp<'a> {
     dim: usize,
@@ -225,6 +315,51 @@ fn sample_eigs_debug_stats() -> anyhow::Result<Arc<MemoryStore>> {
     };
 
     Ok(store)
+}
+
+/// Check that the Fisher divergence is (numerically) zero for all post-warmup draws when
+/// sampling a correlated Gaussian with the low-rank mass-matrix adaptation.
+///
+/// For any Gaussian p(x) = N(μ, Σ), once the transformation F perfectly maps the posterior
+/// to a standard normal, the gradient in transformed space satisfies g_y = -y pointwise.
+/// Therefore fisher_distance = ‖y + g_y‖² = 0 for every single draw, not just on average.
+/// The low-rank estimator can achieve this exactly when the estimation window contains
+/// more draws than the dimensionality of the posterior.
+fn check_low_rank_fisher_divergence() -> anyhow::Result<()> {
+    let dim = 10;
+    // Covariance: Σ = I + 0.5 * ones * ones^T  (rank-1 off-diagonal structure)
+    let logp = CorrelatedNormalLogp::new(dim, 0.5);
+    let math = CpuMath::new(logp);
+
+    // num_tune is much larger than dim so the estimation window is overdetermined.
+    let settings = LowRankNutsSettings {
+        num_tune: 500,
+        num_draws: 100,
+        num_chains: 1,
+        seed: 42,
+        ..Default::default()
+    };
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+    let mut chain = settings.new_chain(0, math, &mut rng);
+    chain.set_position(&vec![1.0f64; dim])?;
+
+    for _ in 0..(settings.num_tune + settings.num_draws) {
+        let (_, _, stats, progress) = chain.expanded_draw()?;
+        if !progress.tuning {
+            assert!(
+                stats.point.fisher_distance < 1e-10,
+                "fisher_distance = {} should be ~0 after low-rank adaptation converges",
+                stats.point.fisher_distance,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn low_rank_exact_gaussian() -> anyhow::Result<()> {
+    check_low_rank_fisher_divergence()
 }
 
 #[test]
