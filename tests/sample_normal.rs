@@ -317,49 +317,42 @@ fn sample_eigs_debug_stats() -> anyhow::Result<Arc<MemoryStore>> {
     Ok(store)
 }
 
-/// Check that the Fisher divergence is (numerically) zero for all post-warmup draws when
-/// sampling a correlated Gaussian with the low-rank mass-matrix adaptation.
-///
-/// For any Gaussian p(x) = N(μ, Σ), once the transformation F perfectly maps the posterior
-/// to a standard normal, the gradient in transformed space satisfies g_y = -y pointwise.
-/// Therefore fisher_distance = ‖y + g_y‖² = 0 for every single draw, not just on average.
-/// The low-rank estimator can achieve this exactly when the estimation window contains
-/// more draws than the dimensionality of the posterior.
-fn check_low_rank_fisher_divergence() -> anyhow::Result<()> {
-    let dim = 10;
-    // Covariance: Σ = I + 0.5 * ones * ones^T  (rank-1 off-diagonal structure)
-    let logp = CorrelatedNormalLogp::new(dim, 0.5);
-    let math = CpuMath::new(logp);
-
-    // num_tune is much larger than dim so the estimation window is overdetermined.
-    let settings = LowRankNutsSettings {
-        num_tune: 500,
-        num_draws: 100,
-        num_chains: 1,
-        seed: 42,
-        ..Default::default()
-    };
-
-    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-    let mut chain = settings.new_chain(0, math, &mut rng);
-    chain.set_position(&vec![1.0f64; dim])?;
-
-    for _ in 0..(settings.num_tune + settings.num_draws) {
-        let (_, _, stats, progress) = chain.expanded_draw()?;
-        if !progress.tuning {
-            assert!(
-                stats.point.fisher_distance < 1e-10,
-                "fisher_distance = {} should be ~0 after low-rank adaptation converges",
-                stats.point.fisher_distance,
-            );
-        }
-    }
-    Ok(())
-}
-
 #[test]
 fn low_rank_exact_gaussian() -> anyhow::Result<()> {
-    check_low_rank_fisher_divergence()
+    {
+        let dim = 10;
+        // Covariance: Σ = I + 0.5 * ones * ones^T  (rank-1 off-diagonal structure)
+        // let logp = CorrelatedNormalLogp::new(dim, 0.5);
+        let logp = CorrelatedNormalLogp::new(dim, 0.5);
+        let math = CpuMath::new(logp);
+
+        // num_tune is much larger than dim so the estimation window is overdetermined.
+        let mut settings = LowRankNutsSettings {
+            num_tune: 500,
+            num_draws: 100,
+            num_chains: 1,
+            seed: 42,
+            ..Default::default()
+        };
+
+        settings.adapt_options.mass_matrix_options.eigval_cutoff = 1.00001;
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let mut chain = settings.new_chain(0, math, &mut rng);
+        chain.set_position(&vec![1.0f64; dim])?;
+
+        for _ in 0..(settings.num_tune + settings.num_draws) {
+            let (_, _, stats, progress) = chain.expanded_draw()?;
+            if !progress.tuning {
+                assert!(
+                    stats.point.fisher_distance < 1e-10,
+                    "fisher_distance = {} should be ~0 after low-rank adaptation converges",
+                    stats.point.fisher_distance,
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 #[test]
