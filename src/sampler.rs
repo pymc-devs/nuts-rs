@@ -1550,139 +1550,12 @@ impl<F: Send + 'static> Sampler<F> {
 
 #[cfg(test)]
 pub mod test_logps {
-
-    use std::collections::HashMap;
-
-    use crate::math::{CpuLogpFunc, LogpError};
     #[cfg(feature = "zarr")]
-    use crate::{Model, math::CpuMath};
+    use crate::{Model, math::CpuLogpFunc, math::CpuMath};
+    #[cfg(feature = "zarr")]
     use anyhow::Result;
-    use nuts_storable::HasDims;
     #[cfg(feature = "zarr")]
     use rand::Rng;
-    use thiserror::Error;
-
-    #[derive(Clone, Debug)]
-    pub struct NormalLogp {
-        pub dim: usize,
-        pub mu: f64,
-    }
-
-    #[derive(Error, Debug)]
-    pub enum NormalLogpError {}
-
-    impl LogpError for NormalLogpError {
-        fn is_recoverable(&self) -> bool {
-            false
-        }
-    }
-
-    impl HasDims for &NormalLogp {
-        fn dim_sizes(&self) -> HashMap<String, u64> {
-            vec![
-                ("unconstrained_parameter".to_string(), self.dim as u64),
-                ("dim".to_string(), self.dim as u64),
-            ]
-            .into_iter()
-            .collect()
-        }
-    }
-
-    impl CpuLogpFunc for &NormalLogp {
-        type LogpError = NormalLogpError;
-        type FlowParameters = ();
-        type ExpandedVector = Vec<f64>;
-
-        fn dim(&self) -> usize {
-            self.dim
-        }
-
-        fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, NormalLogpError> {
-            let n = position.len();
-            assert!(gradient.len() == n);
-
-            let mut logp = 0f64;
-            for (p, g) in position.iter().zip(gradient.iter_mut()) {
-                let val = self.mu - p;
-                logp -= val * val / 2.;
-                *g = val;
-            }
-
-            Ok(logp)
-        }
-
-        fn expand_vector<R>(
-            &mut self,
-            _rng: &mut R,
-            array: &[f64],
-        ) -> std::result::Result<Self::ExpandedVector, crate::math::CpuMathError>
-        where
-            R: rand::Rng + ?Sized,
-        {
-            Ok(array.to_vec())
-        }
-
-        fn inv_transform_normalize(
-            &mut self,
-            _params: &Self::FlowParameters,
-            _untransformed_position: &[f64],
-            _untransofrmed_gradient: &[f64],
-            _transformed_position: &mut [f64],
-            _transformed_gradient: &mut [f64],
-        ) -> std::result::Result<f64, Self::LogpError> {
-            unimplemented!()
-        }
-
-        fn init_from_untransformed_position(
-            &mut self,
-            _params: &Self::FlowParameters,
-            _untransformed_position: &[f64],
-            _untransformed_gradient: &mut [f64],
-            _transformed_position: &mut [f64],
-            _transformed_gradient: &mut [f64],
-        ) -> std::result::Result<(f64, f64), Self::LogpError> {
-            unimplemented!()
-        }
-
-        fn init_from_transformed_position(
-            &mut self,
-            _params: &Self::FlowParameters,
-            _untransformed_position: &mut [f64],
-            _untransformed_gradient: &mut [f64],
-            _transformed_position: &[f64],
-            _transformed_gradient: &mut [f64],
-        ) -> std::result::Result<(f64, f64), Self::LogpError> {
-            unimplemented!()
-        }
-
-        fn update_transformation<'b, R: rand::Rng + ?Sized>(
-            &'b mut self,
-            _rng: &mut R,
-            _untransformed_positions: impl Iterator<Item = &'b [f64]>,
-            _untransformed_gradients: impl Iterator<Item = &'b [f64]>,
-            _untransformed_logp: impl Iterator<Item = &'b f64>,
-            _params: &'b mut Self::FlowParameters,
-        ) -> std::result::Result<(), Self::LogpError> {
-            unimplemented!()
-        }
-
-        fn init_transformation<R: rand::Rng + ?Sized>(
-            &mut self,
-            _rng: &mut R,
-            _untransformed_position: &[f64],
-            _untransfogmed_gradient: &[f64],
-            _chain: u64,
-        ) -> std::result::Result<Self::FlowParameters, Self::LogpError> {
-            unimplemented!()
-        }
-
-        fn transformation_id(
-            &self,
-            _params: &Self::FlowParameters,
-        ) -> std::result::Result<i64, Self::LogpError> {
-            unimplemented!()
-        }
-    }
 
     #[cfg(feature = "zarr")]
     pub struct CpuModel<F> {
@@ -1721,7 +1594,7 @@ pub mod test_logps {
 
 #[cfg(test)]
 mod tests {
-    use super::test_logps::NormalLogp;
+    use crate::math::test_logps::NormalLogp;
     use crate::{
         Chain, math::CpuMath, sample_sequentially, sampler::DiagMclmcSettings,
         sampler::DiagNutsSettings, sampler::LowRankMclmcSettings, sampler::LowRankNutsSettings,

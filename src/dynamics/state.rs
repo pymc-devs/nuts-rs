@@ -125,7 +125,7 @@ impl<M: Math, P: Point<M>> Clone for State<M, P> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{dynamics::TransformedPoint, math::CpuMath, sampler::test_logps::NormalLogp};
+    use crate::{dynamics::TransformedPoint, math::CpuMath, math::test_logps::NormalLogp};
 
     use super::*;
 
