@@ -406,10 +406,11 @@ mod tests {
         // No low-rank correction: pass empty vals/vecs.
         let vals = Col::zeros(0);
         let vecs = Mat::zeros(3, 0);
+        let mu = Col::zeros(3);
 
         let settings = LowRankSettings::default();
         let mut mass = LowRankMassMatrix::new(&mut math, settings);
-        mass.update(&mut math, stds, mean, vals, vecs);
+        mass.update(&mut math, stds, mean, vals, vecs, mu);
 
         let x = [1f64, 2., 3.];
         let mut untransformed_pos = math.new_array();
@@ -467,8 +468,9 @@ mod tests {
         let mean = Col::zeros(3);
         let vals = Col::zeros(0);
         let vecs = Mat::zeros(3, 0);
+        let mu = Col::zeros(3);
         let mut mass = LowRankMassMatrix::new(&mut math, LowRankSettings::default());
-        mass.update(&mut math, stds, mean, vals, vecs);
+        mass.update(&mut math, stds, mean, vals, vecs, mu);
 
         let x_orig = [0.7f64, -1.2, 3.3];
         let mut untransformed_pos = math.new_array();
@@ -537,10 +539,11 @@ mod tests {
         let mean = Col::zeros(3);
         let vals = faer::col![4.0f64];
         let mut vecs = Mat::zeros(3, 1);
+        let mu = Col::zeros(3);
         vecs[(0, 0)] = 1.0; // u = e_1
 
         let mut mass = LowRankMassMatrix::new(&mut math, LowRankSettings::default());
-        mass.update(&mut math, stds, mean, vals, vecs);
+        mass.update(&mut math, stds, mean, vals, vecs, mu);
 
         // Test point x = [2, 1, 1]
         let x = [2f64, 1., 1.];
@@ -625,8 +628,9 @@ mod tests {
         let mean = Col::from_fn(3, |i| mu[i]);
         let vals = Col::zeros(0);
         let vecs = Mat::zeros(3, 0);
+        let mu_low_rank = Col::zeros(3);
         let mut mass = LowRankMassMatrix::new(&mut math, LowRankSettings::default());
-        mass.update(&mut math, stds, mean, vals, vecs);
+        mass.update(&mut math, stds, mean, vals, vecs, mu_low_rank);
 
         // Evaluate at x = mu + sigma (one sigma above mean in each dim)
         let x: Vec<f64> = mu

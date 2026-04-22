@@ -338,6 +338,7 @@ impl<M: Math> LowRankMassMatrix<M> {
         math.array_mult_inplace(transformed_position, self.diag.inv_stds());
 
         if let Some(inner) = &self.inner {
+            math.axpy(&inner.mu, transformed_position, -1.0);
             math.apply_lowrank_transform_inplace(
                 &inner.vecs,
                 &inner.vals_sqrt_inv,
@@ -367,6 +368,8 @@ impl<M: Math> LowRankMassMatrix<M> {
                     transformed_position,
                     untransformed_position,
                 );
+
+                math.axpy(&inner.mu, untransformed_position, 1.0);
                 math.array_mult_inplace(untransformed_position, &self.diag.stds());
             }
         }

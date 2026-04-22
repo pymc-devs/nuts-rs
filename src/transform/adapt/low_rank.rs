@@ -2,11 +2,7 @@
 
 use std::collections::VecDeque;
 
-use faer::{
-    Col, ColRef, Mat, Scale,
-    dyn_stack::{MemBuffer, MemStack},
-    matrix_free::{BiPrecond, Precond},
-};
+use faer::{Col, ColRef, Mat, Scale};
 use itertools::Itertools;
 
 use crate::{
@@ -113,36 +109,38 @@ impl LowRankMassMatrixStrategy {
 
         let vecs = subspace_basis * vecs;
 
-        let mut vals_m1 = vals.cloned();
+        let mut vals_m1 = vals.clone();
         vals_m1.iter_mut().for_each(|x| *x -= 1.0);
         let vals_m1 = vals_m1.into_diagonal();
 
-        let par = faer::Par::Seq;
-        let req1 = vecs.apply_in_place_scratch(1, par);
-        let req2 = vals_m1.apply_in_place_scratch(1, par);
-        let req3 = vecs.transpose_apply_in_place_scratch(1, par);
-        let mut buf = MemBuffer::new(req1.or(req2).or(req3));
-        let stack = MemStack::new(&mut buf);
-        let mut grad_mean_trafo = grad_mean.clone();
-        vecs.transpose_apply_in_place(grad_mean_trafo.as_mat_mut(), par, stack);
-        vals_m1.apply_in_place(grad_mean_trafo.as_mat_mut(), par, stack);
-        vecs.apply_in_place(grad_mean_trafo.as_mat_mut(), par, stack);
-        let mu = draw_mean + grad_mean + grad_mean_trafo;
+        // TODO use low level api
+        let b = vecs.transpose() * &grad_mean;
+        let b = vals_m1 * b;
+        let b = &vecs * b;
+        //let mu = &vecs * (vecs.transpose() * draw_mean) + b;
+        let mu = draw_mean + grad_mean + b;
 
         Some((stds, mean, vals, vecs, mu))
     }
 }
 
-/// Centre and rescale draws and gradients in-place.
+/// Rescale draws and gradients in-place and return the parameters of that transformation.
 ///
-/// Returns `(stds, mu, draw_mean, grad_mean)` where
-///   `stds[i] = sqrt(sqrt(var(x_i) / var(α_i)))`  — diagonal scale σ
-///   `mu[i] = x̄_i + σᵢ² · ᾱᵢ`             — optimal translation μ*
+/// **Step 1 — diagonal rescaling:**
+/// Computes per-dimension scale `σ_i = sqrt(sqrt(var(x_i) / var(α_i)))` and translation
+/// `μ*_i = x̄_i + σ_i² · ᾱ_i`, then applies the affine map
+///   `x_i  ↦  (x_i − μ*_i) / σ_i`
+///   `α_i  ↦  α_i · σ_i`
 ///
-/// After this call each column of `draws` holds `(x_i − mean[i]) / σ_i`
-/// and each column of `grads` holds `α_i · σ`.
+/// **Step 2 — mean computation:**
+/// Computes `draw_mean` and `grad_mean`, the per-dimension means of the rescaled values.
 ///
-/// draw_mean and grad_mean are the means of the new draws and grads.
+/// **Step 3 — centering:**
+/// Subtracts those means so that the output columns have zero mean.
+///
+/// Returns `(stds, mu, draw_mean, grad_mean)` where `stds` and `mu` are the scale and
+/// translation from Step 1, and `draw_mean`/`grad_mean` are the pre-centering means of
+/// the rescaled values from Step 2.
 fn rescale_points(
     draws: &mut Mat<f64>,
     grads: &mut Mat<f64>,
@@ -190,9 +188,15 @@ fn rescale_points(
             .iter_mut()
             .for_each(|v| *v = (*v) * grad_scale);
 
-        // Compute means of the rescaled draws and grads
+        // Compute means of the rescaled draws and grads before centering
         draw_mean_out[row] = draws.row(row).sum() / n;
         grad_mean_out[row] = grads.row(row).sum() / n;
+
+        // Center the rescaled draws and grads
+        let dm = draw_mean_out[row];
+        draws.row_mut(row).iter_mut().for_each(|v| *v -= dm);
+        let gm = grad_mean_out[row];
+        grads.row_mut(row).iter_mut().for_each(|v| *v -= gm);
     }
 
     (stds, mu, draw_mean_out, grad_mean_out)
