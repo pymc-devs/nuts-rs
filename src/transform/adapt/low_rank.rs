@@ -2,7 +2,11 @@
 
 use std::collections::VecDeque;
 
-use faer::{Col, ColRef, Mat, Scale};
+use faer::{
+    Col, ColRef, Mat, Scale,
+    dyn_stack::{MemBuffer, MemStack},
+    matrix_free::{BiPrecond, Precond},
+};
 use itertools::Itertools;
 
 use crate::{
@@ -62,19 +66,20 @@ impl LowRankMassMatrixStrategy {
             grads.col_as_slice_mut(i).copy_from_slice(&grad[..]);
         }
 
-        let Some((stds, mean, vals, vecs)) = self.compute_update(draws, grads) else {
+        let Some((stds, mean, vals, vecs, mean_low_rank)) = self.compute_update(draws, grads)
+        else {
             return;
         };
 
-        matrix.update(math, stds, mean, vals, vecs);
+        matrix.update(math, stds, mean, vals, vecs, mean_low_rank);
     }
 
     fn compute_update(
         &self,
         mut draws: Mat<f64>,
         mut grads: Mat<f64>,
-    ) -> Option<(Col<f64>, Col<f64>, Col<f64>, Mat<f64>)> {
-        let (stds, mean) = rescale_points(&mut draws, &mut grads);
+    ) -> Option<(Col<f64>, Col<f64>, Col<f64>, Mat<f64>, Col<f64>)> {
+        let (stds, mean, draw_mean, grad_mean) = rescale_points(&mut draws, &mut grads);
 
         let svd_draws = draws.thin_svd().ok()?;
         let svd_grads = grads.thin_svd().ok()?;
@@ -107,24 +112,48 @@ impl LowRankMassMatrixStrategy {
             .for_each(|(mut col, src)| col.copy_from(src));
 
         let vecs = subspace_basis * vecs;
-        Some((stds, mean, vals, vecs))
+
+        let mut vals_m1 = vals.cloned();
+        vals_m1.iter_mut().for_each(|x| *x -= 1.0);
+        let vals_m1 = vals_m1.into_diagonal();
+
+        let par = faer::Par::Seq;
+        let req1 = vecs.apply_in_place_scratch(1, par);
+        let req2 = vals_m1.apply_in_place_scratch(1, par);
+        let req3 = vecs.transpose_apply_in_place_scratch(1, par);
+        let mut buf = MemBuffer::new(req1.or(req2).or(req3));
+        let stack = MemStack::new(&mut buf);
+        let mut grad_mean_trafo = grad_mean.clone();
+        vecs.transpose_apply_in_place(grad_mean_trafo.as_mat_mut(), par, stack);
+        vals_m1.apply_in_place(grad_mean_trafo.as_mat_mut(), par, stack);
+        vecs.apply_in_place(grad_mean_trafo.as_mat_mut(), par, stack);
+        let mu = draw_mean + grad_mean + grad_mean_trafo;
+
+        Some((stds, mean, vals, vecs, mu))
     }
 }
 
 /// Centre and rescale draws and gradients in-place.
 ///
-/// Returns `(stds, mean)` where
+/// Returns `(stds, mu, draw_mean, grad_mean)` where
 ///   `stds[i] = sqrt(sqrt(var(x_i) / var(α_i)))`  — diagonal scale σ
-///   `mean[i] = x̄_i + σᵢ² · ᾱᵢ`             — optimal translation μ*
+///   `mu[i] = x̄_i + σᵢ² · ᾱᵢ`             — optimal translation μ*
 ///
-/// After this call each column of `draws` holds `(xᵢ − x̄) / (σ · n)`
-/// and each column of `grads` holds `(αᵢ − ᾱ) · σ / n`.
-fn rescale_points(draws: &mut Mat<f64>, grads: &mut Mat<f64>) -> (Col<f64>, Col<f64>) {
+/// After this call each column of `draws` holds `(x_i − mean[i]) / σ_i`
+/// and each column of `grads` holds `α_i · σ`.
+///
+/// draw_mean and grad_mean are the means of the new draws and grads.
+fn rescale_points(
+    draws: &mut Mat<f64>,
+    grads: &mut Mat<f64>,
+) -> (Col<f64>, Col<f64>, Col<f64>, Col<f64>) {
     let (ndim, ndraws) = draws.shape();
     let n = ndraws as f64;
 
     let mut stds = Col::zeros(ndim);
-    let mut mean = Col::zeros(ndim);
+    let mut mu = Col::zeros(ndim);
+    let mut draw_mean_out = Col::zeros(ndim);
+    let mut grad_mean_out = Col::zeros(ndim);
 
     for row in 0..ndim {
         let draw_mean = draws.row(row).sum() / n;
@@ -146,23 +175,27 @@ fn rescale_points(draws: &mut Mat<f64>, grads: &mut Mat<f64>) -> (Col<f64>, Col<
         let sigma = (draw_var / grad_var).sqrt().sqrt();
 
         // μ* = x̄ + σ² · ᾱ
-        mean[row] = draw_mean + sigma * sigma * grad_mean;
+        mu[row] = draw_mean + sigma * sigma * grad_mean;
         stds[row] = sigma;
 
-        let draw_scale = (sigma * n).recip();
+        let draw_scale = sigma.recip();
         draws
             .row_mut(row)
             .iter_mut()
-            .for_each(|v| *v = (*v - draw_mean) * draw_scale);
+            .for_each(|v| *v = (*v - mu[row]) * draw_scale);
 
-        let grad_scale = sigma / n;
+        let grad_scale = sigma;
         grads
             .row_mut(row)
             .iter_mut()
-            .for_each(|v| *v = (*v - grad_mean) * grad_scale);
+            .for_each(|v| *v = (*v) * grad_scale);
+
+        // Compute means of the rescaled draws and grads
+        draw_mean_out[row] = draws.row(row).sum() / n;
+        grad_mean_out[row] = grads.row(row).sum() / n;
     }
 
-    (stds, mean)
+    (stds, mu, draw_mean_out, grad_mean_out)
 }
 
 fn estimate_mass_matrix(

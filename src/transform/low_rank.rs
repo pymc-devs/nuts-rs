@@ -35,6 +35,7 @@ struct InnerMatrix<M: Math> {
     /// -½ Σ log(λᵢ) — low-rank contribution to log|det J_{F⁻¹}|, precomputed
     /// so we never need to pull eigenvalues back from a device (e.g. GPU).
     logdet_contribution: f64,
+    mu: M::Vector,
     num_eigenvalues: u64,
 }
 
@@ -46,12 +47,13 @@ impl<M: Math> Debug for InnerMatrix<M> {
             .field("vals_sqrt_inv", &"<inv sqrt eig values>")
             .field("logdet_contribution", &self.logdet_contribution)
             .field("num_eigenvalues", &self.num_eigenvalues)
+            .field("mu", &self.mu)
             .finish()
     }
 }
 
 impl<M: Math> InnerMatrix<M> {
-    fn new(math: &mut M, mut vals: Col<f64>, vecs: Mat<f64>) -> Self {
+    fn new(math: &mut M, mut vals: Col<f64>, vecs: Mat<f64>, mu: Col<f64>) -> Self {
         // Precompute -½ Σ log(λᵢ) while vals still holds the raw eigenvalues.
         let logdet_contribution: f64 = vals.iter().map(|&v| -0.5 * v.ln()).sum();
         let num_eigenvalues = vals.nrows() as u64;
@@ -69,11 +71,18 @@ impl<M: Math> InnerMatrix<M> {
         vals.iter_mut().for_each(|x| *x = x.recip());
         let vals_sqrt_inv = math.new_eig_values(vals.try_as_col_major().unwrap().as_slice());
 
+        let mu = {
+            let mut array = math.new_array();
+            math.read_from_slice(&mut array, mu.try_as_col_major().unwrap().as_slice());
+            array
+        };
+
         Self {
             vecs,
             vals_sqrt,
             vals_sqrt_inv,
             logdet_contribution,
+            mu,
             num_eigenvalues,
         }
     }
@@ -159,6 +168,7 @@ impl<M: Math> LowRankMassMatrix<M> {
         mean: Col<f64>,
         vals: Col<f64>,
         vecs: Mat<f64>,
+        mean_low_rank: Col<f64>,
     ) {
         if (!col_all_finite(&stds.as_ref())) | (!col_all_finite(&mean.as_ref())) {
             return;
@@ -173,7 +183,7 @@ impl<M: Math> LowRankMassMatrix<M> {
         math.read_from_slice(&mut mean_array, mean.try_as_col_major().unwrap().as_slice());
         self.diag.set_transform(math, &stds_array, &mean_array);
 
-        let inner = InnerMatrix::new(math, vals, vecs);
+        let inner = InnerMatrix::new(math, vals, vecs, mean_low_rank);
         self.logdet = inner.logdet() + self.diag.logdet();
         self.inner = Some(inner);
         self.id += 1;
