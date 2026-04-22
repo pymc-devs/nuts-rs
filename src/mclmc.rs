@@ -575,7 +575,7 @@ mod tests {
     use rand::rng;
 
     use crate::{
-        Chain, DiagMclmcSettings, MclmcSettings, adapt_strategy::test_logps::NormalLogp,
+        Chain, DiagMclmcSettings, MclmcSettings, math::test_logps::NormalLogp,
         math::CpuMath, sampler::Settings,
     };
 

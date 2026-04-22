@@ -402,3 +402,133 @@ impl<M: Math> LowRankMassMatrix<M> {
         self.logdet
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use faer::{Col, Mat};
+
+    use crate::Math;
+    use crate::math::CpuMath;
+    use crate::math::test_logps::NormalLogp;
+
+    use super::{LowRankMassMatrix, LowRankSettings};
+
+    fn make_math(dim: usize) -> CpuMath<NormalLogp> {
+        CpuMath::new(NormalLogp::new(dim, 0.0))
+    }
+
+    fn assert_close(a: &[f64], b: &[f64], tol: f64) {
+        assert_eq!(a.len(), b.len());
+        for (i, (ai, bi)) in a.iter().zip(b.iter()).enumerate() {
+            assert!(
+                (ai - bi).abs() <= tol,
+                "index {i}: {ai} vs {bi} (tol {tol})"
+            );
+        }
+    }
+
+    fn read_vec(math: &mut CpuMath<NormalLogp>, v: &Col<f64>) -> Vec<f64> {
+        let mut out = vec![0f64; math.dim()];
+        math.write_to_slice(v, &mut out);
+        out
+    }
+
+    /// diagonal-only: compute_transformed_position ∘ compute_untransformed_position = id
+    #[test]
+    fn test_diagonal_round_trip() {
+        let mut math = make_math(3);
+        let stds = Col::from_fn(3, |i| [1.0f64, 2.0, 3.0][i]);
+        let mean = Col::from_fn(3, |i| [0.5f64, -1.0, 2.0][i]);
+        let vals = Col::zeros(0);
+        let vecs = Mat::zeros(3, 0);
+        let mu = Col::zeros(3);
+        let mut mass = LowRankMassMatrix::new(&mut math, LowRankSettings::default());
+        mass.update(&mut math, stds, mean, vals, vecs, mu);
+
+        let x_orig = [1.5f64, -0.3, 4.2];
+        let mut untransformed = math.new_array();
+        let mut transformed = math.new_array();
+        let mut recovered = math.new_array();
+        math.read_from_slice(&mut untransformed, &x_orig);
+
+        mass.compute_transformed_position(&mut math, &untransformed, &mut transformed);
+        mass.compute_untransformed_position(&mut math, &transformed, &mut recovered);
+
+        assert_close(&read_vec(&mut math, &recovered), &x_orig, 1e-12);
+    }
+
+    /// diagonal-only: compute_untransformed_position ∘ compute_transformed_position = id
+    #[test]
+    fn test_diagonal_round_trip_reverse() {
+        let mut math = make_math(3);
+        let stds = Col::from_fn(3, |i| [1.0f64, 2.0, 3.0][i]);
+        let mean = Col::from_fn(3, |i| [0.5f64, -1.0, 2.0][i]);
+        let vals = Col::zeros(0);
+        let vecs = Mat::zeros(3, 0);
+        let mu = Col::zeros(3);
+        let mut mass = LowRankMassMatrix::new(&mut math, LowRankSettings::default());
+        mass.update(&mut math, stds, mean, vals, vecs, mu);
+
+        let z_orig = [0.7f64, -1.1, 0.3];
+        let mut transformed = math.new_array();
+        let mut untransformed = math.new_array();
+        let mut recovered = math.new_array();
+        math.read_from_slice(&mut transformed, &z_orig);
+
+        mass.compute_untransformed_position(&mut math, &transformed, &mut untransformed);
+        mass.compute_transformed_position(&mut math, &untransformed, &mut recovered);
+
+        assert_close(&read_vec(&mut math, &recovered), &z_orig, 1e-12);
+    }
+
+    /// low-rank: compute_transformed_position ∘ compute_untransformed_position = id
+    #[test]
+    fn test_lowrank_round_trip() {
+        let mut math = make_math(3);
+        // rank-1 correction along e_1 with eigenvalue 4
+        let stds = Col::full(3, 1.0f64);
+        let mean = Col::from_fn(3, |i| [1.0f64, -0.5, 0.0][i]);
+        let vals = faer::col![4.0f64];
+        let mut vecs = Mat::zeros(3, 1);
+        vecs[(0, 0)] = 1.0;
+        let mu = Col::from_fn(3, |i| [0.2f64, -0.1, 0.0][i]);
+        let mut mass = LowRankMassMatrix::new(&mut math, LowRankSettings::default());
+        mass.update(&mut math, stds, mean, vals, vecs, mu);
+
+        let x_orig = [2.0f64, 0.5, -1.3];
+        let mut untransformed = math.new_array();
+        let mut transformed = math.new_array();
+        let mut recovered = math.new_array();
+        math.read_from_slice(&mut untransformed, &x_orig);
+
+        mass.compute_transformed_position(&mut math, &untransformed, &mut transformed);
+        mass.compute_untransformed_position(&mut math, &transformed, &mut recovered);
+
+        assert_close(&read_vec(&mut math, &recovered), &x_orig, 1e-12);
+    }
+
+    /// low-rank: compute_untransformed_position ∘ compute_transformed_position = id
+    #[test]
+    fn test_lowrank_round_trip_reverse() {
+        let mut math = make_math(3);
+        let stds = Col::full(3, 1.0f64);
+        let mean = Col::from_fn(3, |i| [1.0f64, -0.5, 0.0][i]);
+        let vals = faer::col![4.0f64];
+        let mut vecs = Mat::zeros(3, 1);
+        vecs[(0, 0)] = 1.0;
+        let mu = Col::from_fn(3, |i| [0.2f64, -0.1, 0.0][i]);
+        let mut mass = LowRankMassMatrix::new(&mut math, LowRankSettings::default());
+        mass.update(&mut math, stds, mean, vals, vecs, mu);
+
+        let z_orig = [1.0f64, -0.3, 0.8];
+        let mut transformed = math.new_array();
+        let mut untransformed = math.new_array();
+        let mut recovered = math.new_array();
+        math.read_from_slice(&mut transformed, &z_orig);
+
+        mass.compute_untransformed_position(&mut math, &transformed, &mut untransformed);
+        mass.compute_transformed_position(&mut math, &untransformed, &mut recovered);
+
+        assert_close(&read_vec(&mut math, &recovered), &z_orig, 1e-12);
+    }
+}

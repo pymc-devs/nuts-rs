@@ -350,80 +350,9 @@ where
 }
 
 #[cfg(test)]
-pub mod test_logps {
-    use std::collections::HashMap;
-
-    use crate::math::{CpuLogpFunc, LogpError};
-    use nuts_storable::HasDims;
-    use thiserror::Error;
-
-    #[derive(Clone, Debug)]
-    pub struct NormalLogp {
-        dim: usize,
-        mu: f64,
-    }
-
-    impl NormalLogp {
-        pub(crate) fn new(dim: usize, mu: f64) -> NormalLogp {
-            NormalLogp { dim, mu }
-        }
-    }
-
-    #[derive(Error, Debug)]
-    pub enum NormalLogpError {}
-
-    impl LogpError for NormalLogpError {
-        fn is_recoverable(&self) -> bool {
-            false
-        }
-    }
-
-    impl HasDims for NormalLogp {
-        fn dim_sizes(&self) -> HashMap<String, u64> {
-            vec![("unconstrained_parameter".to_string(), self.dim as u64)]
-                .into_iter()
-                .collect()
-        }
-    }
-
-    impl CpuLogpFunc for NormalLogp {
-        type LogpError = NormalLogpError;
-        type FlowParameters = ();
-        type ExpandedVector = Vec<f64>;
-
-        fn dim(&self) -> usize {
-            self.dim
-        }
-        fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, NormalLogpError> {
-            let n = position.len();
-            assert!(gradient.len() == n);
-
-            let mut logp = 0f64;
-            for (p, g) in position.iter().zip(gradient.iter_mut()) {
-                let val = *p - self.mu;
-                logp -= val * val / 2.;
-                *g = -val;
-            }
-            Ok(logp)
-        }
-
-        fn expand_vector<R>(
-            &mut self,
-            _rng: &mut R,
-            array: &[f64],
-        ) -> Result<Self::ExpandedVector, crate::math::CpuMathError>
-        where
-            R: rand::Rng + ?Sized,
-        {
-            Ok(array.to_vec())
-        }
-    }
-}
-
-#[cfg(test)]
 mod test {
-    use super::test_logps::NormalLogp;
     use super::*;
+    use crate::math::test_logps::NormalLogp;
     use crate::{
         Chain, DiagAdaptExpSettings,
         chain::{NutsChain, StatOptions},
