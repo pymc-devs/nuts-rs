@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.1] - 2026-04-23
+
+### Bug Fixes
+
+- Low_rank transform should fix the mean (Adrian Seyboldt)
+
+- Correctly handle mean of low_rank transform (Adrian Seyboldt)
+
+- Add proptest regression (Adrian Seyboldt)
+
+
+### Features
+
+- Add wasm32-unknown-unknown support (habakan)
+
+
+### Miscellaneous Tasks
+
+- Delete useless example (Adrian Seyboldt)
+
+
+### Testing
+
+- Add correlated normal test (Adrian Seyboldt)
+
+- Verify mvnormal can be fit exactly (Adrian Seyboldt)
+
+- Unify testing density (Adrian Seyboldt)
+
+
 ## [0.18.0] - 2026-04-20
 
 ### Bug Fixes
@@ -281,6 +311,8 @@ All notable changes to this project will be documented in this file.
 
 ### Miscellaneous Tasks
 
+- Chore (release): Prepare release (Adrian Seyboldt)
+
 - Update pulp (Adrian Seyboldt)
 
 - Update multiversion (Adrian Seyboldt)
@@ -484,6 +516,10 @@ All notable changes to this project will be documented in this file.
 
 - Formatting fix (Adrian Seyboldt)
 
+
+## [0.5.0] - 2023-06-29
+
+## [0.4.1] - 2023-01-02
 
 ## [0.2.1] - 2022-07-20
 
