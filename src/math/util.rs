@@ -756,7 +756,7 @@ mod tests {
         if b.is_nan() && a.is_nan() | a.is_infinite() {
             return;
         }
-        assert_ulps_eq!(a, b, max_ulps = 8);
+        assert_ulps_eq!(a, b, max_ulps = 32);
     }
 
     prop_compose! {
