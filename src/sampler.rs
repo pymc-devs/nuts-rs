@@ -44,7 +44,10 @@ use crate::{
 };
 
 #[cfg(feature = "parallel")]
-use crate::{model::Model, storage::{ChainStorage, StorageConfig, TraceStorage}};
+use crate::{
+    model::Model,
+    storage::{ChainStorage, StorageConfig, TraceStorage},
+};
 
 /// All sampler configurations implement this trait
 pub trait Settings:
@@ -1550,26 +1553,20 @@ impl<F: Send + 'static> Sampler<F> {
 
 #[cfg(test)]
 pub mod test_logps {
-    #[cfg(feature = "zarr")]
     use crate::{Model, math::CpuLogpFunc, math::CpuMath};
-    #[cfg(feature = "zarr")]
     use anyhow::Result;
-    #[cfg(feature = "zarr")]
     use rand::Rng;
 
-    #[cfg(feature = "zarr")]
     pub struct CpuModel<F> {
         logp: F,
     }
 
-    #[cfg(feature = "zarr")]
     impl<F> CpuModel<F> {
         pub fn new(logp: F) -> Self {
             Self { logp }
         }
     }
 
-    #[cfg(feature = "zarr")]
     impl<F> Model for CpuModel<F>
     where
         F: Send + Sync + 'static,

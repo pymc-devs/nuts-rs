@@ -255,7 +255,7 @@ fn main() -> Result<()> {
     let start = Instant::now();
 
     // Configure Arrow storage - it automatically determines capacity from settings
-    let arrow_config = ArrowConfig::new();
+    let arrow_config = ArrowConfig::default();
 
     // Create sampler with 4 worker threads
     // The sampler runs asynchronously, so we can monitor progress
