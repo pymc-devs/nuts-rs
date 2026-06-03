@@ -299,6 +299,7 @@ pub struct ArrowTraceStorage {
     draw_dim_sizes: HashMap<String, u64>,
     stat_event_dims: Vec<Option<String>>,
     expected_draws: usize,
+    store_warmup: bool,
 }
 
 /// Per-chain storage for Arrow MCMC traces
@@ -313,6 +314,7 @@ pub struct ArrowChainStorage {
     draw_dim_sizes: HashMap<String, u64>,
     stat_event_dims: Vec<Option<String>>,
     draw_count: usize,
+    store_warmup: bool,
 }
 
 /// Final result containing Arrow record batches
@@ -332,6 +334,7 @@ impl ArrowChainStorage {
         stat_dim_sizes: &HashMap<String, u64>,
         draw_dim_sizes: &HashMap<String, u64>,
         stat_event_dims: &[Option<String>],
+        store_warmup: bool,
     ) -> Result<Self> {
         let draw_builders = draw_types
             .iter()
@@ -398,6 +401,7 @@ impl ArrowChainStorage {
             draw_dim_sizes: draw_dim_sizes.clone(),
             stat_event_dims: stat_event_dims.to_vec(),
             draw_count: 0,
+            store_warmup,
         })
     }
 
@@ -466,8 +470,12 @@ impl ChainStorage for ArrowChainStorage {
         _settings: &impl Settings,
         stats: Vec<(&str, Option<Value>)>,
         draws: Vec<(&str, Option<Value>)>,
-        _info: &Progress,
+        info: &Progress,
     ) -> Result<()> {
+        if (!self.store_warmup) & info.tuning {
+            return Ok(());
+        }
+
         stats
             .into_iter()
             .zip(self.stats_builders.iter_mut())
@@ -582,18 +590,14 @@ impl ChainStorage for ArrowChainStorage {
 /// with other Arrow-based tools. Multi-dimensional parameters
 /// are stored as Arrow LargeList arrays with custom metadata containing
 /// dimension names.
-pub struct ArrowConfig {}
-
-impl ArrowConfig {
-    /// Create a new Arrow configuration.
-    pub fn new() -> Self {
-        Self {}
-    }
+#[non_exhaustive]
+pub struct ArrowConfig {
+    pub store_warmup: bool,
 }
 
 impl Default for ArrowConfig {
     fn default() -> Self {
-        Self::new()
+        Self { store_warmup: true }
     }
 }
 
@@ -613,8 +617,13 @@ impl StorageConfig for ArrowConfig {
             .map(|(_, ev)| ev)
             .collect();
 
-        // Calculate expected total draws (warmup + sampling)
-        let expected_draws = (settings.hint_num_tune() + settings.hint_num_draws()) as usize;
+        let expected_draws = if self.store_warmup {
+            settings.hint_num_tune() + settings.hint_num_draws()
+        } else {
+            settings.hint_num_draws()
+        }
+        .try_into()
+        .unwrap();
 
         Ok(ArrowTraceStorage {
             stat_types,
@@ -625,6 +634,7 @@ impl StorageConfig for ArrowConfig {
             draw_dim_sizes,
             stat_event_dims,
             expected_draws,
+            store_warmup: self.store_warmup,
         })
     }
 }
@@ -643,6 +653,7 @@ impl TraceStorage for ArrowTraceStorage {
             &self.stat_dim_sizes,
             &self.draw_dim_sizes,
             &self.stat_event_dims,
+            self.store_warmup,
         )
     }
 
@@ -685,5 +696,52 @@ impl TraceStorage for ArrowTraceStorage {
             }
         }
         Ok((first_error, results))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{default::Default, time::Duration};
+
+    use crate::{
+        ArrowConfig, DiagNutsSettings, Sampler, SamplerWaitResult, math::test_logps::NormalLogp,
+        sampler::test_logps::CpuModel,
+    };
+
+    #[test]
+    fn store_warmup() {
+        let settings = DiagNutsSettings {
+            num_chains: 1,
+            num_draws: 7,
+            num_tune: 11,
+            ..Default::default()
+        };
+
+        for store in [true, false] {
+            let conf = ArrowConfig {
+                store_warmup: store,
+                ..Default::default()
+            };
+            let logp = NormalLogp::new(13, 4.0);
+            let model = CpuModel::new(logp);
+            let sampler = Sampler::new(model, settings, conf, 1, None).unwrap();
+
+            let SamplerWaitResult::Trace(mut trace) = sampler.wait_timeout(Duration::from_secs(5))
+            else {
+                panic!("failed to sample")
+            };
+
+            let mut chains = trace.drain(..);
+            let chain = chains.next().unwrap();
+            assert!(matches!(chains.next(), None));
+
+            if store {
+                assert!(chain.posterior.num_rows() == 18);
+                assert!(chain.sample_stats.num_rows() == 18);
+            } else {
+                assert!(chain.posterior.num_rows() == 7);
+                assert!(chain.sample_stats.num_rows() == 7);
+            }
+        }
     }
 }
