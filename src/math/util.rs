@@ -848,7 +848,7 @@ mod tests {
             // Reference: verbatim translation of the original faer::zip! scalar code
             let mut vel_out_ref = vec![0f64; pos.len()];
             izip!(pos.iter(), grad.iter(), vel.iter(), vel_out_ref.iter_mut()).for_each(|(&p, &g, &v, v_out)| {
-                *v_out = v + epsilon * (p + g);
+                *v_out = epsilon.mul_add(p + g, v);
             });
 
             for (vo_simd, vo_ref) in vel_out_simd.iter().zip(vel_out_ref.iter()) {
@@ -868,7 +868,7 @@ mod tests {
             // Reference: verbatim translation of the original faer::zip! scalar code
             let mut vel_ref = vel.clone();
             izip!(pos.iter(), grad.iter(), vel_ref.iter_mut()).for_each(|(&p, &g, v)| {
-                *v = *v + epsilon * (p + g);
+                *v = epsilon.mul_add(p + g, *v);
             });
 
             for (vi_simd, vi_ref) in vel_simd.iter().zip(vel_ref.iter()) {
