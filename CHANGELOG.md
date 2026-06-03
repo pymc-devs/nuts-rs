@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.2] - 2026-06-03
+
+### Features
+
+- Add store_warmup option for arrow (Adrian Seyboldt)
+
+
 ## [0.18.1] - 2026-04-23
 
 ### Bug Fixes
