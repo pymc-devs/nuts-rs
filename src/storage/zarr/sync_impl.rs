@@ -475,14 +475,16 @@ impl StorageConfig for ZarrConfig {
             .filter_map(|(name, opt)| opt.as_ref().map(|d| (name.clone(), d.clone())))
             .collect();
 
-        let mut group_path = self.group_path.unwrap_or_else(|| "".to_string());
-        if !group_path.ends_with('/') {
-            group_path.push('/');
-        }
+        let mut group_path = self.group_path.unwrap_or_else(|| "/".to_string());
+
         let store = self.store;
         let draw_chunk_size = self.draw_chunk_size;
 
         let mut root = GroupBuilder::new().build(store.clone(), &group_path)?;
+
+        if !group_path.ends_with('/') {
+            group_path.push('/');
+        }
 
         let attrs = root.attributes_mut();
         attrs.insert(
