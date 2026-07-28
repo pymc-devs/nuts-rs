@@ -18,6 +18,20 @@ pub(crate) fn logaddexp(a: f64, b: f64) -> f64 {
     }
 }
 
+pub(crate) const NORM_TOLERANCE: f64 = 1e-13;
+
+/// Scale `v` to unit L2 norm. A vector whose norm falls below [`NORM_TOLERANCE`] is left
+/// unchanged rather than divided by a near-zero norm, which would yield NaN.
+pub(crate) fn normalize_unit_inplace(v: &mut [f64]) {
+    let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if norm > NORM_TOLERANCE {
+        let inv = 1.0 / norm;
+        for x in v.iter_mut() {
+            *x *= inv;
+        }
+    }
+}
+
 struct Multiply<'a> {
     x: &'a [f64],
     y: &'a [f64],

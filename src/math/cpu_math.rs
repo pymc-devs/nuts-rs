@@ -15,8 +15,8 @@ use crate::math::util::multiply_inplace;
 use super::{
     math::{LogpError, Math},
     util::{
-        axpy, axpy_out, multiply, scalar_prods2, scalar_prods3, std_norm_flow, std_norm_grad_flow,
-        std_norm_grad_flow_inplace, vector_dot,
+        NORM_TOLERANCE, axpy, axpy_out, multiply, normalize_unit_inplace, scalar_prods2,
+        scalar_prods3, std_norm_flow, std_norm_grad_flow, std_norm_grad_flow_inplace, vector_dot,
     },
 };
 
@@ -494,12 +494,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
     }
 
     fn array_normalize(&mut self, v: &mut Self::Vector) {
-        let v = v.try_as_col_major_mut().unwrap().as_slice_mut();
-        let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
-        let inv = 1.0 / norm;
-        for x in v.iter_mut() {
-            *x *= inv;
-        }
+        normalize_unit_inplace(v.try_as_col_major_mut().unwrap().as_slice_mut());
     }
 
     fn esh_momentum_update(
@@ -516,7 +511,13 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         // ‖g‖
         let grad_norm: f64 = gradient.iter().map(|g| g * g).sum::<f64>().sqrt();
 
-        let inv_grad_norm = 1.0 / grad_norm;
+        // An underflowed gradient at the mode: factor 1.0 leaves the direction unnormalized
+        // rather than dividing by a near-zero norm.
+        let inv_grad_norm = if grad_norm > NORM_TOLERANCE {
+            1.0 / grad_norm
+        } else {
+            1.0
+        };
 
         // α = p · ĝ
         let momentum_proj: f64 = momentum
@@ -537,12 +538,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
             *p = coeff_g * (g * inv_grad_norm) + coeff_p * *p;
         }
 
-        // Renormalise to unit sphere.
-        let raw_norm: f64 = momentum.iter().map(|p| p * p).sum::<f64>().sqrt();
-        let inv = 1.0 / raw_norm;
-        for p in momentum.iter_mut() {
-            *p *= inv;
-        }
+        normalize_unit_inplace(momentum);
 
         let arg = momentum_proj + (1.0 - momentum_proj) * zeta * zeta;
         let kinetic_energy_change = (delta - std::f64::consts::LN_2 + arg.ln_1p()) * dims_m1;
@@ -975,6 +971,58 @@ impl<M: CpuLogpFunc + Clone> Clone for CpuMath<M> {
             logp_func: self.logp_func.clone(),
             arch: self.arch,
             lowrank_scratch: Col::zeros(self.lowrank_scratch.nrows()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::math::test_logps::NormalLogp;
+    use crate::math::{CpuMath, Math};
+
+    #[test]
+    fn esh_momentum_update_is_stable_at_the_mode() {
+        // At a mode the gradient is ~0, so there is no force to rotate the velocity: the kick
+        // must leave the unit momentum unchanged and add no kinetic energy, rather than dividing
+        // by the near-zero gradient norm and producing NaN.
+        let unit_momentum = [1.0, 0.0, 0.0, 0.0, 0.0];
+        let mut math = CpuMath::new(NormalLogp::new(unit_momentum.len(), 0.0));
+        let mut gradient = math.new_array();
+        let mut momentum = math.new_array();
+        math.fill_array(&mut gradient, 0.0);
+        math.read_from_slice(&mut momentum, &unit_momentum);
+
+        let ke_change = math.esh_momentum_update(&gradient, &mut momentum, 0.5);
+
+        assert!(
+            ke_change.abs() < 1e-12,
+            "expected zero energy change at the mode, got {ke_change}"
+        );
+        for (i, (&got, &want)) in math
+            .box_array(&momentum)
+            .iter()
+            .zip(&unit_momentum)
+            .enumerate()
+        {
+            assert!(
+                (got - want).abs() < 1e-12,
+                "momentum[{i}] moved at the mode: {got} != {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn array_normalize_leaves_sub_tolerance_vector_unchanged() {
+        // A vector whose norm underflows must be left as-is, not divided by ~0 into NaN.
+        let mut math = CpuMath::new(NormalLogp::new(4, 0.0));
+        let mut v = math.new_array();
+        math.fill_array(&mut v, 0.0);
+        math.array_normalize(&mut v);
+        for (i, x) in math.box_array(&v).iter().enumerate() {
+            assert_eq!(
+                *x, 0.0,
+                "zero vector must survive normalize unchanged, got v[{i}] = {x}"
+            );
         }
     }
 }
