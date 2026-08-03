@@ -98,6 +98,7 @@ pub struct PointStats {
     pub index_in_trajectory: i64,
     pub logp: f64,
     pub energy: f64,
+    pub kinetic_energy: f64,
     pub energy_error: f64,
     #[storable(dims("unconstrained_parameter"))]
     pub unconstrained_draw: Option<Vec<f64>>,
@@ -145,6 +146,7 @@ impl<M: Math> SamplerStats<M> for TransformedPoint<M> {
             index_in_trajectory: self.index_in_trajectory,
             logp: self.logp,
             energy: self.energy(),
+            kinetic_energy: self.kinetic_energy,
             energy_error: self.energy_error(),
             unconstrained_draw,
             gradient,
@@ -165,6 +167,7 @@ impl<M: Math> TransformedPoint<M> {
         epsilon: f64,
         kind: KineticEnergyKind,
     ) {
+        assert!(self.transform_id == out.transform_id);
         match kind {
             KineticEnergyKind::ExactNormal => {
                 math.std_norm_grad_flow(
@@ -200,6 +203,7 @@ impl<M: Math> TransformedPoint<M> {
 
     /// Position (and, for geodesic integrators, simultaneous velocity) step.
     fn position_step(&self, math: &mut M, out: &mut Self, epsilon: f64, kind: KineticEnergyKind) {
+        assert!(self.transform_id == out.transform_id);
         match kind {
             //   q' =  q cos ε + v sin ε
             //   v' = −q sin ε + v cos ε
@@ -579,11 +583,15 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
             let div_info = DivergenceInfo {
                 logp_function_error: Some(Arc::new(Box::new(logp_error))),
                 start_location: Some(math.box_array(start.point().position())),
+                start_location_transformed: Some(
+                    math.box_array(&start.point().transformed_position),
+                ),
                 start_gradient: Some(math.box_array(start.point().gradient())),
-                start_momentum: None,
-                end_location: None,
+                start_momentum: Some(math.box_array(&start.point().velocity)),
+                end_location: Some(math.box_array(out_point.position())),
+                end_location_transformed: Some(math.box_array(&out_point.transformed_position)),
                 start_idx_in_trajectory: Some(start.point().index_in_trajectory()),
-                end_idx_in_trajectory: None,
+                end_idx_in_trajectory: Some(out_point.index_in_trajectory),
                 energy_error: None,
             };
             collector.register_leapfrog(math, start, &out, Some(&div_info));
@@ -611,9 +619,13 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
             let divergence_info = DivergenceInfo {
                 logp_function_error: None,
                 start_location: Some(math.box_array(start.point().position())),
+                start_location_transformed: Some(
+                    math.box_array(&start.point().transformed_position),
+                ),
                 start_gradient: Some(math.box_array(start.point().gradient())),
                 end_location: Some(math.box_array(out_point.position())),
-                start_momentum: None,
+                end_location_transformed: Some(math.box_array(&out_point.transformed_position)),
+                start_momentum: Some(math.box_array(&start.point().velocity)),
                 start_idx_in_trajectory: Some(start.index_in_trajectory()),
                 end_idx_in_trajectory: Some(out.index_in_trajectory()),
                 energy_error: Some(energy_error),
