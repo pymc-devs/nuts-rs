@@ -119,11 +119,12 @@ impl Strategy {
             &mut collector,
         );
 
-        let LeapfrogResult::Ok(_) = state_next else {
-            return Ok(());
+        let accept_stat = match state_next {
+            LeapfrogResult::Ok(_) => collector.mean.current(),
+            LeapfrogResult::Divergence(_) => 0.0,
+            LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
         };
 
-        let accept_stat = collector.mean.current();
         let dir = if accept_stat > self.options.target_accept {
             Direction::Forward
         } else {
@@ -142,27 +143,21 @@ impl Strategy {
                 1000.0,
                 &mut collector,
             );
-            let LeapfrogResult::Ok(_) = state_next else {
-                *hamiltonian.step_size_mut() = self.options.initial_step;
-                return Ok(());
+            let accept_stat = match state_next {
+                LeapfrogResult::Ok(_) => collector.mean.current(),
+                LeapfrogResult::Divergence(_) => 0.0,
+                LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
             };
-            let accept_stat = collector.mean.current();
             match dir {
                 Direction::Forward => {
                     if (accept_stat <= self.options.target_accept) | (hamiltonian.step_size() > 1e5)
                     {
                         match self.adaptation.as_mut().expect("Adaptation must be set") {
                             Either::Left(adapt) => {
-                                *adapt = DualAverage::new(
-                                    self.options.adapt_options.dual_average,
-                                    hamiltonian.step_size(),
-                                );
+                                adapt.set_initial_step_size(hamiltonian.step_size());
                             }
                             Either::Right(adapt) => {
-                                *adapt = Adam::new(
-                                    self.options.adapt_options.adam,
-                                    hamiltonian.step_size(),
-                                );
+                                adapt.set_initial_step_size(hamiltonian.step_size());
                             }
                         }
                         return Ok(());
@@ -175,16 +170,10 @@ impl Strategy {
                     {
                         match self.adaptation.as_mut().expect("Adaptation must be set") {
                             Either::Left(adapt) => {
-                                *adapt = DualAverage::new(
-                                    self.options.adapt_options.dual_average,
-                                    hamiltonian.step_size(),
-                                );
+                                adapt.set_initial_step_size(hamiltonian.step_size());
                             }
                             Either::Right(adapt) => {
-                                *adapt = Adam::new(
-                                    self.options.adapt_options.adam,
-                                    hamiltonian.step_size(),
-                                );
+                                adapt.set_initial_step_size(hamiltonian.step_size());
                             }
                         }
                         return Ok(());

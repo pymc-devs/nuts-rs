@@ -78,6 +78,13 @@ impl DualAverage {
         self.mu = (bias_factor * initial_step).ln();
         self.count = 1;
     }
+
+    pub(crate) fn set_initial_step_size(&mut self, step_size: f64) {
+        assert!(step_size > 0.0);
+        self.log_step = step_size.ln();
+        self.log_step_adapted = step_size.ln();
+        self.mu = (10. * step_size).ln();
+    }
 }
 
 pub(crate) struct RunningMean {
