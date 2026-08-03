@@ -53,6 +53,7 @@ impl<M: Math> Transformation<M> for ExternalTransformation<M> {
         untransformed_gradient: &mut M::Vector,
         transformed_position: &mut M::Vector,
         transformed_gradient: &mut M::Vector,
+        clip: Option<f64>,
     ) -> Result<(f64, f64), M::LogpErr> {
         math.init_from_untransformed_position(
             &self.params,
@@ -60,6 +61,7 @@ impl<M: Math> Transformation<M> for ExternalTransformation<M> {
             untransformed_gradient,
             transformed_position,
             transformed_gradient,
+            clip,
         )
     }
 
@@ -70,6 +72,7 @@ impl<M: Math> Transformation<M> for ExternalTransformation<M> {
         untransformed_gradient: &mut M::Vector,
         transformed_position: &M::Vector,
         transformed_gradient: &mut M::Vector,
+        clip: Option<f64>,
     ) -> Result<(f64, f64), M::LogpErr> {
         math.init_from_transformed_position(
             &self.params,
@@ -77,6 +80,7 @@ impl<M: Math> Transformation<M> for ExternalTransformation<M> {
             untransformed_gradient,
             transformed_position,
             transformed_gradient,
+            clip,
         )
     }
 

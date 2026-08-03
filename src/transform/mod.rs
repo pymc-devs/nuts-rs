@@ -219,6 +219,7 @@ mod tests {
                 &mut untransformed_grad,
                 &mut transformed_pos,
                 &mut transformed_grad,
+                None,
             )
             .unwrap();
 
@@ -293,6 +294,7 @@ mod tests {
                 &mut untransformed_grad,
                 &mut transformed_pos,
                 &mut transformed_grad,
+                None,
             )
             .unwrap();
 
@@ -308,6 +310,7 @@ mod tests {
                 &mut recovered_grad,
                 &transformed_pos,
                 &mut recovered_transformed_grad,
+                None,
             )
             .unwrap();
 
@@ -368,6 +371,7 @@ mod tests {
             &mut untransformed_grad,
             &mut transformed_pos,
             &mut transformed_grad,
+            None,
         )
         .unwrap();
 
@@ -426,6 +430,7 @@ mod tests {
                 &mut untransformed_grad,
                 &mut transformed_pos,
                 &mut transformed_grad,
+                None,
             )
             .unwrap();
 
@@ -486,6 +491,7 @@ mod tests {
                 &mut untransformed_grad,
                 &mut transformed_pos,
                 &mut transformed_grad,
+                None,
             )
             .unwrap();
 
@@ -499,6 +505,7 @@ mod tests {
                 &mut recovered_grad,
                 &transformed_pos,
                 &mut recovered_transformed_grad,
+                None,
             )
             .unwrap();
 
@@ -560,6 +567,7 @@ mod tests {
                 &mut untransformed_grad,
                 &mut transformed_pos,
                 &mut transformed_grad,
+                None,
             )
             .unwrap();
 
@@ -607,6 +615,7 @@ mod tests {
             &mut recovered_grad,
             &transformed_pos,
             &mut recovered_tgrad,
+            None,
         )
         .unwrap();
         let x_rec = read_vec(&mut math, &recovered_pos);
@@ -650,6 +659,7 @@ mod tests {
             &mut untransformed_grad,
             &mut transformed_pos,
             &mut transformed_grad,
+            None,
         )
         .unwrap();
 
@@ -667,6 +677,7 @@ mod tests {
             &mut recovered_grad,
             &transformed_pos,
             &mut recovered_tgrad,
+            None,
         )
         .unwrap();
         let x_rec = read_vec(&mut math, &recovered_pos);

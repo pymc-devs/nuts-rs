@@ -392,8 +392,7 @@ mod tests {
     use rand::rng;
 
     use crate::{
-        Chain, Settings, math::test_logps::NormalLogp, math::CpuMath,
-        sampler::DiagNutsSettings,
+        Chain, Settings, math::CpuMath, math::test_logps::NormalLogp, sampler::DiagNutsSettings,
     };
 
     #[test]
