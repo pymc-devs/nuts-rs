@@ -10,7 +10,7 @@ use nuts_storable::{HasDims, Storable, Value};
 use rand::RngExt;
 use thiserror::Error;
 
-use crate::math::util::multiply_inplace;
+use crate::math::util::{multiply_inplace, softclip};
 
 use super::{
     math::{LogpError, Math},
@@ -327,6 +327,25 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
 
     fn array_recip(&mut self, array: &Self::Vector, dest: &mut Self::Vector) {
         faer::zip!(array, dest).for_each(|faer::unzip!(val, dest)| *dest = val.recip())
+    }
+
+    fn array_softclip(&mut self, array: &mut Self::Vector, clip: f64) {
+        softclip(
+            self.arch,
+            array
+                .try_as_col_major_mut()
+                .expect("Array is not contiguous")
+                .as_slice_mut(),
+            clip,
+        );
+        /*
+        array
+            .try_as_col_major_mut()
+            .expect("Array is not contiguous")
+            .as_slice_mut()
+            .iter_mut()
+            .for_each(|x| *x = clip * (*x / clip).asinh());
+            */
     }
 
     fn apply_lowrank_transform(
@@ -778,6 +797,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         untransformed_gradient: &mut Self::Vector,
         transformed_position: &mut Self::Vector,
         transformed_gradient: &mut Self::Vector,
+        clip: Option<f64>,
     ) -> Result<(f64, f64), Self::LogpErr> {
         self.logp_func.init_from_untransformed_position(
             params,
@@ -797,6 +817,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
                 .try_as_col_major_mut()
                 .unwrap()
                 .as_slice_mut(),
+            clip,
         )
     }
 
@@ -807,6 +828,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
         untransformed_gradient: &mut Self::Vector,
         transformed_position: &Self::Vector,
         transformed_gradient: &mut Self::Vector,
+        clip: Option<f64>,
     ) -> Result<(f64, f64), Self::LogpErr> {
         self.logp_func.init_from_transformed_position(
             params,
@@ -823,6 +845,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
                 .try_as_col_major_mut()
                 .unwrap()
                 .as_slice_mut(),
+            clip,
         )
     }
 
@@ -915,6 +938,7 @@ pub trait CpuLogpFunc: HasDims {
         _untransformed_gradient: &mut [f64],
         _transformed_position: &mut [f64],
         _transformed_gradient: &mut [f64],
+        _clip: Option<f64>,
     ) -> Result<(f64, f64), Self::LogpError> {
         unimplemented!()
     }
@@ -926,6 +950,7 @@ pub trait CpuLogpFunc: HasDims {
         _untransformed_gradient: &mut [f64],
         _transformed_position: &[f64],
         _transformed_gradient: &mut [f64],
+        _clip: Option<f64>,
     ) -> Result<(f64, f64), Self::LogpError> {
         unimplemented!()
     }

@@ -377,7 +377,7 @@ mod test {
         let mass_matrix = DiagMassMatrix::new(&mut math, true);
 
         let hamiltonian: TransformedHamiltonian<_, DiagMassMatrix<CpuMath<NormalLogp>>> =
-            TransformedHamiltonian::new(&mut math, mass_matrix, KineticEnergyKind::Euclidean);
+            TransformedHamiltonian::new(&mut math, mass_matrix, KineticEnergyKind::Euclidean, None);
 
         let options = NutsOptions {
             maxdepth: 10u64,

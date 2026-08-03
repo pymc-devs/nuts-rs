@@ -274,6 +274,8 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     /// be used to increase the effective sample size at the cost of more
     /// expensive sampling.
     pub extra_doublings: u64,
+    /// Soft clipping for gradients.
+    pub gradient_clipping: Option<f64>,
 }
 
 pub type DiagNutsSettings = NutsSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
@@ -353,6 +355,8 @@ pub struct MclmcSettings<A: Debug + Copy + Default + Serialize> {
     /// `trajectory_kind == MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical`.
     /// Ignored for other trajectory kinds.  Default: `0.3`.
     pub trajectory_switch_fraction: f64,
+    /// Soft clipping for gradients.
+    pub gradient_clipping: Option<f64>,
 }
 
 /// MCLMC settings with a diagonal mass matrix adaptation.
@@ -403,6 +407,7 @@ fn default_mclmc_settings<A: Debug + Copy + Default + Serialize>(
         dynamic_step_size: true,
         trajectory_kind: MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical,
         trajectory_switch_fraction: 0.3,
+        gradient_clipping: Some(1e10),
     }
 }
 
@@ -474,7 +479,12 @@ impl Settings for DiagMclmcSettings {
             MclmcTrajectoryKind::Euclidean
             | MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical => KineticEnergyKind::Euclidean,
         };
-        let mut hamiltonian = TransformedHamiltonian::new(&mut math, mass_matrix, initial_kind);
+        let mut hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            mass_matrix,
+            initial_kind,
+            self.gradient_clipping,
+        );
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
         let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
@@ -573,6 +583,7 @@ fn default_nuts_settings<A: Debug + Copy + Default + Serialize>(
         target_integration_time: None,
         trajectory_kind: KineticEnergyKind::Euclidean,
         extra_doublings: 0,
+        gradient_clipping: Some(1e10),
     }
 }
 
@@ -605,7 +616,12 @@ impl Settings for LowRankMclmcSettings {
             MclmcTrajectoryKind::Euclidean
             | MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical => KineticEnergyKind::Euclidean,
         };
-        let mut hamiltonian = TransformedHamiltonian::new(&mut math, mass_matrix, initial_kind);
+        let mut hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            mass_matrix,
+            initial_kind,
+            self.gradient_clipping,
+        );
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
         let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
@@ -728,7 +744,12 @@ impl Settings for LowRankNutsSettings {
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
         let mass_matrix = LowRankMassMatrix::new(&mut math, self.adapt_options.mass_matrix_options);
-        let hamiltonian = TransformedHamiltonian::new(&mut math, mass_matrix, self.trajectory_kind);
+        let hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            mass_matrix,
+            self.trajectory_kind,
+            self.gradient_clipping,
+        );
 
         let options = nuts_options(self);
 
@@ -816,7 +837,12 @@ impl Settings for DiagNutsSettings {
             &mut math,
             self.adapt_options.mass_matrix_options.store_mass_matrix,
         );
-        let potential = TransformedHamiltonian::new(&mut math, mass_matrix, self.trajectory_kind);
+        let potential = TransformedHamiltonian::new(
+            &mut math,
+            mass_matrix,
+            self.trajectory_kind,
+            self.gradient_clipping,
+        );
 
         let options = nuts_options(self);
 
@@ -906,7 +932,12 @@ impl Settings for FlowNutsSettings {
             .new_transformation(rng, math.dim(), chain)
             .expect("Failed to create external transformation");
         let transform = ExternalTransformation::new(params);
-        let hamiltonian = TransformedHamiltonian::new(&mut math, transform, self.trajectory_kind);
+        let hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            transform,
+            self.trajectory_kind,
+            self.gradient_clipping,
+        );
 
         let options = nuts_options(self);
 
@@ -1004,7 +1035,8 @@ impl Settings for FlowMclmcSettings {
             MclmcTrajectoryKind::Euclidean
             | MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical => KineticEnergyKind::Euclidean,
         };
-        let mut hamiltonian = TransformedHamiltonian::new(&mut math, transform, initial_kind);
+        let mut hamiltonian =
+            TransformedHamiltonian::new(&mut math, transform, initial_kind, self.gradient_clipping);
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
         let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");

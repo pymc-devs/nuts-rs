@@ -756,10 +756,58 @@ pub fn std_norm_grad_flow_inplace(
     });
 }
 
+struct SoftClip<'a> {
+    array: &'a mut [f64],
+    clip: f64,
+}
+
+impl<'a> WithSimd for SoftClip<'a> {
+    type Output = ();
+
+    #[inline(always)]
+    fn with_simd<S: pulp::Simd>(self, simd: S) -> Self::Output {
+        let Self { array, clip } = self;
+
+        let cutoff = 0.1 * clip;
+
+        let s_cutoff = simd.splat_f64s(cutoff);
+        let s_neg_cutoff = simd.splat_f64s(-0.1 * clip);
+        let empty_count = simd.first_true_m64s(pulp::bytemuck::Zeroable::zeroed());
+
+        let (head, tail) = S::as_mut_simd_f64s(array);
+
+        head.iter_mut().for_each(|p| {
+            let mask = simd.or_m64s(
+                simd.greater_than_f64s(*p, s_cutoff),
+                simd.greater_than_f64s(s_neg_cutoff, *p),
+            );
+            if simd.first_true_m64s(mask) != empty_count {
+                let lanes: &mut [f64] = pulp::bytemuck::cast_slice_mut(core::slice::from_mut(p));
+                for x in lanes.iter_mut() {
+                    if x.abs() > cutoff {
+                        *x = clip * (*x / clip).asinh();
+                    }
+                }
+            }
+        });
+        for x in tail {
+            if x.abs() > cutoff {
+                *x = clip * (*x / clip).asinh();
+            }
+        }
+    }
+}
+
+#[inline(never)]
+pub fn softclip(arch: Arch, array: &mut [f64], clip: f64) {
+    arch.dispatch(SoftClip { array, clip });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_ulps_eq;
+    use itertools::Itertools;
     use pretty_assertions::assert_eq;
     use proptest::prelude::*;
 
@@ -771,6 +819,15 @@ mod tests {
             return;
         }
         assert_ulps_eq!(a, b, max_ulps = 32);
+    }
+
+    prop_compose! {
+        fn array1(maxsize: usize) (size in 0..maxsize) (
+            vec1 in prop::collection::vec(prop::num::f64::ANY, size)
+        )
+        -> Vec<f64> {
+            vec1
+        }
     }
 
     prop_compose! {
@@ -972,6 +1029,19 @@ mod tests {
             let y = ndarray::Array1::from_vec(y);
             let expected = x.iter().zip(y.iter()).map(|(&x, &y)| x * y).sum();
             assert_approx_eq(actual, expected);
+        }
+
+        #[test]
+        fn test_softclip(x in array1(10)) {
+            let arch = pulp::Arch::default();
+            for clip in [1e10, 10f64] {
+                let expected = x.iter().map(|&x| if x.abs() > 0.1 * clip {clip * (x / clip).asinh()} else {x}).collect_vec();
+                let mut x = x.clone();
+                softclip(arch, &mut x, clip);
+                for (&x1, &x2) in x.iter().zip(expected.iter()) {
+                    assert_approx_eq(x1, x2);
+                }
+            }
         }
     }
 
