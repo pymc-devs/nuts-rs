@@ -26,8 +26,10 @@ use crate::{
 pub struct DivergenceInfo {
     pub start_momentum: Option<Box<[f64]>>,
     pub start_location: Option<Box<[f64]>>,
+    pub start_location_transformed: Option<Box<[f64]>>,
     pub start_gradient: Option<Box<[f64]>>,
     pub end_location: Option<Box<[f64]>>,
+    pub end_location_transformed: Option<Box<[f64]>>,
     pub energy_error: Option<f64>,
     pub end_idx_in_trajectory: Option<i64>,
     pub start_idx_in_trajectory: Option<i64>,
@@ -45,13 +47,19 @@ pub struct DivergenceStats {
     #[storable(event = "divergence", dims("unconstrained_parameter"))]
     pub divergence_start: Option<Vec<f64>>,
     #[storable(event = "divergence", dims("unconstrained_parameter"))]
+    pub divergence_start_transformed: Option<Vec<f64>>,
+    #[storable(event = "divergence", dims("unconstrained_parameter"))]
     pub divergence_start_gradient: Option<Vec<f64>>,
     #[storable(event = "divergence", dims("unconstrained_parameter"))]
     pub divergence_end: Option<Vec<f64>>,
     #[storable(event = "divergence", dims("unconstrained_parameter"))]
+    pub divergence_end_transformed: Option<Vec<f64>>,
+    #[storable(event = "divergence", dims("unconstrained_parameter"))]
     pub divergence_momentum: Option<Vec<f64>>,
     #[storable(event = "divergence")]
     pub divergence_energy_error: Option<f64>,
+    #[storable(event = "divergence")]
+    pub divergence_start_idx_in_trajectory: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -64,8 +72,18 @@ impl From<(Option<&DivergenceInfo>, DivergenceStatsOptions, u64)> for Divergence
         DivergenceStats {
             diverging: info.is_some(),
             divergence_draw: info.map(|_| draw),
+            divergence_start_idx_in_trajectory: info.map(|v| v.start_idx_in_trajectory).flatten(),
             divergence_start: if options.store_divergences {
                 info.and_then(|d| d.start_location.as_ref().map(|v| v.as_ref().to_vec()))
+            } else {
+                None
+            },
+            divergence_start_transformed: if options.store_divergences {
+                info.and_then(|d| {
+                    d.start_location_transformed
+                        .as_ref()
+                        .map(|v| v.as_ref().to_vec())
+                })
             } else {
                 None
             },
@@ -76,6 +94,15 @@ impl From<(Option<&DivergenceInfo>, DivergenceStatsOptions, u64)> for Divergence
             },
             divergence_end: if options.store_divergences {
                 info.and_then(|d| d.end_location.as_ref().map(|v| v.as_ref().to_vec()))
+            } else {
+                None
+            },
+            divergence_end_transformed: if options.store_divergences {
+                info.and_then(|d| {
+                    d.end_location_transformed
+                        .as_ref()
+                        .map(|v| v.as_ref().to_vec())
+                })
             } else {
                 None
             },
