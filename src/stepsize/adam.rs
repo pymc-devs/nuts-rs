@@ -109,4 +109,9 @@ impl Adam {
         self.v = 0.0;
         self.t = 0;
     }
+
+    pub(crate) fn set_initial_step_size(&mut self, step_size: f64) {
+        assert!(step_size > 0.0);
+        self.log_step = step_size.ln();
+    }
 }
