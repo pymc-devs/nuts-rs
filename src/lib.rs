@@ -128,12 +128,11 @@ pub use nuts::NutsError;
 pub use sampler::{
     ChainProgress, DiagGradNutsSettings, DiagMclmcSettings, DiagNutsSettings, FlowMclmcSettings,
     FlowNutsSettings, LowRankMclmcSettings, LowRankNutsSettings, MclmcSettings, NutsSettings,
-    Progress, Settings, TransformedMclmcSettings,
-    TransformedNutsSettings, sample_sequentially,
+    Progress, Settings, TransformedMclmcSettings, TransformedNutsSettings, sample_sequentially,
 };
 #[cfg(feature = "parallel")]
 pub use sampler::{ProgressCallback, Sampler, SamplerWaitResult};
-pub use sampler_stats::SamplerStats;
+pub use sampler_stats::{SamplerStats, StatsDims};
 
 #[allow(deprecated)]
 pub use external_adapt_strategy::{FlowSettings, TransformedSettings};
@@ -151,3 +150,6 @@ pub use storage::{NdarrayConfig, NdarrayTrace, NdarrayValue};
 
 #[cfg(feature = "arrow")]
 pub use storage::{ArrowConfig, ArrowTrace, ArrowTraceStorage};
+
+// Enable custom sequential runners to use the built-in trace backends.
+pub use storage::{ChainStorage, StorageConfig, TraceStorage};
