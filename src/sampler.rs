@@ -11,8 +11,6 @@ use std::{collections::HashMap, fmt::Debug, time::Duration};
 use anyhow::{Context, bail};
 #[cfg(feature = "parallel")]
 use itertools::Itertools;
-#[cfg(feature = "parallel")]
-use std::ops::Deref;
 
 #[cfg(feature = "parallel")]
 use rayon::{ScopeFifo, ThreadPoolBuilder};
@@ -1118,33 +1116,9 @@ impl<T: TraceStorage> ChainProcess<T> {
             let progress = progress_inner;
 
             let mut sample = move || {
-                let logp = model
-                    .math(&mut rng)
-                    .context("Failed to create model density")?;
-                let dim = logp.dim();
-
-                let mut sampler = settings.new_chain(chain_id, logp, &mut rng);
-
+                let mut sampler = crate::runner::model_chain(model, settings, chain_id, &mut rng)?;
                 progress.lock().expect("Poisoned mutex").started = true;
-
-                let mut initval = vec![0f64; dim];
-                // TODO maxtries
-                let mut error = None;
-                for _ in 0..500 {
-                    model
-                        .init_position(&mut rng, &mut initval)
-                        .context("Failed to generate a new initial position")?;
-                    if let Err(err) = sampler.set_position(&initval) {
-                        error = Some(err);
-                        continue;
-                    }
-                    error = None;
-                    break;
-                }
-
-                if let Some(error) = error {
-                    return Err(error.context("All initialization points failed"));
-                }
+                crate::runner::initialize_position(model, &mut sampler, &mut rng, 500)?;
 
                 let draws = settings.hint_num_tune() + settings.hint_num_draws();
 
@@ -1165,7 +1139,7 @@ impl<T: TraceStorage> ChainProcess<T> {
                     }
 
                     let now = Instant::now();
-                    let (_point, mut draw_data, mut stats, info) = sampler.expanded_draw().unwrap();
+                    let (_point, mut draw_data, mut stats, info) = sampler.expanded_draw()?;
 
                     let mut guard = chain_trace
                         .lock()
@@ -1180,13 +1154,14 @@ impl<T: TraceStorage> ChainProcess<T> {
                         .expect("Poisoned mutex")
                         .update(&info, now.elapsed());
 
-                    let math = sampler.math();
-                    let dims = StatsDims::from(math.deref());
-                    trace_val.record_sample(
+                    crate::runner::record_draw(
+                        &sampler,
                         settings,
-                        stats.get_all(&dims),
-                        draw_data.get_all(math.deref()),
+                        Some(trace_val),
+                        &mut draw_data,
+                        &mut stats,
                         &info,
+                        false,
                     )?;
 
                     draw += 1;

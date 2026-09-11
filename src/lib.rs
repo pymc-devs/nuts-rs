@@ -107,6 +107,7 @@ mod mclmc;
 mod model;
 mod nuts;
 mod sampler;
+mod runner;
 mod sampler_stats;
 mod sequential;
 mod stepsize;

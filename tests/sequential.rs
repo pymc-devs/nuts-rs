@@ -11,18 +11,20 @@ use std::{
 };
 
 struct Normal {
-    thread: ThreadId,
+    thread: Option<ThreadId>,
     fail: AtomicBool,
     initializations: AtomicUsize,
     bad_starts: usize,
+    fail_expansion: bool,
 }
 impl Normal {
     fn new() -> Self {
         Self {
-            thread: std::thread::current().id(),
+            thread: Some(std::thread::current().id()),
             fail: AtomicBool::new(false),
             initializations: AtomicUsize::new(0),
             bad_starts: 0,
+            fail_expansion: false,
         }
     }
 }
@@ -48,7 +50,9 @@ impl CpuLogpFunc for Density<'_> {
         1
     }
     fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, Failure> {
-        assert_eq!(self.0.thread, std::thread::current().id());
+        if let Some(thread) = self.0.thread {
+            assert_eq!(thread, std::thread::current().id());
+        }
         if self.0.fail.load(Ordering::Relaxed) || !position[0].is_finite() {
             return Err(Failure);
         }
@@ -60,17 +64,24 @@ impl CpuLogpFunc for Density<'_> {
         _: &mut R,
         position: &[f64],
     ) -> Result<Vec<f64>, CpuMathError> {
+        if self.0.fail_expansion {
+            return Err(CpuMathError::ExpandError("test expansion failure".into()));
+        }
         Ok(position.to_vec())
     }
 }
 impl Model for Normal {
     type Math<'a> = CpuMath<Density<'a>>;
     fn math<R: Rng + ?Sized>(&self, _: &mut R) -> Result<Self::Math<'_>> {
-        assert_eq!(self.thread, std::thread::current().id());
+        if let Some(thread) = self.thread {
+            assert_eq!(thread, std::thread::current().id());
+        }
         Ok(CpuMath::new(Density(self)))
     }
     fn init_position<R: Rng + ?Sized>(&self, _: &mut R, position: &mut [f64]) -> Result<()> {
-        assert_eq!(self.thread, std::thread::current().id());
+        if let Some(thread) = self.thread {
+            assert_eq!(thread, std::thread::current().id());
+        }
         let attempt = self.initializations.fetch_add(1, Ordering::Relaxed);
         position[0] = if attempt < self.bad_starts {
             f64::INFINITY
@@ -96,7 +107,7 @@ fn rng() -> ChaCha8Rng {
 fn matches_direct_chain_and_stops_at_draw_limit() {
     let model = Normal::new();
     let settings = settings();
-    let mut sampler = SequentialSampler::new(
+    let mut sampler = SequentialSampler::with_rngs(
         &model,
         settings,
         Some(HashMapConfig::default()),
@@ -122,7 +133,7 @@ fn matches_direct_chain_and_stops_at_draw_limit() {
 #[test]
 fn streaming_and_skipped_warmup() {
     let model = Normal::new();
-    let mut sampler = SequentialSampler::new(
+    let mut sampler = SequentialSampler::with_rngs(
         &model,
         settings(),
         None::<HashMapConfig>,
@@ -147,7 +158,7 @@ fn initialization_retries_are_bounded() {
         bad_starts: 2,
         ..Normal::new()
     };
-    let sampler = SequentialSampler::new(
+    let sampler = SequentialSampler::with_rngs(
         &model,
         settings(),
         Some(HashMapConfig::default()),
@@ -166,7 +177,7 @@ fn initialization_retries_are_bounded() {
         ..Normal::new()
     };
     assert!(
-        SequentialSampler::new(
+        SequentialSampler::with_rngs(
             &model,
             settings(),
             Some(HashMapConfig::default()),
@@ -185,7 +196,7 @@ fn initialization_retries_are_bounded() {
 #[test]
 fn sampling_error_prevents_further_steps() {
     let model = Normal::new();
-    let mut sampler = SequentialSampler::new(
+    let mut sampler = SequentialSampler::with_rngs(
         &model,
         settings(),
         Some(HashMapConfig::default()),
@@ -209,7 +220,7 @@ fn arrow_partial_and_empty_traces() {
     let model = Normal::new();
     let mut config = ArrowConfig::default();
     config.store_warmup = false;
-    let mut sampler = SequentialSampler::new(
+    let mut sampler = SequentialSampler::with_rngs(
         &model,
         settings(),
         Some(config),
@@ -229,7 +240,7 @@ fn arrow_partial_and_empty_traces() {
     assert_eq!(traces[0].posterior.num_rows(), 3);
     assert_eq!(traces[0].sample_stats.num_rows(), 3);
     // Finalizing before the first step is a valid cancellation point.
-    let sampler = SequentialSampler::new(
+    let sampler = SequentialSampler::with_rngs(
         &model,
         settings(),
         Some(ArrowConfig::default()),
@@ -253,7 +264,7 @@ fn invalid_runner_options_return_errors() {
         ..settings()
     };
     assert!(
-        SequentialSampler::new(
+        SequentialSampler::with_rngs(
             &model,
             empty,
             None::<HashMapConfig>,
@@ -264,7 +275,7 @@ fn invalid_runner_options_return_errors() {
         .is_err()
     );
     assert!(
-        SequentialSampler::new(
+        SequentialSampler::with_rngs(
             &model,
             settings(),
             None::<HashMapConfig>,
@@ -277,4 +288,89 @@ fn invalid_runner_options_return_errors() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn default_constructor_is_reproducible() {
+    let model = Normal::new();
+    let mut first = SequentialSampler::new(&model, settings(), HashMapConfig::default()).unwrap();
+    let mut second = SequentialSampler::new(&model, settings(), HashMapConfig::default()).unwrap();
+    for _ in 0..25 {
+        assert_eq!(
+            first.step().unwrap().unwrap().point,
+            second.step().unwrap().unwrap().point
+        );
+    }
+}
+
+#[cfg(all(feature = "parallel", feature = "arrow"))]
+#[test]
+fn parallel_and_sequential_record_identical_traces() {
+    use nuts_rs::{ArrowConfig, Sampler, SamplerWaitResult};
+    let settings = DiagNutsSettings {
+        num_chains: 1,
+        seed: 42,
+        ..settings()
+    };
+    let parallel = Sampler::new(
+        Normal {
+            thread: None,
+            ..Normal::new()
+        },
+        settings,
+        ArrowConfig::default(),
+        1,
+        None,
+    )
+    .unwrap();
+    let parallel = match parallel.wait_timeout(std::time::Duration::from_secs(10)) {
+        SamplerWaitResult::Trace(trace) => trace,
+        SamplerWaitResult::Err(error, _) => panic!("{error:#}"),
+        SamplerWaitResult::Timeout(sampler) => {
+            sampler.abort().unwrap();
+            panic!("sampling timed out")
+        }
+    };
+    let model = Normal::new();
+    let mut chain_rng = ChaCha8Rng::seed_from_u64(settings.seed);
+    chain_rng.set_stream(1); // Parallel chain zero's stream.
+    let mut sequential = SequentialSampler::with_rngs(
+        &model,
+        settings,
+        Some(ArrowConfig::default()),
+        SequentialOptions::default(),
+        &mut chain_rng,
+        &mut rng(),
+    )
+    .unwrap();
+    while sequential.step().unwrap().is_some() {}
+    let sequential = sequential.finalize().unwrap().unwrap();
+    assert_eq!(sequential[0].posterior, parallel[0].posterior);
+    assert_eq!(sequential[0].sample_stats, parallel[0].sample_stats);
+}
+
+#[cfg(all(feature = "parallel", feature = "arrow"))]
+#[test]
+fn parallel_expansion_errors_are_returned() {
+    use nuts_rs::{ArrowConfig, Sampler, SamplerWaitResult};
+    let model = Normal {
+        thread: None,
+        fail_expansion: true,
+        ..Normal::new()
+    };
+    let settings = DiagNutsSettings {
+        num_chains: 1,
+        ..settings()
+    };
+    let sampler = Sampler::new(model, settings, ArrowConfig::default(), 1, None).unwrap();
+    match sampler.wait_timeout(std::time::Duration::from_secs(10)) {
+        SamplerWaitResult::Err(error, _) => {
+            assert!(format!("{error:#}").contains("test expansion failure"))
+        }
+        SamplerWaitResult::Trace(_) => panic!("expected expansion failure"),
+        SamplerWaitResult::Timeout(sampler) => {
+            sampler.abort().unwrap();
+            panic!("sampling timed out")
+        }
+    }
 }

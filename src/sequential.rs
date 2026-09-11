@@ -1,10 +1,10 @@
 //! Caller-driven sampling through the model interface, without worker threads.
 
-use crate::sampler_stats::StatsDims;
+use crate::runner::{initialize_position, model_chain, record_draw};
 use crate::storage::{ChainStorage, StorageConfig, TraceStorage};
-use crate::{Chain, Math, Model, Progress, Settings, Storable, Value};
+use crate::{Chain, Model, Progress, Settings, Value};
 use anyhow::{Context, Result, ensure};
-use rand::Rng;
+use rand::{Rng, SeedableRng, rngs::ChaCha8Rng};
 
 /// Options for a single caller-driven chain.
 #[derive(Clone, Copy, Debug)]
@@ -43,15 +43,11 @@ pub struct SequentialDraw {
 /// The model's existing thread-safety bounds are unchanged.
 ///
 /// ```
-/// use nuts_rs::{Model, DiagNutsSettings, HashMapConfig, SequentialOptions, SequentialSampler};
-/// use rand::{SeedableRng, rngs::ChaCha8Rng};
+/// use nuts_rs::{Model, DiagNutsSettings, HashMapConfig, SequentialSampler};
 ///
 /// fn sample(model: &impl Model) -> anyhow::Result<()> {
-///     let mut rng = ChaCha8Rng::seed_from_u64(42);
-///     let mut init_rng = ChaCha8Rng::seed_from_u64(43);
 ///     let mut sampler = SequentialSampler::new(
-///         model, DiagNutsSettings::default(), Some(HashMapConfig::default()),
-///         SequentialOptions::default(), &mut rng, &mut init_rng,
+///         model, DiagNutsSettings::default(), HashMapConfig::default(),
 ///     )?;
 ///     while let Some(draw) = sampler.step()? {
 ///         println!("Draw {}", draw.progress.draw);
@@ -74,11 +70,31 @@ pub struct SequentialSampler<'model, M: Model, S: Settings, C: StorageConfig> {
 }
 
 impl<'model, M: Model, S: Settings, C: StorageConfig> SequentialSampler<'model, M, S, C> {
+    /// Initialize chain zero with default options and RNGs derived from `settings.seed()`.
+    pub fn new(model: &'model M, settings: S, config: C) -> Result<Self> {
+        Self::with_options(model, settings, Some(config), SequentialOptions::default())
+    }
+
+    /// Configure the chain ID, initialization attempts, warmup and optional storage.
+    /// Each chain uses a distinct ChaCha stream; initialization uses a separate seed.
+    pub fn with_options(
+        model: &'model M,
+        settings: S,
+        config: Option<C>,
+        options: SequentialOptions,
+    ) -> Result<Self> {
+        let mut rng = ChaCha8Rng::seed_from_u64(settings.seed());
+        rng.set_stream(options.chain_id);
+        let mut init_rng = ChaCha8Rng::seed_from_u64(settings.seed() ^ 0x9e3779b97f4a7c15);
+        init_rng.set_stream(options.chain_id);
+        Self::with_rngs(model, settings, config, options, &mut rng, &mut init_rng)
+    }
+
     /// Initialize a chain using the model interface and separate sampling and
     /// initialization RNGs. `None` storage enables streaming without retaining a trace.
     /// The chain ID is supplied independently of `settings.num_chains()`; create
     /// one runner for each desired chain.
-    pub fn new<R: Rng + ?Sized, I: Rng + ?Sized>(
+    pub fn with_rngs<R: Rng + ?Sized, I: Rng + ?Sized>(
         model: &'model M,
         settings: S,
         config: Option<C>,
@@ -98,28 +114,15 @@ impl<'model, M: Model, S: Settings, C: StorageConfig> SequentialSampler<'model, 
             total > 0,
             "At least one tuning or sampling draw is required"
         );
-        let math = model.math(rng).context("Failed to create model density")?;
+        let mut chain = model_chain(model, &settings, options.chain_id, rng)?;
         let storage = config
-            .map(|config| config.new_trace(&settings, &math))
+            .map(|config| config.new_trace(&settings, &*chain.math()))
             .transpose()?;
         let trace = storage
             .as_ref()
             .map(|storage| storage.initialize_trace_for_chain(options.chain_id))
             .transpose()?;
-        let mut position = vec![0.; math.dim()];
-        let mut chain = settings.new_chain(options.chain_id, math, rng);
-        for attempt in 0..options.max_init_attempts {
-            model
-                .init_position(init_rng, &mut position)
-                .context("Failed to generate a new initial position")?;
-            match chain.set_position(&position) {
-                Ok(()) => break,
-                Err(error) if attempt + 1 == options.max_init_attempts => {
-                    return Err(error.context("All initialization points failed"));
-                }
-                Err(_) => {}
-            }
-        }
+        let position = initialize_position(model, &mut chain, init_rng, options.max_init_attempts)?;
         Ok(Self {
             chain,
             settings,
@@ -168,23 +171,18 @@ impl<'model, M: Model, S: Settings, C: StorageConfig> SequentialSampler<'model, 
             });
         }
         let (point, mut expanded, mut stats, progress) = self.chain.expanded_draw()?;
-        let math = self.chain.math();
-        let values = expanded.get_all(&*math);
-        // Values are returned for streaming, while storage consumes its own copy.
-        if let Some(trace) = self.trace.as_mut() {
-            trace.record_sample(
-                &self.settings,
-                stats.get_all(&StatsDims::from(&*math)),
-                values.clone(),
-                &progress,
-            )?;
-        }
+        let values = record_draw(
+            &self.chain,
+            &self.settings,
+            self.trace.as_mut(),
+            &mut expanded,
+            &mut stats,
+            &progress,
+            true,
+        )?;
         Ok(SequentialDraw {
             point,
-            values: values
-                .into_iter()
-                .map(|(name, value)| (name.to_owned(), value))
-                .collect(),
+            values,
             progress,
         })
     }
