@@ -60,6 +60,12 @@ pub trait TraceStorage: Send + Sync + Sized + 'static {
     /// Create storage for a single chain.
     fn initialize_trace_for_chain(&self, chain_id: u64) -> Result<Self::ChainStorage>;
 
+    /// Initialize the only chain in a caller-driven trace. Dimensioned backends
+    /// override this to use slot zero independently of the logical chain ID.
+    fn initialize_trace_for_single_chain(&self, chain_id: u64) -> Result<Self::ChainStorage> {
+        self.initialize_trace_for_chain(chain_id)
+    }
+
     /// Combine results from all chains into final output.
     ///
     /// # Arguments

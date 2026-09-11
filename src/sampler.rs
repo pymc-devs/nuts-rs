@@ -177,19 +177,29 @@ mod private {
         LowRankMclmcSettings, LowRankNutsSettings,
     };
 
-    pub trait Sealed {}
+    pub trait Sealed {
+        fn for_single_chain(self) -> Self;
+    }
 
-    impl Sealed for DiagNutsSettings {}
+    macro_rules! seal_settings {
+        ($($settings:ty),+ $(,)?) => {
+            $(impl Sealed for $settings {
+                fn for_single_chain(mut self) -> Self {
+                    self.num_chains = 1;
+                    self
+                }
+            })+
+        };
+    }
 
-    impl Sealed for LowRankNutsSettings {}
-
-    impl Sealed for FlowNutsSettings {}
-
-    impl Sealed for DiagMclmcSettings {}
-
-    impl Sealed for LowRankMclmcSettings {}
-
-    impl Sealed for FlowMclmcSettings {}
+    seal_settings!(
+        DiagNutsSettings,
+        LowRankNutsSettings,
+        FlowNutsSettings,
+        DiagMclmcSettings,
+        LowRankMclmcSettings,
+        FlowMclmcSettings,
+    );
 }
 
 /// Settings for the NUTS sampler

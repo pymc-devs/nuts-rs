@@ -9,7 +9,8 @@ use rand::{Rng, SeedableRng, rngs::ChaCha8Rng};
 /// Options for a single caller-driven chain.
 #[derive(Clone, Copy, Debug)]
 pub struct SequentialOptions {
-    /// Identifier included in progress and trace metadata.
+    /// Logical identifier included in progress, sampler statistics and CSV filenames.
+    /// Dimensioned storage backends place this chain in their only chain slot.
     pub chain_id: u64,
     /// Number of model-generated starting points to try. Must be positive.
     pub max_init_attempts: usize,
@@ -93,7 +94,9 @@ impl<'model, M: Model, S: Settings, C: StorageConfig> SequentialSampler<'model, 
     /// Initialize a chain using the model interface and separate sampling and
     /// initialization RNGs. `None` storage enables streaming without retaining a trace.
     /// The chain ID is supplied independently of `settings.num_chains()`; create
-    /// one runner for each desired chain.
+    /// one runner for each desired chain. Each runner configures storage for one
+    /// chain, ignoring `settings.num_chains()`. Use a separate Zarr store or group
+    /// for each runner.
     pub fn with_rngs<R: Rng + ?Sized, I: Rng + ?Sized>(
         model: &'model M,
         settings: S,
@@ -106,6 +109,7 @@ impl<'model, M: Model, S: Settings, C: StorageConfig> SequentialSampler<'model, 
             options.max_init_attempts > 0,
             "max_init_attempts must be positive"
         );
+        let settings = settings.for_single_chain();
         let total = settings
             .hint_num_tune()
             .checked_add(settings.hint_num_draws())
@@ -120,7 +124,7 @@ impl<'model, M: Model, S: Settings, C: StorageConfig> SequentialSampler<'model, 
             .transpose()?;
         let trace = storage
             .as_ref()
-            .map(|storage| storage.initialize_trace_for_chain(options.chain_id))
+            .map(|storage| storage.initialize_trace_for_single_chain(options.chain_id))
             .transpose()?;
         let position = initialize_position(model, &mut chain, init_rng, options.max_init_attempts)?;
         Ok(Self {

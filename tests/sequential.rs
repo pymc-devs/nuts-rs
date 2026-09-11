@@ -153,6 +153,146 @@ fn streaming_and_skipped_warmup() {
 }
 
 #[test]
+fn skipped_warmup_matches_nuts_and_mclmc_progress() {
+    use nuts_rs::{
+        DiagMclmcSettings, LowRankMclmcSettings, LowRankNutsSettings, MclmcTrajectoryKind,
+    };
+
+    fn check(settings: impl Settings) {
+        let model = Normal::new();
+        let mut sampler = SequentialSampler::with_options(
+            &model,
+            settings,
+            None::<HashMapConfig>,
+            SequentialOptions {
+                expand_warmup: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for i in 0..25 {
+            let draw = sampler.step().unwrap().unwrap();
+            assert_eq!(draw.progress.tuning, i < 20, "draw {i}");
+            assert_eq!(draw.values.is_empty(), draw.progress.tuning, "draw {i}");
+        }
+        assert!(sampler.step().unwrap().is_none());
+    }
+
+    check(settings());
+    check(LowRankNutsSettings {
+        num_tune: 20,
+        num_draws: 5,
+        maxdepth: 3,
+        ..Default::default()
+    });
+    check(DiagMclmcSettings {
+        num_tune: 20,
+        num_draws: 5,
+        trajectory_kind: MclmcTrajectoryKind::Euclidean,
+        ..Default::default()
+    });
+    check(LowRankMclmcSettings {
+        num_tune: 20,
+        num_draws: 5,
+        trajectory_kind: MclmcTrajectoryKind::Euclidean,
+        ..Default::default()
+    });
+}
+
+#[cfg(feature = "ndarray")]
+#[test]
+fn ndarray_storage_allocates_only_one_chain() {
+    use nuts_rs::{NdarrayConfig, NdarrayValue};
+    let model = Normal::new();
+    let sampler = SequentialSampler::with_options(
+        &model,
+        settings(),
+        Some(NdarrayConfig::default()),
+        SequentialOptions {
+            chain_id: 7,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let trace = sampler.finalize().unwrap().unwrap();
+    let NdarrayValue::U64(depth) = &trace.stats["depth"] else {
+        panic!("unexpected depth type")
+    };
+    assert_eq!(depth.shape()[0], 1);
+}
+
+#[cfg(feature = "zarr")]
+#[test]
+fn zarr_storage_uses_one_slot_for_a_logical_chain_id() {
+    use nuts_rs::ZarrConfig;
+    use std::sync::Arc;
+    use zarrs::{
+        array::{Array, ArraySubset},
+        storage::store::MemoryStore,
+    };
+
+    for num_chains in [0, 6] {
+        let model = Normal::new();
+        let store = Arc::new(MemoryStore::new());
+        let mut sampler = SequentialSampler::with_options(
+            &model,
+            DiagNutsSettings {
+                num_chains,
+                ..settings()
+            },
+            Some(ZarrConfig::new(store.clone()).store_warmup(false)),
+            SequentialOptions {
+                chain_id: 7,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut posterior = vec![];
+        while let Some(draw) = sampler.step().unwrap() {
+            assert_eq!(draw.progress.chain, 7);
+            if !draw.progress.tuning {
+                posterior.extend_from_slice(&draw.point);
+            }
+        }
+        sampler.finalize().unwrap();
+        let array = Array::open(store, "/posterior/value").unwrap();
+        assert_eq!(array.shape(), &[1, 5, 1]);
+        let stored: Vec<f64> = array
+            .retrieve_array_subset(&ArraySubset::new_with_shape(array.shape().to_vec()))
+            .unwrap();
+        assert_eq!(stored, posterior);
+    }
+}
+
+#[test]
+fn csv_preserves_logical_chain_filenames() {
+    use nuts_rs::CsvConfig;
+    let model = Normal::new();
+    let directory = tempfile::tempdir().unwrap();
+    for chain_id in [7, 8] {
+        let mut sampler = SequentialSampler::with_options(
+            &model,
+            settings(),
+            Some(CsvConfig::new(directory.path())),
+            SequentialOptions {
+                chain_id,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        sampler.step().unwrap();
+        sampler.finalize().unwrap();
+        assert!(
+            directory
+                .path()
+                .join(format!("chain_{chain_id}.csv"))
+                .exists()
+        );
+    }
+    assert!(!directory.path().join("chain_0.csv").exists());
+}
+
+#[test]
 fn initialization_retries_are_bounded() {
     let model = Normal {
         bad_starts: 2,

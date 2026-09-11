@@ -512,7 +512,7 @@ where
             pos.into()
         };
 
-        let progress = Progress {
+        let mut progress = Progress {
             draw: self.draw_count,
             chain: self.chain,
             diverging: info.diverging,
@@ -538,6 +538,8 @@ where
             // Refresh the collector for the next draw.
             self.collector = self.adapt.new_collector(math);
         }
+        // Match the post-adaptation tuning flag used by NUTS and sample stats.
+        progress.tuning = self.adapt.is_tuning();
 
         self.draw_count += 1;
         self.state = state;

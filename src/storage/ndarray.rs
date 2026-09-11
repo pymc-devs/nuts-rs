@@ -327,6 +327,10 @@ impl TraceStorage for NdarrayTraceStorage {
         Ok(NdarrayChainStorage::new(self, chain_id as usize))
     }
 
+    fn initialize_trace_for_single_chain(&self, _chain_id: u64) -> Result<Self::ChainStorage> {
+        self.initialize_trace_for_chain(0)
+    }
+
     fn finalize(
         self,
         traces: Vec<Result<<Self::ChainStorage as ChainStorage>::Finalized>>,
