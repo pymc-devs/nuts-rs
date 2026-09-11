@@ -108,6 +108,7 @@ mod model;
 mod nuts;
 mod sampler;
 mod sampler_stats;
+mod sequential;
 mod stepsize;
 mod storage;
 mod transform;
@@ -132,7 +133,8 @@ pub use sampler::{
 };
 #[cfg(feature = "parallel")]
 pub use sampler::{ProgressCallback, Sampler, SamplerWaitResult};
-pub use sampler_stats::{SamplerStats, StatsDims};
+pub use sampler_stats::SamplerStats;
+pub use sequential::{SequentialDraw, SequentialOptions, SequentialSampler};
 
 #[allow(deprecated)]
 pub use external_adapt_strategy::{FlowSettings, TransformedSettings};
@@ -150,6 +152,3 @@ pub use storage::{NdarrayConfig, NdarrayTrace, NdarrayValue};
 
 #[cfg(feature = "arrow")]
 pub use storage::{ArrowConfig, ArrowTrace, ArrowTraceStorage};
-
-// Enable custom sequential runners to use the built-in trace backends.
-pub use storage::{ChainStorage, StorageConfig, TraceStorage};

@@ -218,6 +218,9 @@ impl ChainStorage for HashMapChainStorage {
                 (HashMapValue::U64(combined_vec), HashMapValue::U64(sample_vec)) => {
                     combined_vec.extend(sample_vec.iter().cloned());
                 }
+                (HashMapValue::String(combined_vec), HashMapValue::String(sample_vec)) => {
+                    combined_vec.extend(sample_vec.iter().cloned());
+                }
                 _ => panic!("Type mismatch when combining stats for {}", key),
             }
 
@@ -243,6 +246,9 @@ impl ChainStorage for HashMapChainStorage {
                     combined_vec.extend(sample_vec.iter().cloned());
                 }
                 (HashMapValue::U64(combined_vec), HashMapValue::U64(sample_vec)) => {
+                    combined_vec.extend(sample_vec.iter().cloned());
+                }
+                (HashMapValue::String(combined_vec), HashMapValue::String(sample_vec)) => {
                     combined_vec.extend(sample_vec.iter().cloned());
                 }
                 _ => panic!("Type mismatch when combining draws for {}", key),
