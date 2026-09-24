@@ -2700,13 +2700,19 @@ mod tests {
                 ExpandMismatch::Missing => "no value for posterior variable x",
             };
             assert!(err.contains(expected), "{mismatch:?}: {err}");
-            assert!(err.contains("x"), "error should name the variable: {err}");
+            assert!(
+                err.contains("posterior variable x") || err.contains("/x"),
+                "error should name the variable: {err}"
+            );
         }
 
         #[test]
         fn hashmap_storage_mismatch() {
-            // The HashMap storage does not know shapes, so only types and presence are checked.
-            for mismatch in [ExpandMismatch::WrongType, ExpandMismatch::Missing] {
+            for mismatch in [
+                ExpandMismatch::WrongType,
+                ExpandMismatch::WrongLength,
+                ExpandMismatch::Missing,
+            ] {
                 assert_explains(&sample_error(HashMapConfig::new(), mismatch), mismatch);
             }
         }
@@ -2743,9 +2749,10 @@ mod tests {
         #[test]
         fn arrow_storage_mismatch() {
             use crate::ArrowConfig;
-            // Arrow stores a missing draw as null, and does not check vector lengths.
-            let err = sample_error(ArrowConfig::default(), ExpandMismatch::WrongType);
-            assert!(err.contains("x"), "error should name the variable: {err}");
+            // Arrow stores a missing draw as null.
+            for mismatch in [ExpandMismatch::WrongType, ExpandMismatch::WrongLength] {
+                assert_explains(&sample_error(ArrowConfig::default(), mismatch), mismatch);
+            }
         }
     }
 
