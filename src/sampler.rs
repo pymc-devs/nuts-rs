@@ -19,13 +19,12 @@ use std::{
 #[cfg(feature = "parallel")]
 use anyhow::bail;
 #[cfg(feature = "parallel")]
-use rayon::{ScopeFifo, ThreadPoolBuilder};
-#[cfg(feature = "parallel")]
 use std::{
+    collections::VecDeque,
     sync::mpsc::{
         Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel,
     },
-    thread::{JoinHandle, spawn},
+    thread::{self, JoinHandle, spawn},
 };
 
 use crate::{
@@ -1445,67 +1444,88 @@ impl<C: ChainStorage> ChainProcess<C> {
         Ok(())
     }
 
-    fn start<'scope, M: Model, S: Settings>(
-        model: Arc<M>,
+    /// Set up the controller's handle to a chain, and the job a worker thread runs
+    /// to sample it.
+    fn new(
         chain_trace: C,
         chain_id: u64,
-        seed: u64,
-        settings: S,
-        scope: &ScopeFifo<'scope>,
+        settings: &impl Settings,
         results: Sender<Result<()>>,
-    ) -> Result<Self>
-    where
-        C: 'scope,
-    {
+    ) -> (Self, ChainJob<C>) {
         let (stop_marker_tx, stop_marker_rx) = channel();
 
         let shared = ChainShared::new(
             chain_trace,
             settings.hint_num_draws() + settings.hint_num_tune(),
         );
-        let shared_inner = shared.clone();
 
-        scope.spawn_fifo(move |_| {
-            let sample = move || {
-                let mut runner =
-                    ChainRunner::<M, S, C>::new(model, chain_id, seed, settings, shared_inner)?;
-
-                let mut msg = stop_marker_rx.try_recv();
-                loop {
-                    match msg {
-                        // The remote end is dead
-                        Err(TryRecvError::Disconnected) => {
-                            break;
-                        }
-                        Err(TryRecvError::Empty) => {}
-                        Ok(ChainCommand::Pause) => {
-                            msg = stop_marker_rx.recv().map_err(|e| e.into());
-                            continue;
-                        }
-                        Ok(ChainCommand::Resume) => {}
-                    }
-
-                    if !runner.step()? {
-                        break;
-                    }
-
-                    msg = stop_marker_rx.try_recv();
-                }
-                Ok(())
-            };
-
-            let result = sample();
-
-            // We intentionally ignore errors here, because this means some other
-            // chain already failed, and should have reported the error.
-            let _ = results.send(result);
-            drop(results);
-        });
-
-        Ok(Self {
+        let job = ChainJob {
+            chain_id,
+            shared: shared.clone(),
+            commands: stop_marker_rx,
+            results,
+        };
+        let process = Self {
             stop_marker: stop_marker_tx,
             shared,
-        })
+        };
+        (process, job)
+    }
+}
+
+/// A chain waiting for a worker thread. Commands sent before it starts queue up in
+/// its channel and are handled in order once it runs.
+#[cfg(feature = "parallel")]
+struct ChainJob<C> {
+    chain_id: u64,
+    shared: ChainShared<C>,
+    commands: Receiver<ChainCommand>,
+    results: Sender<Result<()>>,
+}
+
+#[cfg(feature = "parallel")]
+impl<C: ChainStorage> ChainJob<C> {
+    fn run<M: Model, S: Settings>(self, model: Arc<M>, settings: S) {
+        let Self {
+            chain_id,
+            shared,
+            commands,
+            results,
+        } = self;
+
+        let sample = move || {
+            let mut runner =
+                ChainRunner::<M, S, C>::new(model, chain_id, settings.seed(), settings, shared)?;
+
+            let mut msg = commands.try_recv();
+            loop {
+                match msg {
+                    // The remote end is dead
+                    Err(TryRecvError::Disconnected) => {
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => {}
+                    Ok(ChainCommand::Pause) => {
+                        msg = commands.recv().map_err(|e| e.into());
+                        continue;
+                    }
+                    Ok(ChainCommand::Resume) => {}
+                }
+
+                if !runner.step()? {
+                    break;
+                }
+
+                msg = commands.try_recv();
+            }
+            Ok(())
+        };
+
+        let result = sample();
+
+        // We intentionally ignore errors here, because this means some other
+        // chain already failed, and should have reported the error.
+        let _ = results.send(result);
     }
 }
 
@@ -1777,8 +1797,8 @@ where
     }
 }
 
-/// Runs each chain on a rayon thread, controlled from a separate controller thread
-/// through channels.
+/// Runs the chains on `num_cores` worker threads, controlled from a separate
+/// controller thread through channels.
 #[cfg(feature = "parallel")]
 struct ThreadedDriver<F: Send + 'static> {
     main_thread: JoinHandle<Result<(Option<anyhow::Error>, F)>>,
@@ -1807,41 +1827,55 @@ impl<F: Send + 'static> ThreadedDriver<F> {
         let (results_tx, results_rx) = channel();
 
         let main_thread = spawn(move || {
-            let pool = ThreadPoolBuilder::new()
-                .num_threads(num_cores + 1) // One more thread because the controller also uses one
-                .thread_name(|i| format!("nutpie-worker-{i}"))
-                .build()
-                .context("Could not start thread pool")?;
-
             let mut callback = callback;
+            let results = results_tx;
+            let num_chains = settings.num_chains();
 
-            pool.scope_fifo(move |scope| {
-                let results = results_tx;
-                let mut chains = Vec::with_capacity(settings.num_chains());
+            let trace = new_trace(&model, &settings, trace_config)?;
 
-                let trace = new_trace(&model, &settings, trace_config)?;
+            let mut chains = Vec::with_capacity(num_chains);
+            let mut jobs = VecDeque::with_capacity(num_chains);
+            for chain_id in 0..num_chains as u64 {
+                let chain_trace_val = trace
+                    .initialize_trace_for_chain(chain_id)
+                    .context("Failed to create trace object")?;
+                let (chain, job) =
+                    ChainProcess::new(chain_trace_val, chain_id, &settings, results.clone());
+                chains.push(chain);
+                jobs.push_back(job);
+            }
+            drop(results);
 
-                for chain_id in 0..settings.num_chains() {
-                    let chain_trace_val = trace
-                        .initialize_trace_for_chain(chain_id as u64)
-                        .context("Failed to create trace object")?;
-                    let chain = ChainProcess::start(
-                        Arc::clone(&model),
-                        chain_trace_val,
-                        chain_id as u64,
-                        settings.seed(),
-                        settings,
-                        scope,
-                        results.clone(),
-                    );
-                    chains.push(chain);
-                }
-                drop(results);
+            // Workers take chains in order, so with more chains than cores the rest
+            // wait their turn.
+            let jobs = Mutex::new(jobs);
+            let jobs = &jobs;
+            let model = &model;
 
-                let (chains, errors): (Vec<_>, Vec<_>) = chains.into_iter().partition_result();
-                if let Some(error) = errors.into_iter().next() {
-                    let _ = finalize_traces(trace, chains.iter().map(|chain| &chain.shared));
-                    return Err(error).context("Could not start chains");
+            // The scope joins every worker before it returns, and re-raises their panics.
+            //
+            // `chains` and `trace` are moved in so that they drop before the join: a
+            // paused chain only wakes up once its command sender in `chains` is gone.
+            thread::scope(move |scope| {
+                for worker_id in 0..num_cores.clamp(1, num_chains.max(1)) {
+                    let spawned = thread::Builder::new()
+                        .name(format!("nutpie-worker-{worker_id}"))
+                        .spawn_scoped(scope, move || {
+                            loop {
+                                let job = jobs.lock().expect("Poisoned lock").pop_front();
+                                let Some(job) = job else {
+                                    break;
+                                };
+                                job.run(Arc::clone(model), settings);
+                            }
+                        });
+                    if let Err(err) = spawned {
+                        // Taking the traces stops the chains that already run, so the
+                        // scope can join their workers.
+                        jobs.lock().expect("Poisoned lock").clear();
+                        let _ = finalize_traces(trace, chains.iter().map(|chain| &chain.shared));
+                        return Err(err).context("Could not start worker thread");
+                    }
                 }
 
                 let mut main_loop = || {
@@ -1963,6 +1997,8 @@ impl<F: Send + 'static> ThreadedDriver<F> {
                     }
                 };
                 let result: Result<()> = main_loop();
+                // Chains that have not started yet should not start anymore.
+                jobs.lock().expect("Poisoned lock").clear();
                 // Run finalization even if something failed
                 let output = finalize_traces(trace, chains.iter().map(|chain| &chain.shared))?;
 
@@ -2113,7 +2149,6 @@ mod tests {
         sampler::LowRankMclmcSettings, sampler::LowRankNutsSettings, sampler::Settings,
     };
 
-    #[cfg(any(feature = "zarr", not(feature = "parallel")))]
     use super::test_logps::CpuModel;
 
     use anyhow::Result;
@@ -2328,6 +2363,67 @@ mod tests {
         assert_eq!(vals.len(), 10);
         assert_eq!(stats.chain, 1);
         assert_eq!(stats.draw, 100);
+    }
+
+    /// More chains than worker threads: the extra chains queue up, including their
+    /// pause and resume commands, and still all finish.
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn threaded_more_chains_than_cores() -> Result<()> {
+        use crate::{HashMapConfig, HashMapValue, Sampler, SamplerWaitResult};
+        use std::{sync::Arc, time::Duration};
+
+        let settings = DiagNutsSettings {
+            num_tune: 50,
+            num_draws: 50,
+            num_chains: 5,
+            seed: 5,
+            ..Default::default()
+        };
+        let model = Arc::new(CpuModel::new(NormalLogp { dim: 5, mu: 0.1 }));
+        let mut sampler = Sampler::new(model, settings, HashMapConfig::new(), 2, None)?;
+        sampler.pause()?;
+        sampler.resume()?;
+
+        let trace = loop {
+            match sampler.wait_timeout(Duration::from_secs(10)) {
+                SamplerWaitResult::Trace(trace) => break trace,
+                SamplerWaitResult::Timeout(new_sampler) => sampler = new_sampler,
+                SamplerWaitResult::Err(err, _) => return Err(err),
+            }
+        };
+        assert_eq!(trace.len(), 5);
+        for chain in trace.iter() {
+            let HashMapValue::Bool(diverging) = &chain.stats["diverging"] else {
+                panic!("diverging stat should be bool");
+            };
+            assert_eq!(diverging.len(), 100);
+        }
+        Ok(())
+    }
+
+    /// Aborting while paused must not wait for the paused chains, including the ones
+    /// still queued behind the worker threads.
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn threaded_abort_while_paused() -> Result<()> {
+        use crate::{HashMapConfig, Sampler};
+        use std::sync::Arc;
+
+        let settings = DiagNutsSettings {
+            num_tune: 1000,
+            num_draws: 1000,
+            num_chains: 5,
+            seed: 5,
+            ..Default::default()
+        };
+        let model = Arc::new(CpuModel::new(NormalLogp { dim: 5, mu: 0.1 }));
+        let mut sampler = Sampler::new(model, settings, HashMapConfig::new(), 2, None)?;
+        sampler.pause()?;
+        let (err, trace) = sampler.abort()?;
+        assert!(err.is_none());
+        assert_eq!(trace.len(), 5);
+        Ok(())
     }
 
     /// Tests for the sequential driver, which only exists without `parallel`:
