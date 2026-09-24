@@ -186,7 +186,9 @@ fn main() -> Result<()> {
                             if arr.len() > 0 {
                                 // Print some sample values from the first chain
                                 if arr.ndim() >= 2 {
-                                    let chain_0_view = arr.slice(ndarray::s![0, ..5]);
+                                    let chain_0 = arr.index_axis(ndarray::Axis(0), 0);
+                                    let chain_0_view = chain_0
+                                        .slice_axis(ndarray::Axis(0), ndarray::Slice::from(..5));
                                     println!("    Chain 0, first 5 samples: {:?}", chain_0_view);
                                 }
                             }
@@ -194,7 +196,9 @@ fn main() -> Result<()> {
                         nuts_rs::NdarrayValue::Bool(arr) => {
                             println!("  {}: shape {:?} (bool)", name, arr.shape());
                             if arr.len() > 0 && arr.ndim() >= 2 {
-                                let chain_0_view = arr.slice(ndarray::s![0, ..5]);
+                                let chain_0 = arr.index_axis(ndarray::Axis(0), 0);
+                                let chain_0_view =
+                                    chain_0.slice_axis(ndarray::Axis(0), ndarray::Slice::from(..5));
                                 println!("    Chain 0, first 5 samples: {:?}", chain_0_view);
                             }
                         }

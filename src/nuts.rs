@@ -406,7 +406,7 @@ mod tests {
         let settings = DiagNutsSettings::default();
         let mut rng = rng();
 
-        let mut chain = settings.new_chain(0, math, &mut rng);
+        let mut chain = settings.new_chain(0, math, &mut rng).unwrap();
 
         chain.set_position(&vec![0.0; ndim]).unwrap();
 

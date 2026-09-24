@@ -2,11 +2,13 @@ use std::mem::replace;
 use std::sync::Arc;
 use std::{collections::HashMap, num::NonZero};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use nuts_storable::{ItemType, Value};
 use zarrs::array::codec::{BloscCodec, BloscCodecConfiguration, BloscCodecConfigurationV1};
 use zarrs::array::{Array, ArrayBuilder, DataType, FillValue, data_type};
 use zarrs::metadata_ext::data_type::NumpyTimeUnit;
+
+use crate::storage::value_type_name;
 
 /// Container for different types of sample values
 #[derive(Clone, Debug)]
@@ -20,6 +22,17 @@ pub enum SampleBufferValue {
 }
 
 impl SampleBufferValue {
+    fn type_name(&self) -> &'static str {
+        match self {
+            SampleBufferValue::F64(_) => "F64",
+            SampleBufferValue::F32(_) => "F32",
+            SampleBufferValue::Bool(_) => "Bool",
+            SampleBufferValue::I64(_) => "I64",
+            SampleBufferValue::U64(_) => "U64",
+            SampleBufferValue::String(_) => "String",
+        }
+    }
+
     /// Get the number of items currently stored in the buffer
     pub fn len(&self) -> usize {
         match self {
@@ -59,8 +72,8 @@ impl Chunk {
 
 impl SampleBuffer {
     /// Create a new sample buffer with specified type and chunk size
-    pub fn new(item_type: ItemType, chunk_size: u64) -> Self {
-        let chunk_size = chunk_size.try_into().expect("Chunk size too large");
+    pub fn new(item_type: ItemType, chunk_size: u64) -> Result<Self> {
+        let chunk_size = chunk_size.try_into().context("Chunk size too large")?;
         let inner = match item_type {
             ItemType::F64 => SampleBufferValue::F64(Vec::with_capacity(chunk_size)),
             ItemType::F32 => SampleBufferValue::F32(Vec::with_capacity(chunk_size)),
@@ -68,15 +81,17 @@ impl SampleBuffer {
             ItemType::Bool => SampleBufferValue::Bool(Vec::with_capacity(chunk_size)),
             ItemType::I64 => SampleBufferValue::I64(Vec::with_capacity(chunk_size)),
             ItemType::String => SampleBufferValue::String(Vec::with_capacity(chunk_size)),
-            ItemType::DateTime64(_) => panic!("DateTime64 type not supported in SampleBuffer"),
-            ItemType::TimeDelta64(_) => panic!("TimeDelta64 type not supported in SampleBuffer"),
+            ItemType::DateTime64(_) => bail!("DateTime64 values are not supported in zarr traces"),
+            ItemType::TimeDelta64(_) => {
+                bail!("TimeDelta64 values are not supported in zarr traces")
+            }
         };
-        Self {
+        Ok(Self {
             items: inner,
             len: 0,
             full_at: chunk_size,
             current_chunk: 0,
-        }
+        })
     }
 
     /// Reset the buffer and return any accumulated data as a chunk
@@ -149,7 +164,7 @@ impl SampleBuffer {
     }
 
     /// Add an item to the buffer, returning a chunk if buffer becomes full
-    pub fn push(&mut self, item: Value) -> Option<Chunk> {
+    pub fn push(&mut self, item: Value) -> Result<Option<Chunk>> {
         assert!(self.len < self.full_at);
         match (&mut self.items, item) {
             (SampleBufferValue::F64(vec), Value::ScalarF64(v)) => vec.push(v),
@@ -163,14 +178,18 @@ impl SampleBuffer {
             (SampleBufferValue::Bool(vec), Value::Bool(v)) => vec.extend(v),
             (SampleBufferValue::I64(vec), Value::I64(v)) => vec.extend(v),
             (SampleBufferValue::String(vec), Value::ScalarString(s)) => vec.push(s),
-            _ => panic!("Mismatched item type"),
+            (items, item) => bail!(
+                "Got a {} value, but the declared type is {}",
+                value_type_name(&item),
+                items.type_name()
+            ),
         }
         self.len += 1;
 
         if self.len == self.full_at {
-            Some(self.finish_chunk())
+            Ok(Some(self.finish_chunk()))
         } else {
-            None
+            Ok(None)
         }
     }
 
@@ -180,11 +199,29 @@ impl SampleBuffer {
     }
 }
 
+/// The last chunk of a trace is written as a subset, which zarrs does not check against
+/// the data, so a model that returns the wrong number of values would go unnoticed.
+pub fn check_chunk_len<T: ?Sized>(
+    len: usize,
+    subset: &zarrs::array::ArraySubset,
+    array: &Array<T>,
+) -> Result<()> {
+    let expected = subset.num_elements_usize();
+    if len != expected {
+        bail!(
+            "{} got {len} values for a chunk that holds {expected}. \
+             Does the model return values of the declared shape?",
+            array.path()
+        );
+    }
+    Ok(())
+}
+
 /// Convert a Value to Zarr data type, length, and fill value for coordinate arrays
 ///
 /// Returns a tuple of (data_type, length, fill_value) extracted from the Value
-pub fn value_to_zarr_coord_params(coord: &Value) -> (DataType, usize, FillValue) {
-    match coord {
+pub fn value_to_zarr_coord_params(coord: &Value) -> Result<(DataType, usize, FillValue)> {
+    Ok(match coord {
         Value::F64(v) => (data_type::float64(), v.len(), FillValue::from(f64::NAN)),
         Value::F32(v) => (data_type::float32(), v.len(), FillValue::from(f32::NAN)),
         Value::U64(v) => (data_type::uint64(), v.len(), FillValue::from(0u64)),
@@ -219,8 +256,11 @@ pub fn value_to_zarr_coord_params(coord: &Value) -> (DataType, usize, FillValue)
                 FillValue::from(i64::MIN),
             )
         }
-        _ => panic!("Unsupported coordinate type"),
-    }
+        other => bail!(
+            "Coordinates must be arrays, but got a {} value",
+            value_type_name(other)
+        ),
+    })
 }
 
 /// Create Zarr arrays for storing MCMC trace data

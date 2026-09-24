@@ -53,6 +53,31 @@ pub struct EuclideanAdaptOptions<S: Debug + Default> {
     pub mass_matrix_window_growth: f64,
 }
 
+impl<S: Debug + Default> EuclideanAdaptOptions<S> {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        self.step_size_settings.validate()?;
+        if !(0.0..1.0).contains(&self.early_window) {
+            anyhow::bail!(
+                "early_window must be at least 0 and smaller than 1, got {}",
+                self.early_window
+            );
+        }
+        if !(0.0..=1.0).contains(&self.step_size_window) {
+            anyhow::bail!(
+                "step_size_window must be between 0 and 1, got {}",
+                self.step_size_window
+            );
+        }
+        if !(self.mass_matrix_window_growth.is_finite() && self.mass_matrix_window_growth >= 1.0) {
+            anyhow::bail!(
+                "mass_matrix_window_growth must be at least 1, got {}",
+                self.mass_matrix_window_growth
+            );
+        }
+        Ok(())
+    }
+}
+
 impl<S: Debug + Default> Default for EuclideanAdaptOptions<S> {
     fn default() -> Self {
         Self {
@@ -80,8 +105,10 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         let early_end = (options.early_window * num_tune_f) as u64;
         let final_second_step_size = num_tune.saturating_sub(step_size_window);
 
-        assert!(early_end < num_tune);
-        assert!(options.mass_matrix_window_growth >= 1.0);
+        // Guaranteed by `EuclideanAdaptOptions::validate`. Without tuning the windows are
+        // never used, because `adapt` stops adapting from the first draw.
+        debug_assert!(num_tune == 0 || early_end < num_tune);
+        debug_assert!(options.mass_matrix_window_growth >= 1.0);
 
         Self {
             step_size: StepSizeStrategy::new(options.step_size_settings),

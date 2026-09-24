@@ -194,7 +194,8 @@ impl CsvChainStorage {
                     vec[0].to_string()
                 }
             }
-            Value::I64(vec) => {
+            // Date times and time deltas are written as integer counts of their unit.
+            Value::I64(vec) | Value::DateTime64(_, vec) | Value::TimeDelta64(_, vec) => {
                 if vec.is_empty() {
                     "NA".to_string()
                 } else {
@@ -216,8 +217,6 @@ impl CsvChainStorage {
                     vec[0].clone()
                 }
             }
-            Value::DateTime64(_, _) => panic!("DateTime64 not supported in CSV output"),
-            Value::TimeDelta64(_, _) => panic!("TimeDelta64 not supported in CSV output"),
         }
     }
 
@@ -281,7 +280,7 @@ impl CsvChainStorage {
                             "NA".to_string()
                         }
                     }
-                    Value::I64(vec) => {
+                    Value::I64(vec) | Value::DateTime64(_, vec) | Value::TimeDelta64(_, vec) => {
                         if *index < vec.len() {
                             self.format_value(&Value::ScalarI64(vec[*index]))
                         } else {

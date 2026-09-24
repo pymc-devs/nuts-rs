@@ -84,7 +84,9 @@ fn make_sampler(dim: usize) -> impl Chain<CpuMath<PosteriorDensity>> {
 
     let math = nuts_rs::CpuMath::new(func);
     let mut rng = rand::rngs::StdRng::seed_from_u64(42u64);
-    settings.new_chain(0, math, &mut rng)
+    settings
+        .new_chain(0, math, &mut rng)
+        .expect("benchmark settings are valid")
 }
 
 pub fn sample_one(out: &mut [f64]) {

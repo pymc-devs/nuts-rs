@@ -77,7 +77,7 @@
 //!
 //! let chain = 0;
 //! let mut rng = rng();
-//! let mut sampler = settings.new_chain(0, math, &mut rng);
+//! let mut sampler = settings.new_chain(0, math, &mut rng).expect("Invalid settings");
 //!
 //! // Set to some initial position and start drawing samples.
 //! sampler.set_position(&vec![0f64; 10]).expect("Unrecoverable error during init");

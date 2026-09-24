@@ -1,10 +1,10 @@
 //! In-memory storage backend that accumulates draws and statistics into plain Rust `HashMap`s.
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use nuts_storable::{ItemType, Value};
 use std::collections::HashMap;
 
-use crate::storage::{ChainStorage, StorageConfig, TraceStorage};
+use crate::storage::{ChainStorage, StorageConfig, TraceStorage, value_type_name};
 use crate::{Progress, Settings};
 
 /// Container for different types of sample values in HashMaps
@@ -33,7 +33,7 @@ impl HashMapValue {
     }
 
     /// Push a value to the internal vector
-    fn push(&mut self, value: Value) {
+    fn push(&mut self, value: Value) -> Result<()> {
         match (self, value) {
             // Scalar values - store as single element vectors for array types
             (HashMapValue::F64(vec), Value::ScalarF64(v)) => vec.push(v),
@@ -53,7 +53,23 @@ impl HashMapValue {
             (HashMapValue::I64(vec), Value::DateTime64(_, v)) => vec.extend(v),
             (HashMapValue::I64(vec), Value::TimeDelta64(_, v)) => vec.extend(v),
 
-            _ => panic!("Mismatched item type"),
+            (target, value) => bail!(
+                "Got a {} value, but the declared type is {}",
+                value_type_name(&value),
+                target.type_name()
+            ),
+        }
+        Ok(())
+    }
+
+    fn type_name(&self) -> &'static str {
+        match self {
+            HashMapValue::F64(_) => "F64",
+            HashMapValue::F32(_) => "F32",
+            HashMapValue::Bool(_) => "Bool",
+            HashMapValue::I64(_) => "I64",
+            HashMapValue::U64(_) => "U64",
+            HashMapValue::String(_) => "String",
         }
     }
 }
@@ -132,12 +148,12 @@ impl HashMapChainStorage {
             &mut self.sample_stats
         };
 
-        if let Some(hash_value) = target_map.get_mut(name) {
-            hash_value.push(value);
-        } else {
-            panic!("Unknown param name: {}", name);
-        }
-        Ok(())
+        let Some(hash_value) = target_map.get_mut(name) else {
+            bail!("Unknown sampler stat: {name}");
+        };
+        hash_value
+            .push(value)
+            .with_context(|| format!("Could not store sampler stat {name}"))
     }
 
     /// Store a draw value
@@ -152,12 +168,12 @@ impl HashMapChainStorage {
             &mut self.sample_draws
         };
 
-        if let Some(hash_value) = target_map.get_mut(name) {
-            hash_value.push(value);
-        } else {
-            panic!("Unknown posterior variable name: {}", name);
-        }
-        Ok(())
+        let Some(hash_value) = target_map.get_mut(name) else {
+            bail!("Unknown posterior variable: {name}");
+        };
+        hash_value
+            .push(value)
+            .with_context(|| format!("Could not store posterior variable {name}"))
     }
 }
 
@@ -185,7 +201,7 @@ impl ChainStorage for HashMapChainStorage {
             if let Some(value) = value {
                 self.push_draw(name, value, info.tuning)?;
             } else {
-                panic!("Missing draw value for {}", name);
+                bail!("The model returned no value for posterior variable {name}");
             }
         }
         Ok(())

@@ -468,6 +468,13 @@ where
     type AdaptStrategy = A;
 
     fn set_position(&mut self, position: &[f64]) -> Result<()> {
+        if position.len() != self.dim() {
+            anyhow::bail!(
+                "Initial position has length {}, but the model has {} dimensions",
+                position.len(),
+                self.dim()
+            );
+        }
         let mut math_ = self.math.borrow_mut();
         let math = math_.deref_mut();
         self.adapt.init(
@@ -512,11 +519,11 @@ where
             pos.into()
         };
 
-        let progress = Progress {
+        let mut progress = Progress {
             draw: self.draw_count,
             chain: self.chain,
             diverging: info.diverging,
-            tuning: self.adapt.is_tuning(),
+            tuning: true,
             step_size: self.hamiltonian.step_size(),
             num_steps: info.num_steps,
         };
@@ -538,6 +545,8 @@ where
             // Refresh the collector for the next draw.
             self.collector = self.adapt.new_collector(math);
         }
+        // Read after `adapt`, which ends tuning at draw `num_tune`, as in `NutsChain::draw`.
+        progress.tuning = self.adapt.is_tuning();
 
         self.draw_count += 1;
         self.state = state;
@@ -575,8 +584,8 @@ mod tests {
     use rand::rng;
 
     use crate::{
-        Chain, DiagMclmcSettings, MclmcSettings, math::test_logps::NormalLogp,
-        math::CpuMath, sampler::Settings,
+        Chain, DiagMclmcSettings, MclmcSettings, math::CpuMath, math::test_logps::NormalLogp,
+        sampler::Settings,
     };
 
     #[test]
@@ -594,7 +603,7 @@ mod tests {
         };
 
         let mut rng = rng();
-        let mut chain = settings.new_chain(0, math, &mut rng);
+        let mut chain = settings.new_chain(0, math, &mut rng).unwrap();
         chain.set_position(&vec![0.0f64; ndim]).unwrap();
 
         let mut last_pos = vec![0.0f64; ndim];
@@ -630,7 +639,7 @@ mod tests {
         };
 
         let mut rng = rng();
-        let mut chain = settings.new_chain(0, math, &mut rng);
+        let mut chain = settings.new_chain(0, math, &mut rng).unwrap();
         chain.set_position(&vec![0.0f64; ndim]).unwrap();
 
         let mut last_pos = vec![0.0f64; ndim];
@@ -666,7 +675,7 @@ mod tests {
         };
 
         let mut rng = rng();
-        let mut chain = settings.new_chain(0, math, &mut rng);
+        let mut chain = settings.new_chain(0, math, &mut rng).unwrap();
         chain.set_position(&vec![0.0f64; ndim]).unwrap();
 
         let mut last_pos = vec![0.0f64; ndim];
