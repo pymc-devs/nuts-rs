@@ -1,12 +1,12 @@
 //! Storage backend that collects draws and statistics into in-memory ndarray arrays.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use ndarray::{ArrayD, IxDyn};
 use nuts_storable::{ItemType, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::storage::{ChainStorage, StorageConfig, TraceStorage};
+use crate::storage::{ChainStorage, StorageConfig, TraceStorage, value_type_name};
 use crate::{Math, Progress, Settings};
 
 /// Container for different types of ndarray values
@@ -38,90 +38,78 @@ impl NdarrayValue {
         }
     }
 
-    /// Set values at the specified indices
+    /// Store the value of one draw of one chain.
     fn set_value(&mut self, indices: &[usize], value: Value) -> Result<()> {
+        let &[chain, draw] = indices else {
+            bail!("Expected a chain and a draw index, got {indices:?}");
+        };
         match (self, value) {
-            (NdarrayValue::F64(arr), Value::ScalarF64(v)) => {
-                arr[IxDyn(indices)] = v;
+            (NdarrayValue::F64(arr), Value::ScalarF64(v)) => set_scalar(arr, chain, draw, v),
+            (NdarrayValue::F32(arr), Value::ScalarF32(v)) => set_scalar(arr, chain, draw, v),
+            (NdarrayValue::Bool(arr), Value::ScalarBool(v)) => set_scalar(arr, chain, draw, v),
+            (NdarrayValue::I64(arr), Value::ScalarI64(v)) => set_scalar(arr, chain, draw, v),
+            (NdarrayValue::U64(arr), Value::ScalarU64(v)) => set_scalar(arr, chain, draw, v),
+            (NdarrayValue::String(arr), Value::ScalarString(v)) => set_scalar(arr, chain, draw, v),
+            (NdarrayValue::F64(arr), Value::F64(v)) => set_slice(arr, chain, draw, v),
+            (NdarrayValue::F32(arr), Value::F32(v)) => set_slice(arr, chain, draw, v),
+            (NdarrayValue::Bool(arr), Value::Bool(v)) => set_slice(arr, chain, draw, v),
+            (NdarrayValue::I64(arr), Value::I64(v)) => set_slice(arr, chain, draw, v),
+            (NdarrayValue::U64(arr), Value::U64(v)) => set_slice(arr, chain, draw, v),
+            (NdarrayValue::String(arr), Value::Strings(v)) => set_slice(arr, chain, draw, v),
+            (NdarrayValue::I64(arr), Value::DateTime64(_, v) | Value::TimeDelta64(_, v)) => {
+                set_slice(arr, chain, draw, v)
             }
-            (NdarrayValue::F32(arr), Value::ScalarF32(v)) => {
-                arr[IxDyn(indices)] = v;
-            }
-            (NdarrayValue::Bool(arr), Value::ScalarBool(v)) => {
-                arr[IxDyn(indices)] = v;
-            }
-            (NdarrayValue::I64(arr), Value::ScalarI64(v)) => {
-                arr[IxDyn(indices)] = v;
-            }
-            (NdarrayValue::U64(arr), Value::ScalarU64(v)) => {
-                arr[IxDyn(indices)] = v;
-            }
-            (NdarrayValue::F64(arr), Value::F64(v)) => {
-                // For vector values, we need to handle the extra dimensions
-                if indices.len() == 2 {
-                    // Simple case: just set the slice
-                    let mut view = arr.slice_mut(ndarray::s![indices[0], indices[1], ..]);
-                    for (i, val) in v.iter().enumerate() {
-                        view[i] = *val;
-                    }
-                } else {
-                    return Err(anyhow::anyhow!(
-                        "Vector assignment with complex indices not implemented"
-                    ));
-                }
-            }
-            (NdarrayValue::F32(arr), Value::F32(v)) => {
-                if indices.len() == 2 {
-                    let mut view = arr.slice_mut(ndarray::s![indices[0], indices[1], ..]);
-                    for (i, val) in v.iter().enumerate() {
-                        view[i] = *val;
-                    }
-                } else {
-                    return Err(anyhow::anyhow!(
-                        "Vector assignment with complex indices not implemented"
-                    ));
-                }
-            }
-            (NdarrayValue::Bool(arr), Value::Bool(v)) => {
-                if indices.len() == 2 {
-                    let mut view = arr.slice_mut(ndarray::s![indices[0], indices[1], ..]);
-                    for (i, val) in v.iter().enumerate() {
-                        view[i] = *val;
-                    }
-                } else {
-                    return Err(anyhow::anyhow!(
-                        "Vector assignment with complex indices not implemented"
-                    ));
-                }
-            }
-            (NdarrayValue::I64(arr), Value::I64(v)) => {
-                if indices.len() == 2 {
-                    let mut view = arr.slice_mut(ndarray::s![indices[0], indices[1], ..]);
-                    for (i, val) in v.iter().enumerate() {
-                        view[i] = *val;
-                    }
-                } else {
-                    return Err(anyhow::anyhow!(
-                        "Vector assignment with complex indices not implemented"
-                    ));
-                }
-            }
-            (NdarrayValue::U64(arr), Value::U64(v)) => {
-                if indices.len() == 2 {
-                    let mut view = arr.slice_mut(ndarray::s![indices[0], indices[1], ..]);
-                    for (i, val) in v.iter().enumerate() {
-                        view[i] = *val;
-                    }
-                } else {
-                    return Err(anyhow::anyhow!(
-                        "Vector assignment with complex indices not implemented"
-                    ));
-                }
-            }
-            _ => return Err(anyhow::anyhow!("Mismatched item type")),
+            (target, value) => bail!(
+                "Got a {} value, but the declared type is {}",
+                value_type_name(&value),
+                target.type_name()
+            ),
         }
-        Ok(())
     }
+
+    fn type_name(&self) -> &'static str {
+        match self {
+            NdarrayValue::F64(_) => "F64",
+            NdarrayValue::F32(_) => "F32",
+            NdarrayValue::Bool(_) => "Bool",
+            NdarrayValue::I64(_) => "I64",
+            NdarrayValue::U64(_) => "U64",
+            NdarrayValue::String(_) => "String",
+        }
+    }
+}
+
+fn set_scalar<T>(arr: &mut ArrayD<T>, chain: usize, draw: usize, value: T) -> Result<()> {
+    let shape = arr.shape().to_vec();
+    let Some(target) = arr.get_mut(IxDyn(&[chain, draw])) else {
+        bail!(
+            "Could not store a single value of chain {chain}, draw {draw} in an array \
+             of shape {shape:?}. Does the model return values of the declared shape?"
+        );
+    };
+    *target = value;
+    Ok(())
+}
+
+fn set_slice<T>(arr: &mut ArrayD<T>, chain: usize, draw: usize, values: Vec<T>) -> Result<()> {
+    let shape = arr.shape().to_vec();
+    if shape.len() < 2 || chain >= shape[0] || draw >= shape[1] {
+        bail!("Chain {chain}, draw {draw} is outside of the trace of shape {shape:?}");
+    }
+    let mut view = arr.slice_mut(ndarray::s![chain, draw, ..]);
+    if view.len() != values.len() {
+        bail!(
+            "Got {} values, but the declared shape {:?} holds {}",
+            values.len(),
+            &shape[2..],
+            view.len()
+        );
+    }
+    // Values are flattened in row-major order, which is also the iteration order.
+    for (target, value) in view.iter_mut().zip(values) {
+        *target = value;
+    }
+    Ok(())
 }
 
 /// Final result containing the collected samples as ndarrays
@@ -172,7 +160,9 @@ impl NdarrayChainStorage {
         let mut shared = self.shared_arrays.lock().unwrap();
         if let Some(array) = shared.stats_arrays.get_mut(name) {
             let indices = vec![self.chain, self.current_draw];
-            array.set_value(&indices, value)?;
+            array
+                .set_value(&indices, value)
+                .with_context(|| format!("Could not store sampler stat {name}"))?;
         } else {
             return Err(anyhow::anyhow!("Unknown param name: {}", name));
         }
@@ -188,7 +178,9 @@ impl NdarrayChainStorage {
         let mut shared = self.shared_arrays.lock().unwrap();
         if let Some(array) = shared.draws_arrays.get_mut(name) {
             let indices = vec![self.chain, self.current_draw];
-            array.set_value(&indices, value)?;
+            array
+                .set_value(&indices, value)
+                .with_context(|| format!("Could not store posterior variable {name}"))?;
         } else {
             return Err(anyhow::anyhow!("Unknown posterior variable name: {}", name));
         }
@@ -219,58 +211,39 @@ impl StorageConfig for NdarrayConfig {
         let n_draws = settings.hint_num_draws();
         let total_draws = n_tune + n_draws;
 
-        let mut stats_arrays = HashMap::new();
-        let mut draws_arrays = HashMap::new();
-
-        let dim_sizes = math.dim_sizes();
-
-        // Create arrays for stats
-        for ((name, extra_dims), (name2, item_type)) in settings
-            .stat_dims_all(math)
-            .into_iter()
-            .zip(settings.stat_types(math).into_iter())
-        {
-            assert!(name == name2);
-            if ["draw", "chain"].contains(&name.as_str()) {
-                continue;
+        // Arrays of shape [n_chains, total_draws, ...extra_dims]
+        let new_arrays = |dims: Vec<(String, Vec<String>)>,
+                          types: Vec<(String, ItemType)>,
+                          dim_sizes: HashMap<String, u64>|
+         -> Result<HashMap<String, NdarrayValue>> {
+            let mut arrays = HashMap::new();
+            for ((name, extra_dims), (name2, item_type)) in dims.into_iter().zip(types) {
+                assert!(name == name2);
+                if ["draw", "chain"].contains(&name.as_str()) {
+                    continue;
+                }
+                let mut shape = vec![n_chains, total_draws];
+                for dim in extra_dims {
+                    let dim_size = *dim_sizes
+                        .get(&dim)
+                        .with_context(|| format!("Unknown dimension {dim} of {name}"))?;
+                    shape.push(dim_size as usize);
+                }
+                arrays.insert(name, NdarrayValue::new(item_type, &shape));
             }
+            Ok(arrays)
+        };
 
-            // Build shape: [n_chains, total_draws, ...extra_dims]
-            let mut shape = vec![n_chains, total_draws];
-            for dim in extra_dims {
-                let dim_size = *dim_sizes
-                    .get(&dim.to_string())
-                    .context(format!("Unknown dimension: {}", dim))?
-                    as usize;
-                shape.push(dim_size);
-            }
-
-            let array = NdarrayValue::new(item_type, &shape);
-            stats_arrays.insert(name, array);
-        }
-
-        for ((name, extra_dims), (name2, item_type)) in settings
-            .stat_dims_all(math)
-            .into_iter()
-            .zip(settings.stat_types(math).into_iter())
-        {
-            assert!(name == name2);
-            if ["draw", "chain"].contains(&name.as_str()) {
-                continue;
-            }
-            // Build shape: [n_chains, total_draws, ...extra_dims]
-            let mut shape = vec![n_chains, total_draws];
-            for dim in extra_dims {
-                let dim_size = *dim_sizes
-                    .get(&dim.to_string())
-                    .context(format!("Unknown dimension: {}", dim))?
-                    as usize;
-                shape.push(dim_size);
-            }
-
-            let array = NdarrayValue::new(item_type, &shape);
-            draws_arrays.insert(name, array);
-        }
+        let stats_arrays = new_arrays(
+            settings.stat_dims_all(math),
+            settings.stat_types(math),
+            settings.stat_dim_sizes(math),
+        )?;
+        let draws_arrays = new_arrays(
+            settings.data_dims_all(math),
+            settings.data_types(math),
+            math.dim_sizes(),
+        )?;
 
         let shared_arrays = Arc::new(Mutex::new(SharedArrays {
             stats_arrays,
@@ -300,7 +273,7 @@ impl ChainStorage for NdarrayChainStorage {
             if let Some(value) = value {
                 self.push_draw(name, value)?;
             } else {
-                return Err(anyhow::anyhow!("Missing draw value for {}", name));
+                bail!("The model returned no value for posterior variable {name}");
             }
         }
         self.current_draw += 1;

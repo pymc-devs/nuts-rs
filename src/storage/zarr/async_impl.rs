@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::task::JoinSet;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use nuts_storable::{ItemType, Value};
 use zarrs::array::{ArrayBuilder, ArraySubset};
 use zarrs::group::GroupBuilder;
@@ -15,7 +15,8 @@ use zarrs::storage::{
 };
 
 use super::common::{
-    Chunk, SampleBuffer, SampleBufferValue, create_arrays, value_to_zarr_coord_params,
+    Chunk, SampleBuffer, SampleBufferValue, check_chunk_len, create_arrays,
+    value_to_zarr_coord_params,
 };
 use crate::storage::{ChainStorage, StorageConfig, TraceStorage};
 use crate::{Math, Progress, Settings};
@@ -99,31 +100,31 @@ async fn store_zarr_chunk_async(array: Array, data: Chunk, chain_chunk_index: u6
         let chunk_subset = ArraySubset::new_with_shape(shape);
         match data.values {
             SampleBufferValue::F64(v) => {
-                assert!(v.len() == chunk_subset.num_elements_usize());
+                check_chunk_len(v.len(), &chunk_subset, &array)?;
                 array
                     .async_store_chunk_subset(&chunk, &chunk_subset, &v)
                     .await
             }
             SampleBufferValue::F32(v) => {
-                assert!(v.len() == chunk_subset.num_elements_usize());
+                check_chunk_len(v.len(), &chunk_subset, &array)?;
                 array
                     .async_store_chunk_subset(&chunk, &chunk_subset, &v)
                     .await
             }
             SampleBufferValue::U64(v) => {
-                assert!(v.len() == chunk_subset.num_elements_usize());
+                check_chunk_len(v.len(), &chunk_subset, &array)?;
                 array
                     .async_store_chunk_subset(&chunk, &chunk_subset, &v)
                     .await
             }
             SampleBufferValue::I64(v) => {
-                assert!(v.len() == chunk_subset.num_elements_usize());
+                check_chunk_len(v.len(), &chunk_subset, &array)?;
                 array
                     .async_store_chunk_subset(&chunk, &chunk_subset, &v)
                     .await
             }
             SampleBufferValue::Bool(v) => {
-                assert!(v.len() == chunk_subset.num_elements_usize());
+                check_chunk_len(v.len(), &chunk_subset, &array)?;
                 array
                     .async_store_chunk_subset(&chunk, &chunk_subset, &v)
                     .await
@@ -161,7 +162,8 @@ async fn store_coords(
     coords: &HashMap<String, Value>,
 ) -> Result<()> {
     for (name, coord) in coords {
-        let (data_type, len, fill_value) = value_to_zarr_coord_params(coord);
+        let (data_type, len, fill_value) = value_to_zarr_coord_params(coord)
+            .with_context(|| format!("Could not store coordinate {name}"))?;
         let name: &String = name;
         let coord_array = ArrayBuilder::new(
             vec![len as u64],
@@ -276,20 +278,28 @@ impl ZarrAsyncChainStorage {
         chain: u64,
         rt_handle: tokio::runtime::Handle,
         event_dim_of_stat: HashMap<String, String>,
-    ) -> Self {
+    ) -> Result<Self> {
         let draw_buffers: HashMap<String, SampleBuffer> = draw_types
             .iter()
-            .map(|(name, item_type)| (name.clone(), SampleBuffer::new(*item_type, buffer_size)))
-            .collect();
+            .map(|(name, item_type)| {
+                let buffer = SampleBuffer::new(*item_type, buffer_size)
+                    .with_context(|| format!("Could not create storage for {name}"))?;
+                Ok((name.clone(), buffer))
+            })
+            .collect::<Result<_>>()?;
 
         let stats_buffers: HashMap<String, SampleBuffer> = param_types
             .iter()
-            .map(|(name, item_type)| (name.clone(), SampleBuffer::new(*item_type, buffer_size)))
-            .collect();
+            .map(|(name, item_type)| {
+                let buffer = SampleBuffer::new(*item_type, buffer_size)
+                    .with_context(|| format!("Could not create storage for {name}"))?;
+                Ok((name.clone(), buffer))
+            })
+            .collect::<Result<_>>()?;
 
         let num_arrays = draw_buffers.len() + stats_buffers.len();
 
-        Self {
+        Ok(Self {
             draw_buffers,
             stats_buffers,
             arrays,
@@ -302,7 +312,7 @@ impl ZarrAsyncChainStorage {
             // that we queue one write per draw.
             max_queued_writes: num_arrays.max(1),
             rt_handle,
-        }
+        })
     }
 
     /// Store a parameter value, spawning async write when buffer is full
@@ -311,9 +321,12 @@ impl ZarrAsyncChainStorage {
             return Ok(());
         }
         let Some(buffer) = self.stats_buffers.get_mut(name) else {
-            panic!("Unknown param name: {}", name);
+            bail!("Unknown sampler stat: {name}");
         };
-        if let Some(chunk) = buffer.push(value) {
+        if let Some(chunk) = buffer
+            .push(value)
+            .with_context(|| format!("Could not store sampler stat {name}"))?
+        {
             let array = if is_warmup {
                 self.arrays.warmup_param_arrays[name].clone()
             } else {
@@ -339,9 +352,12 @@ impl ZarrAsyncChainStorage {
             return Ok(());
         }
         let Some(buffer) = self.draw_buffers.get_mut(name) else {
-            panic!("Unknown posterior variable name: {}", name);
+            bail!("Unknown posterior variable: {name}");
         };
-        if let Some(chunk) = buffer.push(value) {
+        if let Some(chunk) = buffer
+            .push(value)
+            .with_context(|| format!("Could not store posterior variable {name}"))?
+        {
             let array = if is_warmup {
                 self.arrays.warmup_draw_arrays[name].clone()
             } else {
@@ -464,7 +480,7 @@ impl ChainStorage for ZarrAsyncChainStorage {
             if let Some(value) = value {
                 self.push_draw(name, value, info.tuning)?;
             } else {
-                panic!("Missing draw value for {}", name);
+                bail!("The model returned no value for posterior variable {name}");
             }
         }
         Ok(())
@@ -887,7 +903,7 @@ impl TraceStorage for ZarrAsyncTraceStorage {
     type Finalized = ();
 
     fn initialize_trace_for_chain(&self, chain_id: u64) -> Result<Self::ChainStorage> {
-        Ok(ZarrAsyncChainStorage::new(
+        ZarrAsyncChainStorage::new(
             self.arrays.clone(),
             &self.param_types,
             &self.draw_types,
@@ -895,7 +911,7 @@ impl TraceStorage for ZarrAsyncTraceStorage {
             chain_id as _,
             self.rt_handle.clone(),
             self.event_dim_of_stat.clone(),
-        ))
+        )
     }
 
     fn finalize(

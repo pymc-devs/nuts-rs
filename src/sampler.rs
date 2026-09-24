@@ -7,7 +7,7 @@ use rand::{Rng, SeedableRng, rngs::ChaCha8Rng};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, fmt::Debug, time::Duration};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use itertools::Itertools;
 use std::{
     collections::HashSet,
@@ -16,8 +16,6 @@ use std::{
     time::Instant,
 };
 
-#[cfg(feature = "parallel")]
-use anyhow::bail;
 #[cfg(feature = "parallel")]
 use std::{
     collections::VecDeque,
@@ -53,12 +51,17 @@ pub trait Settings:
 {
     type Chain<M: Math>: Chain<M>;
 
+    /// Check for values the sampler cannot work with.
+    fn validate(&self) -> Result<()>;
+
+    /// Create a new chain. Fails if the settings are invalid (see [`Settings::validate`]),
+    /// or if they need something from `math` it cannot provide.
     fn new_chain<M: Math, R: Rng + ?Sized>(
         &self,
         chain: u64,
         math: M,
         rng: &mut R,
-    ) -> Self::Chain<M>;
+    ) -> Result<Self::Chain<M>>;
 
     fn hint_num_tune(&self) -> usize;
     fn hint_num_draws(&self) -> usize;
@@ -375,10 +378,39 @@ pub type FlowMclmcSettings = MclmcSettings<FlowSettings>;
 #[deprecated(since = "0.0.0", note = "Use FlowMclmcSettings instead")]
 pub type TransformedMclmcSettings = FlowMclmcSettings;
 
-fn usize_hint(value: u64, field: &str) -> usize {
-    value
-        .try_into()
-        .unwrap_or_else(|_| panic!("{field} must be smaller than usize::MAX"))
+/// Saturates, because `validate_draw_counts` already rejects counts that do not fit.
+fn usize_hint(value: u64) -> usize {
+    value.try_into().unwrap_or(usize::MAX)
+}
+
+fn validate_draw_counts(num_tune: u64, num_draws: u64) -> Result<()> {
+    let total = num_tune
+        .checked_add(num_draws)
+        .context("num_tune + num_draws is too large")?;
+    usize::try_from(total).context("num_tune + num_draws does not fit into usize")?;
+    Ok(())
+}
+
+fn validate_mclmc<A: Debug + Copy + Default + Serialize>(
+    settings: &MclmcSettings<A>,
+) -> Result<()> {
+    validate_draw_counts(settings.num_tune, settings.num_draws)?;
+    if !(settings.step_size.is_finite() && settings.step_size > 0.0) {
+        bail!(
+            "step_size must be positive and finite, got {}",
+            settings.step_size
+        );
+    }
+    Ok(())
+}
+
+/// The microcanonical (ESH) dynamics normalize the momentum onto the unit sphere, which
+/// needs at least two dimensions.
+fn check_microcanonical_dim(microcanonical: bool, dim: usize) -> Result<()> {
+    if microcanonical && dim < 2 {
+        bail!("Microcanonical dynamics need at least 2 dimensions, but the model has {dim}");
+    }
+    Ok(())
 }
 
 fn default_mclmc_settings<A: Debug + Copy + Default + Serialize>(
@@ -452,10 +484,16 @@ impl Settings for DiagMclmcSettings {
         chain: u64,
         mut math: M,
         rng: &mut R,
-    ) -> Self::Chain<M> {
+    ) -> Result<Self::Chain<M>> {
         use crate::dynamics::KineticEnergyKind;
         use crate::mclmc::MclmcChain;
         use crate::stepsize::StepSizeAdaptMethod;
+
+        self.validate()?;
+        check_microcanonical_dim(
+            !matches!(self.trajectory_kind, MclmcTrajectoryKind::Euclidean),
+            math.dim(),
+        )?;
 
         let num_tune = self.num_tune;
         let mut adapt_options = self.adapt_options;
@@ -486,7 +524,7 @@ impl Settings for DiagMclmcSettings {
         let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
-        MclmcChain::new(
+        Ok(MclmcChain::new(
             math,
             hamiltonian,
             strategy,
@@ -498,15 +536,20 @@ impl Settings for DiagMclmcSettings {
             switch_draw,
             self.max_energy_error,
             stats_options,
-        )
+        ))
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_mclmc(self)?;
+        self.adapt_options.validate()
     }
 
     fn hint_num_tune(&self) -> usize {
-        usize_hint(self.num_tune, "num_tune")
+        usize_hint(self.num_tune)
     }
 
     fn hint_num_draws(&self) -> usize {
-        usize_hint(self.num_draws, "num_draws")
+        usize_hint(self.num_draws)
     }
 
     fn num_chains(&self) -> usize {
@@ -592,10 +635,16 @@ impl Settings for LowRankMclmcSettings {
         chain: u64,
         mut math: M,
         rng: &mut R,
-    ) -> Self::Chain<M> {
+    ) -> Result<Self::Chain<M>> {
         use crate::dynamics::KineticEnergyKind;
         use crate::mclmc::MclmcChain;
         use crate::stepsize::StepSizeAdaptMethod;
+
+        self.validate()?;
+        check_microcanonical_dim(
+            !matches!(self.trajectory_kind, MclmcTrajectoryKind::Euclidean),
+            math.dim(),
+        )?;
 
         let num_tune = self.num_tune;
         let mut adapt_options = self.adapt_options;
@@ -623,7 +672,7 @@ impl Settings for LowRankMclmcSettings {
         let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
-        MclmcChain::new(
+        Ok(MclmcChain::new(
             math,
             hamiltonian,
             strategy,
@@ -635,15 +684,20 @@ impl Settings for LowRankMclmcSettings {
             switch_draw,
             self.max_energy_error,
             stats_options,
-        )
+        ))
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_mclmc(self)?;
+        self.adapt_options.validate()
     }
 
     fn hint_num_tune(&self) -> usize {
-        usize_hint(self.num_tune, "num_tune")
+        usize_hint(self.num_tune)
     }
 
     fn hint_num_draws(&self) -> usize {
-        usize_hint(self.num_draws, "num_draws")
+        usize_hint(self.num_draws)
     }
 
     fn num_chains(&self) -> usize {
@@ -738,7 +792,13 @@ impl Settings for LowRankNutsSettings {
         chain: u64,
         mut math: M,
         mut rng: &mut R,
-    ) -> Self::Chain<M> {
+    ) -> Result<Self::Chain<M>> {
+        self.validate()?;
+        check_microcanonical_dim(
+            matches!(self.trajectory_kind, KineticEnergyKind::Microcanonical),
+            math.dim(),
+        )?;
+
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
         let mass_matrix = LowRankMassMatrix::new(&mut math, self.adapt_options.mass_matrix_options);
@@ -753,7 +813,7 @@ impl Settings for LowRankNutsSettings {
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
 
-        NutsChain::new(
+        Ok(NutsChain::new(
             math,
             hamiltonian,
             strategy,
@@ -761,15 +821,20 @@ impl Settings for LowRankNutsSettings {
             rng,
             chain,
             self.stats_options(),
-        )
+        ))
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_draw_counts(self.num_tune, self.num_draws)?;
+        self.adapt_options.validate()
     }
 
     fn hint_num_tune(&self) -> usize {
-        usize_hint(self.num_tune, "num_tune")
+        usize_hint(self.num_tune)
     }
 
     fn hint_num_draws(&self) -> usize {
-        usize_hint(self.num_draws, "num_draws")
+        usize_hint(self.num_draws)
     }
 
     fn num_chains(&self) -> usize {
@@ -828,7 +893,13 @@ impl Settings for DiagNutsSettings {
         chain: u64,
         mut math: M,
         mut rng: &mut R,
-    ) -> Self::Chain<M> {
+    ) -> Result<Self::Chain<M>> {
+        self.validate()?;
+        check_microcanonical_dim(
+            matches!(self.trajectory_kind, KineticEnergyKind::Microcanonical),
+            math.dim(),
+        )?;
+
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
         let mass_matrix = DiagMassMatrix::new(
@@ -846,7 +917,7 @@ impl Settings for DiagNutsSettings {
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
 
-        NutsChain::new(
+        Ok(NutsChain::new(
             math,
             potential,
             strategy,
@@ -854,15 +925,20 @@ impl Settings for DiagNutsSettings {
             rng,
             chain,
             self.stats_options(),
-        )
+        ))
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_draw_counts(self.num_tune, self.num_draws)?;
+        self.adapt_options.validate()
     }
 
     fn hint_num_tune(&self) -> usize {
-        usize_hint(self.num_tune, "num_tune")
+        usize_hint(self.num_tune)
     }
 
     fn hint_num_draws(&self) -> usize {
-        usize_hint(self.num_draws, "num_draws")
+        usize_hint(self.num_draws)
     }
 
     fn num_chains(&self) -> usize {
@@ -921,14 +997,20 @@ impl Settings for FlowNutsSettings {
         chain: u64,
         mut math: M,
         mut rng: &mut R,
-    ) -> Self::Chain<M> {
+    ) -> Result<Self::Chain<M>> {
+        self.validate()?;
+        check_microcanonical_dim(
+            matches!(self.trajectory_kind, KineticEnergyKind::Microcanonical),
+            math.dim(),
+        )?;
+
         let num_tune = self.num_tune;
 
         let strategy =
             ExternalTransformAdaptation::new(&mut math, self.adapt_options, num_tune, chain);
         let params = math
             .new_transformation(rng, math.dim(), chain)
-            .expect("Failed to create external transformation");
+            .context("Failed to create external transformation")?;
         let transform = ExternalTransformation::new(params);
         let hamiltonian = TransformedHamiltonian::new(
             &mut math,
@@ -940,7 +1022,7 @@ impl Settings for FlowNutsSettings {
         let options = nuts_options(self);
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
-        NutsChain::new(
+        Ok(NutsChain::new(
             math,
             hamiltonian,
             strategy,
@@ -948,15 +1030,20 @@ impl Settings for FlowNutsSettings {
             rng,
             chain,
             self.stats_options(),
-        )
+        ))
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_draw_counts(self.num_tune, self.num_draws)?;
+        self.adapt_options.validate()
     }
 
     fn hint_num_tune(&self) -> usize {
-        usize_hint(self.num_tune, "num_tune")
+        usize_hint(self.num_tune)
     }
 
     fn hint_num_draws(&self) -> usize {
-        usize_hint(self.num_draws, "num_draws")
+        usize_hint(self.num_draws)
     }
 
     fn num_chains(&self) -> usize {
@@ -1017,16 +1104,22 @@ impl Settings for FlowMclmcSettings {
         chain: u64,
         mut math: M,
         rng: &mut R,
-    ) -> Self::Chain<M> {
+    ) -> Result<Self::Chain<M>> {
         use crate::dynamics::KineticEnergyKind;
         use crate::mclmc::MclmcChain;
+
+        self.validate()?;
+        check_microcanonical_dim(
+            !matches!(self.trajectory_kind, MclmcTrajectoryKind::Euclidean),
+            math.dim(),
+        )?;
 
         let num_tune = self.num_tune;
         let strategy =
             ExternalTransformAdaptation::new(&mut math, self.adapt_options, num_tune, chain);
         let params = math
             .new_transformation(rng, math.dim(), chain)
-            .expect("Failed to create external transformation");
+            .context("Failed to create external transformation")?;
         let transform = ExternalTransformation::new(params);
         let initial_kind = match self.trajectory_kind {
             MclmcTrajectoryKind::Microcanonical => KineticEnergyKind::Microcanonical,
@@ -1039,7 +1132,7 @@ impl Settings for FlowMclmcSettings {
         let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
-        MclmcChain::new(
+        Ok(MclmcChain::new(
             math,
             hamiltonian,
             strategy,
@@ -1051,15 +1144,20 @@ impl Settings for FlowMclmcSettings {
             switch_draw,
             self.max_energy_error,
             stats_options,
-        )
+        ))
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_mclmc(self)?;
+        self.adapt_options.validate()
     }
 
     fn hint_num_tune(&self) -> usize {
-        usize_hint(self.num_tune, "num_tune")
+        usize_hint(self.num_tune)
     }
 
     fn hint_num_draws(&self) -> usize {
-        usize_hint(self.num_draws, "num_draws")
+        usize_hint(self.num_draws)
     }
 
     fn num_chains(&self) -> usize {
@@ -1115,7 +1213,7 @@ pub fn sample_sequentially<'math, M: Math + 'math, R: Rng + ?Sized>(
     chain: u64,
     rng: &mut R,
 ) -> Result<impl Iterator<Item = Result<(Box<[f64]>, Progress)>> + 'math> {
-    let mut sampler = settings.new_chain(chain, math, rng);
+    let mut sampler = settings.new_chain(chain, math, rng)?;
     sampler.set_position(start)?;
     Ok((0..draws).map(move |_| sampler.draw()))
 }
@@ -1271,7 +1369,7 @@ impl<M: Model, S: Settings, C: ChainStorage> ChainRunner<M, S, C> {
             .context("Failed to create model density")?;
         let dim = logp.dim();
 
-        let mut chain = settings.new_chain(chain_id, logp, &mut rng);
+        let mut chain = settings.new_chain(chain_id, logp, &mut rng)?;
 
         shared.progress.lock().expect("Poisoned mutex").started = true;
 
@@ -1582,6 +1680,7 @@ impl<F: Send + 'static> Sampler<F> {
         M: Model,
         T: TraceStorage<Finalized = F>,
     {
+        settings.validate()?;
         let driver = ThreadedDriver::new(model, settings, trace_config, num_cores, callback)?;
         Ok(Self {
             driver: Box::new(driver),
@@ -1606,6 +1705,7 @@ impl<F: Send + 'static> Sampler<F> {
         M: Model,
         T: TraceStorage<Finalized = F>,
     {
+        settings.validate()?;
         let driver = SequentialDriver::new(model, settings, trace_config, callback)?;
         Ok(Self {
             driver: Box::new(driver),
@@ -2178,7 +2278,7 @@ mod tests {
         assert!(!stat_names.is_empty());
         assert_eq!(stat_names.len(), stat_types.len());
 
-        let mut chain = settings.new_chain(0, math, &mut rng);
+        let mut chain = settings.new_chain(0, math, &mut rng)?;
         chain.set_position(&vec![0.2; 4])?;
         let (_draw, _info) = chain.draw()?;
         Ok(())
@@ -2254,7 +2354,7 @@ mod tests {
 
         let mut rng = StdRng::seed_from_u64(42);
 
-        let mut chain = settings.new_chain(0, math, &mut rng);
+        let mut chain = settings.new_chain(0, math, &mut rng)?;
 
         let (_draw, info) = chain.draw()?;
         assert!(info.tuning);
@@ -2424,6 +2524,229 @@ mod tests {
         assert!(err.is_none());
         assert_eq!(trace.len(), 5);
         Ok(())
+    }
+
+    /// Bad settings and inconsistent models must produce errors instead of panics, both
+    /// when building a chain directly and through `Sampler`.
+    mod input_errors {
+        use std::{sync::Arc, time::Duration};
+
+        use anyhow::Result;
+        use rand::{SeedableRng, rngs::StdRng};
+
+        use super::CpuModel;
+        use crate::{
+            Chain, DiagMclmcSettings, DiagNutsSettings, HashMapConfig, KineticEnergyKind,
+            LowRankMclmcSettings, LowRankNutsSettings, MclmcTrajectoryKind, Sampler,
+            SamplerWaitResult, Settings, StepSizeAdaptMethod,
+            math::CpuMath,
+            math::test_logps::{ExpandMismatch, MismatchedExpandLogp, NormalLogp},
+            storage::{StorageConfig, TraceStorage},
+        };
+
+        fn new_chain_error<S: Settings>(settings: S, dim: usize) -> String {
+            let logp = NormalLogp { dim, mu: 0.1 };
+            let mut rng = StdRng::seed_from_u64(42);
+            let Err(err) = settings.new_chain(0, CpuMath::new(&logp), &mut rng) else {
+                panic!("new_chain should fail");
+            };
+            format!("{err:#}")
+        }
+
+        #[test]
+        fn invalid_settings() {
+            let base = DiagNutsSettings::default();
+            let mut cases = vec![];
+
+            let mut settings = base;
+            settings.adapt_options.step_size_settings.jitter = Some(0.0);
+            cases.push(("jitter", settings));
+
+            let mut settings = base;
+            settings.adapt_options.step_size_settings.initial_step = 0.0;
+            cases.push(("initial_step", settings));
+
+            let mut settings = base;
+            settings
+                .adapt_options
+                .step_size_settings
+                .adapt_options
+                .method = StepSizeAdaptMethod::Fixed(-1.0);
+            cases.push(("Fixed step size", settings));
+
+            let mut settings = base;
+            settings.adapt_options.early_window = 1.0;
+            cases.push(("early_window", settings));
+
+            let mut settings = base;
+            settings.adapt_options.mass_matrix_window_growth = 0.5;
+            cases.push(("mass_matrix_window_growth", settings));
+
+            for (field, settings) in cases {
+                let err = new_chain_error(settings, 4);
+                assert!(err.contains(field), "{field}: {err}");
+            }
+
+            let settings = DiagMclmcSettings {
+                step_size: 0.0,
+                ..Default::default()
+            };
+            let err = new_chain_error(settings, 4);
+            assert!(err.contains("step_size"), "{err}");
+        }
+
+        #[test]
+        fn sampler_rejects_invalid_settings() {
+            let mut settings = DiagNutsSettings::default();
+            settings.adapt_options.step_size_settings.jitter = Some(-0.1);
+            let model = Arc::new(CpuModel::new(NormalLogp { dim: 4, mu: 0.1 }));
+            let result = Sampler::new(model, settings, HashMapConfig::new(), 1, None);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn microcanonical_needs_two_dims() {
+            let settings = DiagNutsSettings {
+                trajectory_kind: KineticEnergyKind::Microcanonical,
+                ..Default::default()
+            };
+            assert!(new_chain_error(settings, 1).contains("2 dimensions"));
+
+            let settings = DiagMclmcSettings {
+                trajectory_kind: MclmcTrajectoryKind::Microcanonical,
+                ..Default::default()
+            };
+            assert!(new_chain_error(settings, 1).contains("2 dimensions"));
+        }
+
+        fn sample_without_tuning<S: Settings>(settings: S) -> Result<()> {
+            let logp = NormalLogp { dim: 4, mu: 0.1 };
+            let mut rng = StdRng::seed_from_u64(42);
+            let mut chain = settings.new_chain(0, CpuMath::new(&logp), &mut rng)?;
+            chain.set_position(&[0.2; 4])?;
+            for _ in 0..10 {
+                let (_draw, info) = chain.draw()?;
+                assert!(!info.tuning);
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn no_tuning() -> Result<()> {
+            sample_without_tuning(DiagNutsSettings {
+                num_tune: 0,
+                ..Default::default()
+            })?;
+            sample_without_tuning(LowRankNutsSettings {
+                num_tune: 0,
+                ..Default::default()
+            })?;
+            sample_without_tuning(DiagMclmcSettings {
+                num_tune: 0,
+                ..Default::default()
+            })?;
+            sample_without_tuning(LowRankMclmcSettings {
+                num_tune: 0,
+                ..Default::default()
+            })?;
+            Ok(())
+        }
+
+        #[test]
+        fn wrong_initial_position_length() -> Result<()> {
+            let logp = NormalLogp { dim: 4, mu: 0.1 };
+            let mut rng = StdRng::seed_from_u64(42);
+            let mut chain =
+                DiagNutsSettings::default().new_chain(0, CpuMath::new(&logp), &mut rng)?;
+            let err = chain.set_position(&[0.2; 3]).unwrap_err();
+            assert!(format!("{err}").contains("length 3"), "{err}");
+            Ok(())
+        }
+
+        /// Sample a model whose expanded draws do not match their declaration, and return
+        /// the error the sampler reports.
+        fn sample_error<C, T>(config: C, mismatch: ExpandMismatch) -> String
+        where
+            C: StorageConfig<Storage = T>,
+            T: TraceStorage,
+        {
+            let settings = DiagNutsSettings {
+                num_tune: 5,
+                num_draws: 5,
+                num_chains: 1,
+                seed: 1,
+                ..Default::default()
+            };
+            let logp = MismatchedExpandLogp {
+                inner: NormalLogp { dim: 3, mu: 0.1 },
+                mismatch,
+            };
+            let mut sampler =
+                Sampler::new(Arc::new(CpuModel::new(logp)), settings, config, 1, None)
+                    .expect("Sampler should start");
+            loop {
+                match sampler.wait_timeout(Duration::from_secs(10)) {
+                    SamplerWaitResult::Trace(_) => panic!("sampling should fail for {mismatch:?}"),
+                    SamplerWaitResult::Timeout(new_sampler) => sampler = new_sampler,
+                    SamplerWaitResult::Err(err, _) => return format!("{err:#}"),
+                }
+            }
+        }
+
+        fn assert_explains(err: &str, mismatch: ExpandMismatch) {
+            let expected = match mismatch {
+                ExpandMismatch::WrongType => "Got a F32 value",
+                ExpandMismatch::WrongLength => "values",
+                ExpandMismatch::Missing => "no value for posterior variable x",
+            };
+            assert!(err.contains(expected), "{mismatch:?}: {err}");
+            assert!(err.contains("x"), "error should name the variable: {err}");
+        }
+
+        #[test]
+        fn hashmap_storage_mismatch() {
+            // The HashMap storage does not know shapes, so only types and presence are checked.
+            for mismatch in [ExpandMismatch::WrongType, ExpandMismatch::Missing] {
+                assert_explains(&sample_error(HashMapConfig::new(), mismatch), mismatch);
+            }
+        }
+
+        #[cfg(feature = "ndarray")]
+        #[test]
+        fn ndarray_storage_mismatch() {
+            use crate::NdarrayConfig;
+            for mismatch in [
+                ExpandMismatch::WrongType,
+                ExpandMismatch::WrongLength,
+                ExpandMismatch::Missing,
+            ] {
+                assert_explains(&sample_error(NdarrayConfig::new(), mismatch), mismatch);
+            }
+        }
+
+        #[cfg(feature = "zarr")]
+        #[test]
+        fn zarr_storage_mismatch() {
+            use crate::ZarrConfig;
+            use zarrs::storage::store::MemoryStore;
+            for mismatch in [
+                ExpandMismatch::WrongType,
+                ExpandMismatch::WrongLength,
+                ExpandMismatch::Missing,
+            ] {
+                let config = ZarrConfig::new(Arc::new(MemoryStore::new()));
+                assert_explains(&sample_error(config, mismatch), mismatch);
+            }
+        }
+
+        #[cfg(feature = "arrow")]
+        #[test]
+        fn arrow_storage_mismatch() {
+            use crate::ArrowConfig;
+            // Arrow stores a missing draw as null, and does not check vector lengths.
+            let err = sample_error(ArrowConfig::default(), ExpandMismatch::WrongType);
+            assert!(err.contains("x"), "error should name the variable: {err}");
+        }
     }
 
     /// Tests for the sequential driver, which only exists without `parallel`:

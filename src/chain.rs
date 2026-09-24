@@ -135,6 +135,13 @@ where
     type AdaptStrategy = A;
 
     fn set_position(&mut self, position: &[f64]) -> Result<()> {
+        if position.len() != self.dim() {
+            anyhow::bail!(
+                "Initial position has length {}, but the model has {} dimensions",
+                position.len(),
+                self.dim()
+            );
+        }
         let mut math_ = self.math.borrow_mut();
         let math = math_.deref_mut();
         self.strategy.init(

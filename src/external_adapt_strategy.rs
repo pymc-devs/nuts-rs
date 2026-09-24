@@ -27,6 +27,19 @@ pub struct FlowSettings {
 #[deprecated(since = "0.0.0", note = "Use FlowSettings instead")]
 pub type TransformedSettings = FlowSettings;
 
+impl FlowSettings {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        self.step_size_settings.validate()?;
+        if !(0.0..=1.0).contains(&self.step_size_window) {
+            anyhow::bail!(
+                "step_size_window must be between 0 and 1, got {}",
+                self.step_size_window
+            );
+        }
+        Ok(())
+    }
+}
+
 impl Default for FlowSettings {
     fn default() -> Self {
         Self {

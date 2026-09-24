@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use arrow::array::{
     ArrayBuilder, ArrayRef, BooleanBuilder, Float32Builder, Float64Builder, Int64Builder,
     LargeListBuilder, RecordBatch, RecordBatchOptions, StringBuilder, UInt64Builder,
@@ -35,17 +35,17 @@ impl ArrowBuilder {
             ItemType::U64 => Box::new(UInt64Builder::with_capacity(capacity)),
             ItemType::String => Box::new(StringBuilder::with_capacity(capacity, capacity)),
             ItemType::DateTime64(_) => {
-                panic!("DateTime values not supported as values in arrow storage")
+                bail!("DateTime64 values are not supported in arrow traces")
             }
             ItemType::TimeDelta64(_) => {
-                panic!("TimeDelta values not supported as values in arrow storage")
+                bail!("TimeDelta64 values are not supported in arrow traces")
             }
         };
 
         if shape.is_empty() {
             Ok(ArrowBuilder::Scalar(value_builder))
         } else {
-            let data_type = item_type_to_arrow_type(item_type);
+            let data_type = item_type_to_arrow_type(item_type)?;
             let list_builder = LargeListBuilder::new(value_builder);
             let list_builder = list_builder.with_field(Field::new("item", data_type, false));
             Ok(ArrowBuilder::Tensor(list_builder))
@@ -82,23 +82,23 @@ impl ArrowBuilder {
                     downcast_builder!(builder, StringBuilder, ScalarString)?.append_value(&v);
                 }
                 Value::U64(items) => {
-                    assert!(items.len() == 1);
+                    check_scalar_len(items.len())?;
                     downcast_builder!(builder, UInt64Builder, U64)?.append_slice(items.as_slice());
                 }
                 Value::I64(items) => {
-                    assert!(items.len() == 1);
+                    check_scalar_len(items.len())?;
                     downcast_builder!(builder, Int64Builder, I64)?.append_slice(items.as_slice());
                 }
                 Value::F64(items) => {
-                    assert!(items.len() == 1);
+                    check_scalar_len(items.len())?;
                     downcast_builder!(builder, Float64Builder, F64)?.append_slice(items.as_slice());
                 }
                 Value::F32(items) => {
-                    assert!(items.len() == 1);
+                    check_scalar_len(items.len())?;
                     downcast_builder!(builder, Float32Builder, F32)?.append_slice(items.as_slice());
                 }
                 Value::Bool(items) => {
-                    assert!(items.len() == 1);
+                    check_scalar_len(items.len())?;
                     downcast_builder!(builder, BooleanBuilder, Bool)?
                         .append_slice(items.as_slice());
                 }
@@ -109,10 +109,10 @@ impl ArrowBuilder {
                     }
                 }
                 Value::DateTime64(_, _) => {
-                    panic!("DateTime64 scalar values not supported in arrow storage")
+                    bail!("DateTime64 values are not supported in arrow traces")
                 }
                 Value::TimeDelta64(_, _) => {
-                    panic!("TimeDelta64 scalar values not supported in arrow storage")
+                    bail!("TimeDelta64 values are not supported in arrow traces")
                 }
             },
             ArrowBuilder::Tensor(list_builder) => {
@@ -169,10 +169,10 @@ impl ArrowBuilder {
                             .append_value(val);
                     }
                     Value::DateTime64(_, _) => {
-                        panic!("DateTime64 scalar values not supported in arrow storage")
+                        bail!("DateTime64 values are not supported in arrow traces")
                     }
                     Value::TimeDelta64(_, _) => {
-                        panic!("TimeDelta64 scalar values not supported in arrow storage")
+                        bail!("TimeDelta64 values are not supported in arrow traces")
                     }
                 }
                 list_builder.append(true);
@@ -223,8 +223,8 @@ impl ArrowBuilder {
 }
 
 /// Convert ItemType to Arrow DataType
-fn item_type_to_arrow_type(item_type: ItemType) -> DataType {
-    match item_type {
+fn item_type_to_arrow_type(item_type: ItemType) -> Result<DataType> {
+    Ok(match item_type {
         ItemType::F64 => DataType::Float64,
         ItemType::F32 => DataType::Float32,
         ItemType::U64 => DataType::UInt64,
@@ -232,12 +232,20 @@ fn item_type_to_arrow_type(item_type: ItemType) -> DataType {
         ItemType::Bool => DataType::Boolean,
         ItemType::String => DataType::Utf8,
         ItemType::DateTime64(_) => {
-            panic!("DateTime64 scalar values not supported in arrow storage")
+            bail!("DateTime64 values are not supported in arrow traces")
         }
         ItemType::TimeDelta64(_) => {
-            panic!("TimeDelta64 scalar values not supported in arrow storage")
+            bail!("TimeDelta64 values are not supported in arrow traces")
         }
+    })
+}
+
+/// A variable without dims stores one value per draw.
+fn check_scalar_len(len: usize) -> Result<()> {
+    if len != 1 {
+        bail!("Expected a single value for a variable without dims, but got {len}");
     }
+    Ok(())
 }
 
 /// Create a field with tensor extension type if shape is provided
@@ -248,7 +256,7 @@ fn create_field_with_shape(
     dim_sizes: &HashMap<String, u64>,
     event_dim: Option<&str>,
 ) -> Result<Field> {
-    let arrow_type = item_type_to_arrow_type(item_type);
+    let arrow_type = item_type_to_arrow_type(item_type)?;
 
     if !dims.is_empty() {
         // Multi-dimensional tensor
@@ -263,11 +271,10 @@ fn create_field_with_shape(
                     .map(|dim| {
                         dim_sizes
                             .get(dim)
-                            .copied()
                             .map(|size| size.to_string())
-                            .expect("Dimension size not found")
+                            .with_context(|| format!("Unknown size of dimension {dim} of {name}"))
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Result<Vec<_>>>()?
                     .join(","),
             ),
         ]);
@@ -481,9 +488,9 @@ impl ChainStorage for ArrowChainStorage {
             .zip(self.stats_builders.iter_mut())
             .try_for_each(|((name, value), (expected_name, builder))| {
                 if name != expected_name {
-                    panic!(
-                        "Draw name mismatch: expected {}, got {}",
-                        expected_name, name
+                    bail!(
+                        "Values arrived out of order: expected {expected_name}, got {name}. \
+                         Storable::get_all must return values in the order of Storable::names"
                     );
                 }
 
@@ -500,9 +507,9 @@ impl ChainStorage for ArrowChainStorage {
             .zip(self.draw_builders.iter_mut())
             .try_for_each(|((name, value), (expected_name, builder))| {
                 if name != expected_name {
-                    panic!(
-                        "Draw name mismatch: expected {}, got {}",
-                        expected_name, name
+                    bail!(
+                        "Values arrived out of order: expected {expected_name}, got {name}. \
+                         Storable::get_all must return values in the order of Storable::names"
                     );
                 }
 

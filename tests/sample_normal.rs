@@ -331,7 +331,7 @@ fn low_rank_exact_gaussian() -> anyhow::Result<()> {
         settings.adapt_options.mass_matrix_options.eigval_cutoff = 1.00001;
 
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-        let mut chain = settings.new_chain(0, math, &mut rng);
+        let mut chain = settings.new_chain(0, math, &mut rng).unwrap();
         chain.set_position(&vec![1.0f64; dim])?;
 
         for _ in 0..(settings.num_tune + settings.num_draws) {

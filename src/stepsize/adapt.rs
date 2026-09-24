@@ -306,6 +306,28 @@ pub struct StepSizeSettings {
     pub adapt_options: StepSizeAdaptOptions,
 }
 
+impl StepSizeSettings {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        if !(self.initial_step.is_finite() && self.initial_step > 0.0) {
+            anyhow::bail!(
+                "initial_step must be positive and finite, got {}",
+                self.initial_step
+            );
+        }
+        if let Some(jitter) = self.jitter
+            && !(jitter > 0.0 && jitter < 1.0)
+        {
+            anyhow::bail!("jitter must be between 0 and 1, got {jitter}");
+        }
+        if let StepSizeAdaptMethod::Fixed(step_size) = self.adapt_options.method
+            && !(step_size.is_finite() && step_size > 0.0)
+        {
+            anyhow::bail!("Fixed step size must be positive and finite, got {step_size}");
+        }
+        Ok(())
+    }
+}
+
 impl Default for StepSizeSettings {
     fn default() -> Self {
         Self {
