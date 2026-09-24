@@ -13,8 +13,13 @@ use std::{
     collections::HashSet,
     ops::Deref,
     sync::{Arc, Mutex},
-    time::Instant,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+// `std::time::Instant::now` panics on wasm32-unknown-unknown.
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 #[cfg(feature = "parallel")]
 use std::{

@@ -87,7 +87,7 @@ fn main() {
 }
 ```
 
-Users can also implement the `Model` trait for more control and parallel sampling.
+Users should usually implement the `Model` trait for more control, parallel sampling and proper trace storage. See the examples for details.
 
 ## Implementation details
 
