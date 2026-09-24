@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use nuts_storable::HasDims;
+use nuts_storable::{HasDims, ItemType, Storable, Value};
 use thiserror::Error;
 
 use super::{CpuLogpFunc, CpuMathError, LogpError};
@@ -98,5 +98,63 @@ impl CpuLogpFunc for &NormalLogp {
         array: &[f64],
     ) -> Result<Self::ExpandedVector, CpuMathError> {
         Ok(array.to_vec())
+    }
+}
+
+/// Expands into two variables but declares only one, the way a model restricted to a subset
+/// of its variables does (nutpie's `var_names`).
+pub struct PartialExpandLogp {
+    pub inner: NormalLogp,
+}
+
+pub struct PartialExpanded(Vec<f64>);
+
+impl<P: HasDims> Storable<P> for PartialExpanded {
+    fn names(_parent: &P) -> Vec<&str> {
+        vec!["kept"]
+    }
+
+    fn item_type(_parent: &P, _item: &str) -> ItemType {
+        ItemType::F64
+    }
+
+    fn dims<'a>(_parent: &'a P, _item: &str) -> Vec<&'a str> {
+        vec!["dim"]
+    }
+
+    fn get_all<'a>(&'a mut self, _parent: &'a P) -> Vec<(&'a str, Option<Value>)> {
+        // undeclared first: a backend zipping positionally then shifts unless it is dropped
+        vec![
+            ("undeclared", Some(Value::F64(self.0.clone()))),
+            ("kept", Some(Value::F64(self.0.clone()))),
+        ]
+    }
+}
+
+impl HasDims for &PartialExpandLogp {
+    fn dim_sizes(&self) -> HashMap<String, u64> {
+        self.inner.dim_sizes()
+    }
+}
+
+impl CpuLogpFunc for &PartialExpandLogp {
+    type LogpError = NormalLogpError;
+    type FlowParameters = ();
+    type ExpandedVector = PartialExpanded;
+
+    fn dim(&self) -> usize {
+        self.inner.dim
+    }
+
+    fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, NormalLogpError> {
+        (&mut &self.inner).logp(position, gradient)
+    }
+
+    fn expand_vector<R: rand::Rng + ?Sized>(
+        &mut self,
+        _rng: &mut R,
+        array: &[f64],
+    ) -> Result<Self::ExpandedVector, CpuMathError> {
+        Ok(PartialExpanded(array.to_vec()))
     }
 }

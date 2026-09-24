@@ -12,7 +12,7 @@ use anyhow::{Context, bail};
 #[cfg(feature = "parallel")]
 use itertools::Itertools;
 #[cfg(feature = "parallel")]
-use std::ops::Deref;
+use std::{collections::HashSet, ops::Deref};
 
 #[cfg(feature = "parallel")]
 use rayon::{ScopeFifo, ThreadPoolBuilder};
@@ -70,14 +70,25 @@ pub trait Settings:
     fn sampler_name(&self) -> &'static str;
     fn adaptation_name(&self) -> &'static str;
 
+    /// Stats these settings switch off. They are never written, so declaring them would only
+    /// create arrays that stay at their fill value and that every storage backend then carries.
+    fn disabled_stats(&self) -> Vec<&'static str>;
+
+    /// The stats that are stored, in the order the sampler emits them. Storage is allocated
+    /// from this list, and `ChainProcess` drops anything emitted that is not in it.
     fn stat_names<M: Math>(&self, math: &M) -> Vec<String> {
         let dims = StatsDims::from(math);
+        let disabled = self.disabled_stats();
         <<Self::Chain<M> as SamplerStats<M>>::Stats as Storable<_>>::names(&dims)
             .into_iter()
+            .filter(|name| !disabled.contains(name))
             .map(String::from)
             .collect()
     }
 
+    /// The posterior variables that are stored, in the order the model expands them. A `Math`
+    /// may declare fewer than it produces - a model restricted to a subset of its variables -
+    /// and `ChainProcess` drops the rest.
     fn data_names<M: Math>(&self, math: &M) -> Vec<String> {
         <M::ExpandedVector as Storable<_>>::names(math)
             .into_iter()
@@ -192,6 +203,33 @@ mod private {
     impl Sealed for LowRankMclmcSettings {}
 
     impl Sealed for FlowMclmcSettings {}
+}
+
+/// Drop the values whose name was not declared to the storage backend. Some backends zip the
+/// incoming values against their declared columns, so an undeclared one would shift the rest.
+#[cfg(feature = "parallel")]
+fn retain_declared(declared: &HashSet<String>, values: &mut Vec<(&str, Option<Value>)>) {
+    values.retain(|(name, _)| declared.contains(*name));
+}
+
+/// The point stats each `store_*` flag suppresses, mirroring `TransformedPoint::extract_stats`.
+fn disabled_point_stats(
+    store_gradient: bool,
+    store_unconstrained: bool,
+    store_transformed: bool,
+) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if !store_gradient {
+        names.push("gradient");
+    }
+    if !store_unconstrained {
+        names.push("unconstrained_draw");
+    }
+    if !store_transformed {
+        names.push("transformed_position");
+        names.push("transformed_gradient");
+    }
+    names
 }
 
 /// Settings for the NUTS sampler
@@ -472,6 +510,14 @@ impl Settings for DiagMclmcSettings {
         self.seed
     }
 
+    fn disabled_stats(&self) -> Vec<&'static str> {
+        disabled_point_stats(
+            self.store_gradient,
+            self.store_unconstrained,
+            self.store_transformed,
+        )
+    }
+
     fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
         StatOptions {
             adapt: GlobalStrategyStatsOptions {
@@ -595,6 +641,14 @@ impl Settings for LowRankMclmcSettings {
         self.seed
     }
 
+    fn disabled_stats(&self) -> Vec<&'static str> {
+        disabled_point_stats(
+            self.store_gradient,
+            self.store_unconstrained,
+            self.store_transformed,
+        )
+    }
+
     fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
         StatOptions {
             adapt: GlobalStrategyStatsOptions {
@@ -707,6 +761,14 @@ impl Settings for LowRankNutsSettings {
         self.seed
     }
 
+    fn disabled_stats(&self) -> Vec<&'static str> {
+        disabled_point_stats(
+            self.store_gradient,
+            self.store_unconstrained,
+            self.store_transformed,
+        )
+    }
+
     fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
         StatOptions {
             adapt: GlobalStrategyStatsOptions {
@@ -785,6 +847,14 @@ impl Settings for DiagNutsSettings {
 
     fn seed(&self) -> u64 {
         self.seed
+    }
+
+    fn disabled_stats(&self) -> Vec<&'static str> {
+        disabled_point_stats(
+            self.store_gradient,
+            self.store_unconstrained,
+            self.store_transformed,
+        )
     }
 
     fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
@@ -866,6 +936,14 @@ impl Settings for FlowNutsSettings {
 
     fn seed(&self) -> u64 {
         self.seed
+    }
+
+    fn disabled_stats(&self) -> Vec<&'static str> {
+        disabled_point_stats(
+            self.store_gradient,
+            self.store_unconstrained,
+            self.store_transformed,
+        )
     }
 
     fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
@@ -960,6 +1038,14 @@ impl Settings for FlowMclmcSettings {
 
     fn seed(&self) -> u64 {
         self.seed
+    }
+
+    fn disabled_stats(&self) -> Vec<&'static str> {
+        disabled_point_stats(
+            self.store_gradient,
+            self.store_unconstrained,
+            self.store_transformed,
+        )
     }
 
     fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
@@ -1148,6 +1234,22 @@ impl<T: TraceStorage> ChainProcess<T> {
 
                 let draws = settings.hint_num_tune() + settings.hint_num_draws();
 
+                // The trace was built from these names, so anything else the chain or the
+                // model produces has nowhere to go and is dropped below.
+                let (declared_stats, declared_data) = {
+                    let math = sampler.math();
+                    (
+                        settings
+                            .stat_names(math.deref())
+                            .into_iter()
+                            .collect::<HashSet<_>>(),
+                        settings
+                            .data_names(math.deref())
+                            .into_iter()
+                            .collect::<HashSet<_>>(),
+                    )
+                };
+
                 let mut msg = stop_marker_rx.try_recv();
                 let mut draw = 0;
                 loop {
@@ -1182,12 +1284,11 @@ impl<T: TraceStorage> ChainProcess<T> {
 
                     let math = sampler.math();
                     let dims = StatsDims::from(math.deref());
-                    trace_val.record_sample(
-                        settings,
-                        stats.get_all(&dims),
-                        draw_data.get_all(math.deref()),
-                        &info,
-                    )?;
+                    let mut stat_values = stats.get_all(&dims);
+                    let mut draw_values = draw_data.get_all(math.deref());
+                    retain_declared(&declared_stats, &mut stat_values);
+                    retain_declared(&declared_data, &mut draw_values);
+                    trace_val.record_sample(settings, stat_values, draw_values, &info)?;
 
                     draw += 1;
                     if draw == draws {
@@ -1594,8 +1695,8 @@ mod tests {
     use crate::math::test_logps::NormalLogp;
     use crate::{
         Chain, math::CpuMath, sample_sequentially, sampler::DiagMclmcSettings,
-        sampler::DiagNutsSettings, sampler::LowRankMclmcSettings, sampler::LowRankNutsSettings,
-        sampler::Settings,
+        sampler::DiagNutsSettings, sampler::FlowMclmcSettings, sampler::FlowNutsSettings,
+        sampler::LowRankMclmcSettings, sampler::LowRankNutsSettings, sampler::Settings,
     };
 
     #[cfg(feature = "zarr")]
@@ -1632,6 +1733,38 @@ mod tests {
         chain.set_position(&vec![0.2; 4])?;
         let (_draw, _info) = chain.draw()?;
         Ok(())
+    }
+
+    /// Every settings type has to map the `store_*` flags onto the same suppressed stats,
+    /// including the flow ones that `all_settings_smoke` cannot build a chain for.
+    #[test]
+    fn store_flags_disable_point_stats() {
+        macro_rules! assert_disabled {
+            ($($ty:ty),+ $(,)?) => {$({
+                let mut settings = <$ty>::default();
+                assert_eq!(
+                    settings.disabled_stats(),
+                    [
+                        "gradient",
+                        "unconstrained_draw",
+                        "transformed_position",
+                        "transformed_gradient",
+                    ]
+                );
+                settings.store_gradient = true;
+                settings.store_unconstrained = true;
+                settings.store_transformed = true;
+                assert!(settings.disabled_stats().is_empty());
+            })+};
+        }
+        assert_disabled!(
+            DiagNutsSettings,
+            LowRankNutsSettings,
+            FlowNutsSettings,
+            DiagMclmcSettings,
+            LowRankMclmcSettings,
+            FlowMclmcSettings,
+        );
     }
 
     #[test]

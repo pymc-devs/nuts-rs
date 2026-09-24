@@ -703,10 +703,68 @@ impl TraceStorage for ArrowTraceStorage {
 mod tests {
     use std::{default::Default, time::Duration};
 
+    use arrow::array::RecordBatch;
+
     use crate::{
-        ArrowConfig, DiagNutsSettings, Sampler, SamplerWaitResult, math::test_logps::NormalLogp,
+        ArrowConfig, DiagNutsSettings, Sampler, SamplerWaitResult,
+        math::test_logps::{NormalLogp, PartialExpandLogp},
         sampler::test_logps::CpuModel,
     };
+
+    fn field_names(batch: &RecordBatch) -> Vec<String> {
+        batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect()
+    }
+
+    /// Arrow zips the incoming values against the declared columns, so anything undeclared -
+    /// a stat the settings switch off, a variable the model does not declare - has to be
+    /// dropped before it arrives, or every column after it shifts.
+    #[test]
+    fn undeclared_values_are_dropped() {
+        let settings = DiagNutsSettings {
+            num_chains: 1,
+            num_draws: 5,
+            num_tune: 5,
+            ..Default::default()
+        };
+        let logp = PartialExpandLogp {
+            inner: NormalLogp::new(3, 0.5),
+        };
+        let sampler = Sampler::new(
+            CpuModel::new(logp),
+            settings,
+            ArrowConfig::default(),
+            1,
+            None,
+        )
+        .unwrap();
+
+        let SamplerWaitResult::Trace(mut trace) = sampler.wait_timeout(Duration::from_secs(5))
+        else {
+            panic!("failed to sample")
+        };
+        let chain = trace.drain(..).next().unwrap();
+
+        // The model expands "kept" and "undeclared", but only declares the first.
+        assert_eq!(field_names(&chain.posterior), ["kept"]);
+
+        // store_gradient / store_unconstrained / store_transformed all default to false.
+        let stats = field_names(&chain.sample_stats);
+        for name in [
+            "gradient",
+            "unconstrained_draw",
+            "transformed_position",
+            "transformed_gradient",
+        ] {
+            assert!(!stats.contains(&name.to_string()), "{name} was stored");
+        }
+        assert!(stats.contains(&"logp".to_string()));
+        assert!(stats.contains(&"fisher_distance".to_string()));
+    }
 
     #[test]
     fn store_warmup() {

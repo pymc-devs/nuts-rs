@@ -700,3 +700,51 @@ impl TraceStorage for ZarrTraceStorage {
         Ok((None, ()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use zarrs::{array::Array, storage::store::MemoryStore};
+
+    use crate::{
+        DiagNutsSettings, Sampler, SamplerWaitResult, ZarrConfig,
+        math::test_logps::{NormalLogp, PartialExpandLogp},
+        sampler::test_logps::CpuModel,
+    };
+
+    /// A model that expands more variables than it declares - what nutpie's `var_names` does -
+    /// must not get arrays for the undeclared ones.
+    #[test]
+    fn undeclared_draws_are_not_stored() {
+        let settings = DiagNutsSettings {
+            num_chains: 1,
+            num_draws: 5,
+            num_tune: 5,
+            ..Default::default()
+        };
+        let logp = PartialExpandLogp {
+            inner: NormalLogp::new(3, 0.5),
+        };
+        let store = Arc::new(MemoryStore::new());
+        let sampler = Sampler::new(
+            CpuModel::new(logp),
+            settings,
+            ZarrConfig::new(store.clone()),
+            1,
+            None,
+        )
+        .unwrap();
+
+        let result = sampler.wait_timeout(Duration::from_secs(5));
+        assert!(
+            matches!(result, SamplerWaitResult::Trace(_)),
+            "failed to sample"
+        );
+
+        assert!(Array::open(store.clone(), "/posterior/kept").is_ok());
+        assert!(Array::open(store.clone(), "/posterior/undeclared").is_err());
+        assert!(Array::open(store.clone(), "/sample_stats/gradient").is_err());
+        assert!(Array::open(store, "/sample_stats/logp").is_ok());
+    }
+}
