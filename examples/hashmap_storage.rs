@@ -1,6 +1,7 @@
 //! HashMap storage implementation example for MCMC traces
 use std::{
     f64,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -110,12 +111,9 @@ struct MvnModel {
 
 /// Implementation of McmcModel for the HashMap backend
 impl Model for MvnModel {
-    type Math<'model>
-        = CpuMath<MvnLogp>
-    where
-        Self: 'model;
+    type Math = CpuMath<MvnLogp>;
 
-    fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> Result<Self::Math<'_>> {
+    fn math<R: Rng + ?Sized>(self: Arc<Self>, _rng: &mut R) -> Result<Self::Math> {
         Ok(self.math.clone())
     }
 
@@ -156,7 +154,13 @@ fn main() -> Result<()> {
     // Create a new sampler with 4 threads
     let start = Instant::now();
     let trace_config = HashMapConfig::new();
-    let mut sampler = Some(Sampler::new(model, settings, trace_config, 4, None)?);
+    let mut sampler = Some(Sampler::new(
+        Arc::new(model),
+        settings,
+        trace_config,
+        4,
+        None,
+    )?);
 
     let mut num_progress_updates = 0;
     // Interleave progress updates with wait_timeout

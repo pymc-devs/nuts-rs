@@ -728,7 +728,7 @@ mod tests {
         };
         let store = Arc::new(MemoryStore::new());
         let sampler = Sampler::new(
-            CpuModel::new(logp),
+            Arc::new(CpuModel::new(logp)),
             settings,
             ZarrConfig::new(store.clone()),
             1,

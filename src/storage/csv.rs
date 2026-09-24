@@ -629,6 +629,7 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
+    use std::sync::Arc;
     use thiserror::Error;
 
     #[allow(dead_code)]
@@ -721,12 +722,9 @@ mod tests {
     }
 
     impl Model for MultiDimTestModel {
-        type Math<'model>
-            = CpuMath<MultiDimTestLogp>
-        where
-            Self: 'model;
+        type Math = CpuMath<MultiDimTestLogp>;
 
-        fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> Result<Self::Math<'_>> {
+        fn math<R: Rng + ?Sized>(self: Arc<Self>, _rng: &mut R) -> Result<Self::Math> {
             Ok(self.math.clone())
         }
 
@@ -799,12 +797,9 @@ mod tests {
     }
 
     impl Model for SimpleTestModel {
-        type Math<'model>
-            = CpuMath<SimpleTestLogp>
-        where
-            Self: 'model;
+        type Math = CpuMath<SimpleTestLogp>;
 
-        fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> Result<Self::Math<'_>> {
+        fn math<R: Rng + ?Sized>(self: Arc<Self>, _rng: &mut R) -> Result<Self::Math> {
             Ok(self.math.clone())
         }
 
@@ -845,7 +840,13 @@ mod tests {
             .with_precision(6)
             .store_warmup(false);
 
-        let mut sampler = Some(Sampler::new(model, settings, csv_config, 1, None)?);
+        let mut sampler = Some(Sampler::new(
+            Arc::new(model),
+            settings,
+            csv_config,
+            1,
+            None,
+        )?);
 
         // Wait for sampling to complete
         while let Some(sampler_) = sampler.take() {
@@ -911,7 +912,13 @@ mod tests {
             .with_precision(6)
             .store_warmup(false);
 
-        let mut sampler = Some(Sampler::new(model, settings, csv_config, 1, None)?);
+        let mut sampler = Some(Sampler::new(
+            Arc::new(model),
+            settings,
+            csv_config,
+            1,
+            None,
+        )?);
 
         // Wait for sampling to complete
         while let Some(sampler_) = sampler.take() {
