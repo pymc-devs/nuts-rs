@@ -7,25 +7,25 @@ use rand::{Rng, SeedableRng, rngs::ChaCha8Rng};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, fmt::Debug, time::Duration};
 
-#[cfg(feature = "parallel")]
-use anyhow::{Context, bail};
-#[cfg(feature = "parallel")]
+use anyhow::Context;
 use itertools::Itertools;
-#[cfg(feature = "parallel")]
-use std::{collections::HashSet, ops::Deref};
+use std::{
+    collections::HashSet,
+    ops::Deref,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
+#[cfg(feature = "parallel")]
+use anyhow::bail;
 #[cfg(feature = "parallel")]
 use rayon::{ScopeFifo, ThreadPoolBuilder};
 #[cfg(feature = "parallel")]
 use std::{
-    sync::{
-        Arc, Mutex,
-        mpsc::{
-            Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel,
-        },
+    sync::mpsc::{
+        Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel,
     },
     thread::{JoinHandle, spawn},
-    time::Instant,
 };
 
 use crate::{
@@ -43,7 +43,6 @@ use crate::{
     },
 };
 
-#[cfg(feature = "parallel")]
 use crate::{
     model::Model,
     storage::{ChainStorage, StorageConfig, TraceStorage},
@@ -207,7 +206,6 @@ mod private {
 
 /// Drop the values whose name was not declared to the storage backend. Some backends zip the
 /// incoming values against their declared columns, so an undeclared one would shift the rest.
-#[cfg(feature = "parallel")]
 fn retain_declared(declared: &HashSet<String>, values: &mut Vec<(&str, Option<Value>)>) {
     values.retain(|(name, _)| declared.contains(*name));
 }
@@ -1169,6 +1167,260 @@ impl ChainProgress {
     }
 }
 
+/// The parts of a chain the controller reads while the chain is running: the chain's
+/// trace, which the controller takes at the end, and its progress.
+struct ChainShared<C> {
+    trace: Arc<Mutex<Option<C>>>,
+    progress: Arc<Mutex<ChainProgress>>,
+}
+
+impl<C> Clone for ChainShared<C> {
+    fn clone(&self) -> Self {
+        Self {
+            trace: self.trace.clone(),
+            progress: self.progress.clone(),
+        }
+    }
+}
+
+impl<C: ChainStorage> ChainShared<C> {
+    fn new(trace: C, total_draws: usize) -> Self {
+        Self {
+            trace: Arc::new(Mutex::new(Some(trace))),
+            progress: Arc::new(Mutex::new(ChainProgress::new(total_draws))),
+        }
+    }
+
+    fn progress(&self) -> ChainProgress {
+        self.progress.lock().expect("Poisoned lock").clone()
+    }
+
+    fn flush(&self) -> Result<()> {
+        self.trace
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Could not lock trace mutex"))
+            .context("Could not flush trace")?
+            .as_mut()
+            .map(|v| v.flush())
+            .transpose()?;
+        Ok(())
+    }
+}
+
+fn finalize_traces<'a, T: TraceStorage>(
+    trace: T,
+    chains: impl IntoIterator<Item = &'a ChainShared<T::ChainStorage>>,
+) -> Result<(Option<anyhow::Error>, T::Finalized)>
+where
+    T::ChainStorage: 'a,
+{
+    let finalized_chain_traces = chains
+        .into_iter()
+        .filter_map(|chain| chain.trace.lock().expect("Poisoned lock").take())
+        .map(|chain| chain.finalize())
+        .collect_vec();
+    trace.finalize(finalized_chain_traces)
+}
+
+fn inspect_traces<'a, T: TraceStorage>(
+    trace: &T,
+    chains: impl IntoIterator<Item = &'a ChainShared<T::ChainStorage>>,
+) -> Result<(Option<anyhow::Error>, T::Finalized)>
+where
+    T::ChainStorage: 'a,
+{
+    let traces = chains
+        .into_iter()
+        .filter_map(|chain| {
+            chain
+                .trace
+                .lock()
+                .expect("Poisoned lock")
+                .as_ref()
+                .map(|v| v.inspect())
+        })
+        .collect_vec();
+    trace.inspect(traces)
+}
+
+/// A single initialized chain that records its draws into a `ChainShared`.
+///
+/// The threaded and the sequential driver both run chains through this; they only
+/// differ in how they schedule calls to `step`.
+struct ChainRunner<M: Model, S: Settings, C: ChainStorage> {
+    chain: S::Chain<M::Math>,
+    settings: S,
+    shared: ChainShared<C>,
+    declared_stats: HashSet<String>,
+    declared_data: HashSet<String>,
+    draws_left: usize,
+}
+
+impl<M: Model, S: Settings, C: ChainStorage> ChainRunner<M, S, C> {
+    fn new(
+        model: Arc<M>,
+        chain_id: u64,
+        seed: u64,
+        settings: S,
+        shared: ChainShared<C>,
+    ) -> Result<Self> {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        rng.set_stream(chain_id + 1);
+
+        let logp = Arc::clone(&model)
+            .math(&mut rng)
+            .context("Failed to create model density")?;
+        let dim = logp.dim();
+
+        let mut chain = settings.new_chain(chain_id, logp, &mut rng);
+
+        shared.progress.lock().expect("Poisoned mutex").started = true;
+
+        let mut initval = vec![0f64; dim];
+        // TODO maxtries
+        let mut error = None;
+        for _ in 0..500 {
+            model
+                .init_position(&mut rng, &mut initval)
+                .context("Failed to generate a new initial position")?;
+            if let Err(err) = chain.set_position(&initval) {
+                error = Some(err);
+                continue;
+            }
+            error = None;
+            break;
+        }
+
+        if let Some(error) = error {
+            return Err(error.context("All initialization points failed"));
+        }
+
+        // The trace was built from these names, so anything else the chain or the
+        // model produces has nowhere to go and is dropped in `step`.
+        let (declared_stats, declared_data) = {
+            let math = chain.math();
+            (
+                settings
+                    .stat_names(math.deref())
+                    .into_iter()
+                    .collect::<HashSet<_>>(),
+                settings
+                    .data_names(math.deref())
+                    .into_iter()
+                    .collect::<HashSet<_>>(),
+            )
+        };
+
+        Ok(Self {
+            chain,
+            settings,
+            shared,
+            declared_stats,
+            declared_data,
+            draws_left: settings.hint_num_tune() + settings.hint_num_draws(),
+        })
+    }
+
+    fn is_finished(&self) -> bool {
+        self.draws_left == 0
+    }
+
+    /// Draw once and record it. Returns `false` once there is nothing left to do,
+    /// either because all draws are done or because the controller took the trace.
+    fn step(&mut self) -> Result<bool> {
+        if self.is_finished() {
+            return Ok(false);
+        }
+
+        let now = Instant::now();
+        let (_point, mut draw_data, mut stats, info) = self.chain.expanded_draw()?;
+
+        let mut guard = self
+            .shared
+            .trace
+            .lock()
+            .expect("Could not unlock trace lock. Poisoned mutex");
+
+        let Some(trace_val) = guard.as_mut() else {
+            // The trace was removed by the controller. We can stop sampling
+            self.draws_left = 0;
+            return Ok(false);
+        };
+        self.shared
+            .progress
+            .lock()
+            .expect("Poisoned mutex")
+            .update(&info, now.elapsed());
+
+        let math = self.chain.math();
+        let dims = StatsDims::from(math.deref());
+        let mut stat_values = stats.get_all(&dims);
+        let mut draw_values = draw_data.get_all(math.deref());
+        retain_declared(&self.declared_stats, &mut stat_values);
+        retain_declared(&self.declared_data, &mut draw_values);
+        trace_val.record_sample(&self.settings, stat_values, draw_values, &info)?;
+
+        self.draws_left -= 1;
+        Ok(!self.is_finished())
+    }
+}
+
+/// Create the math once on the controller to build the trace, with the same seed stream
+/// in every driver.
+fn new_trace<M: Model, S: Settings, C: StorageConfig>(
+    model: &Arc<M>,
+    settings: &S,
+    trace_config: C,
+) -> Result<C::Storage> {
+    let mut rng = ChaCha8Rng::seed_from_u64(settings.seed());
+    rng.set_stream(0);
+
+    let math = Arc::clone(model)
+        .math(&mut rng)
+        .context("Could not create model density")?;
+    trace_config
+        .new_trace(settings, &math)
+        .context("Could not create trace object")
+}
+
+/// `Send` exactly when the `parallel` feature is on.
+///
+/// The sequential driver keeps its chains between calls, and chains are not `Send`
+/// (the state pool uses `Rc`). Without `parallel`, `Sampler` is therefore not `Send`,
+/// which keeps every chain on the thread that created it.
+#[cfg(feature = "parallel")]
+trait MaybeSend: Send {}
+#[cfg(feature = "parallel")]
+impl<T: Send> MaybeSend for T {}
+#[cfg(not(feature = "parallel"))]
+trait MaybeSend {}
+#[cfg(not(feature = "parallel"))]
+impl<T> MaybeSend for T {}
+
+/// Runs the chains behind a `Sampler`.
+///
+/// `Sampler` only knows the finalized trace type `F`; the model, settings and storage
+/// types live inside the driver.
+trait Driver<F: Send + 'static>: MaybeSend {
+    fn pause(&mut self) -> Result<()>;
+    fn resume(&mut self) -> Result<()>;
+    fn flush(&mut self) -> Result<()>;
+    fn inspect(&mut self) -> Result<(Option<anyhow::Error>, F)>;
+    fn progress(&mut self) -> Result<Box<[ChainProgress]>>;
+    fn wait_timeout(self: Box<Self>, timeout: Duration) -> SamplerWaitResult<F>;
+    fn abort(self: Box<Self>) -> Result<(Option<anyhow::Error>, F)>;
+}
+
+fn finished_to_wait_result<F: Send + 'static>(
+    result: Result<(Option<anyhow::Error>, F)>,
+) -> SamplerWaitResult<F> {
+    match result {
+        Ok((Some(err), trace)) => SamplerWaitResult::Err(err, Some(trace)),
+        Ok((None, trace)) => SamplerWaitResult::Trace(trace),
+        Err(err) => SamplerWaitResult::Err(err, None),
+    }
+}
+
 #[cfg(feature = "parallel")]
 enum ChainCommand {
     Resume,
@@ -1176,30 +1428,13 @@ enum ChainCommand {
 }
 
 #[cfg(feature = "parallel")]
-struct ChainProcess<T>
-where
-    T: TraceStorage,
-{
+struct ChainProcess<C> {
     stop_marker: Sender<ChainCommand>,
-    trace: Arc<Mutex<Option<T::ChainStorage>>>,
-    progress: Arc<Mutex<ChainProgress>>,
+    shared: ChainShared<C>,
 }
 
 #[cfg(feature = "parallel")]
-impl<T: TraceStorage> ChainProcess<T> {
-    fn finalize_many(trace: T, chains: Vec<Self>) -> Result<(Option<anyhow::Error>, T::Finalized)> {
-        let finalized_chain_traces = chains
-            .into_iter()
-            .filter_map(|chain| chain.trace.lock().expect("Poisoned lock").take())
-            .map(|chain| chain.finalize())
-            .collect_vec();
-        trace.finalize(finalized_chain_traces)
-    }
-
-    fn progress(&self) -> ChainProgress {
-        self.progress.lock().expect("Poisoned lock").clone()
-    }
-
+impl<C: ChainStorage> ChainProcess<C> {
     fn resume(&self) -> Result<()> {
         self.stop_marker.send(ChainCommand::Resume)?;
         Ok(())
@@ -1210,81 +1445,32 @@ impl<T: TraceStorage> ChainProcess<T> {
         Ok(())
     }
 
-    fn start<'model, M: Model, S: Settings>(
-        model: &'model M,
-        chain_trace: T::ChainStorage,
+    fn start<'scope, M: Model, S: Settings>(
+        model: Arc<M>,
+        chain_trace: C,
         chain_id: u64,
         seed: u64,
-        settings: &'model S,
-        scope: &ScopeFifo<'model>,
+        settings: S,
+        scope: &ScopeFifo<'scope>,
         results: Sender<Result<()>>,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        C: 'scope,
+    {
         let (stop_marker_tx, stop_marker_rx) = channel();
 
-        let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        rng.set_stream(chain_id + 1);
-
-        let chain_trace = Arc::new(Mutex::new(Some(chain_trace)));
-        let progress = Arc::new(Mutex::new(ChainProgress::new(
+        let shared = ChainShared::new(
+            chain_trace,
             settings.hint_num_draws() + settings.hint_num_tune(),
-        )));
-
-        let trace_inner = chain_trace.clone();
-        let progress_inner = progress.clone();
+        );
+        let shared_inner = shared.clone();
 
         scope.spawn_fifo(move |_| {
-            let chain_trace = trace_inner;
-            let progress = progress_inner;
-
-            let mut sample = move || {
-                let logp = model
-                    .math(&mut rng)
-                    .context("Failed to create model density")?;
-                let dim = logp.dim();
-
-                let mut sampler = settings.new_chain(chain_id, logp, &mut rng);
-
-                progress.lock().expect("Poisoned mutex").started = true;
-
-                let mut initval = vec![0f64; dim];
-                // TODO maxtries
-                let mut error = None;
-                for _ in 0..500 {
-                    model
-                        .init_position(&mut rng, &mut initval)
-                        .context("Failed to generate a new initial position")?;
-                    if let Err(err) = sampler.set_position(&initval) {
-                        error = Some(err);
-                        continue;
-                    }
-                    error = None;
-                    break;
-                }
-
-                if let Some(error) = error {
-                    return Err(error.context("All initialization points failed"));
-                }
-
-                let draws = settings.hint_num_tune() + settings.hint_num_draws();
-
-                // The trace was built from these names, so anything else the chain or the
-                // model produces has nowhere to go and is dropped below.
-                let (declared_stats, declared_data) = {
-                    let math = sampler.math();
-                    (
-                        settings
-                            .stat_names(math.deref())
-                            .into_iter()
-                            .collect::<HashSet<_>>(),
-                        settings
-                            .data_names(math.deref())
-                            .into_iter()
-                            .collect::<HashSet<_>>(),
-                    )
-                };
+            let sample = move || {
+                let mut runner =
+                    ChainRunner::<M, S, C>::new(model, chain_id, seed, settings, shared_inner)?;
 
                 let mut msg = stop_marker_rx.try_recv();
-                let mut draw = 0;
                 loop {
                     match msg {
                         // The remote end is dead
@@ -1299,32 +1485,7 @@ impl<T: TraceStorage> ChainProcess<T> {
                         Ok(ChainCommand::Resume) => {}
                     }
 
-                    let now = Instant::now();
-                    let (_point, mut draw_data, mut stats, info) = sampler.expanded_draw().unwrap();
-
-                    let mut guard = chain_trace
-                        .lock()
-                        .expect("Could not unlock trace lock. Poisoned mutex");
-
-                    let Some(trace_val) = guard.as_mut() else {
-                        // The trace was removed by controller thread. We can stop sampling
-                        break;
-                    };
-                    progress
-                        .lock()
-                        .expect("Poisoned mutex")
-                        .update(&info, now.elapsed());
-
-                    let math = sampler.math();
-                    let dims = StatsDims::from(math.deref());
-                    let mut stat_values = stats.get_all(&dims);
-                    let mut draw_values = draw_data.get_all(math.deref());
-                    retain_declared(&declared_stats, &mut stat_values);
-                    retain_declared(&declared_data, &mut draw_values);
-                    trace_val.record_sample(settings, stat_values, draw_values, &info)?;
-
-                    draw += 1;
-                    if draw == draws {
+                    if !runner.step()? {
                         break;
                     }
 
@@ -1342,21 +1503,9 @@ impl<T: TraceStorage> ChainProcess<T> {
         });
 
         Ok(Self {
-            trace: chain_trace,
             stop_marker: stop_marker_tx,
-            progress,
+            shared,
         })
-    }
-
-    fn flush(&self) -> Result<()> {
-        self.trace
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Could not lock trace mutex"))
-            .context("Could not flush trace")?
-            .as_mut()
-            .map(|v| v.flush())
-            .transpose()?;
-        Ok(())
     }
 }
 
@@ -1377,15 +1526,261 @@ enum SamplerResponse<T: Send + 'static> {
     Inspect(T),
 }
 
-#[cfg(feature = "parallel")]
 pub enum SamplerWaitResult<F: Send + 'static> {
     Trace(F),
     Timeout(Sampler<F>),
     Err(anyhow::Error, Option<F>),
 }
 
-#[cfg(feature = "parallel")]
+/// Runs a set of chains, either on a thread pool or sequentially on the calling thread.
+///
+/// With the `parallel` feature, chains sample on background threads. Without it, chains
+/// only advance while the caller is inside `wait_timeout`, taking turns one draw at a
+/// time, and `Sampler` is not `Send`. The interface is the same in both cases.
 pub struct Sampler<F: Send + 'static> {
+    driver: Box<dyn Driver<F>>,
+}
+
+pub struct ProgressCallback {
+    pub callback: Box<dyn FnMut(Duration, Box<[ChainProgress]>) + Send>,
+    pub rate: Duration,
+}
+
+impl<F: Send + 'static> Sampler<F> {
+    /// Start sampling on `num_cores` background threads.
+    #[cfg(feature = "parallel")]
+    pub fn new<M, S, C, T>(
+        model: Arc<M>,
+        settings: S,
+        trace_config: C,
+        num_cores: usize,
+        callback: Option<ProgressCallback>,
+    ) -> Result<Self>
+    where
+        S: Settings,
+        C: StorageConfig<Storage = T>,
+        M: Model,
+        T: TraceStorage<Finalized = F>,
+    {
+        let driver = ThreadedDriver::new(model, settings, trace_config, num_cores, callback)?;
+        Ok(Self {
+            driver: Box::new(driver),
+        })
+    }
+
+    /// Set up all chains on the calling thread without starting any threads.
+    ///
+    /// Chains only draw while the caller is inside `wait_timeout`. `num_cores` is
+    /// ignored.
+    #[cfg(not(feature = "parallel"))]
+    pub fn new<M, S, C, T>(
+        model: Arc<M>,
+        settings: S,
+        trace_config: C,
+        _num_cores: usize,
+        callback: Option<ProgressCallback>,
+    ) -> Result<Self>
+    where
+        S: Settings,
+        C: StorageConfig<Storage = T>,
+        M: Model,
+        T: TraceStorage<Finalized = F>,
+    {
+        let driver = SequentialDriver::new(model, settings, trace_config, callback)?;
+        Ok(Self {
+            driver: Box::new(driver),
+        })
+    }
+
+    pub fn pause(&mut self) -> Result<()> {
+        self.driver.pause()
+    }
+
+    pub fn resume(&mut self) -> Result<()> {
+        self.driver.resume()
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        self.driver.flush()
+    }
+
+    pub fn inspect(&mut self) -> Result<(Option<anyhow::Error>, F)> {
+        self.driver.inspect()
+    }
+
+    pub fn abort(self) -> Result<(Option<anyhow::Error>, F)> {
+        self.driver.abort()
+    }
+
+    pub fn wait_timeout(self, timeout: Duration) -> SamplerWaitResult<F> {
+        self.driver.wait_timeout(timeout)
+    }
+
+    pub fn progress(&mut self) -> Result<Box<[ChainProgress]>> {
+        self.driver.progress()
+    }
+}
+
+/// Runs every chain on the calling thread, one draw per chain in turn, while the
+/// caller is inside `wait_timeout`.
+#[cfg(not(feature = "parallel"))]
+struct SequentialDriver<M: Model, S: Settings, T: TraceStorage> {
+    trace: T,
+    chains: Vec<ChainRunner<M, S, T::ChainStorage>>,
+    next_chain: usize,
+    paused: bool,
+    callback: Option<ProgressCallback>,
+    /// Time spent drawing, which is the only time the chains make progress.
+    sampling_time: Duration,
+    last_progress: Option<Instant>,
+}
+
+#[cfg(not(feature = "parallel"))]
+impl<M: Model, S: Settings, T: TraceStorage> SequentialDriver<M, S, T> {
+    fn new<C: StorageConfig<Storage = T>>(
+        model: Arc<M>,
+        settings: S,
+        trace_config: C,
+        callback: Option<ProgressCallback>,
+    ) -> Result<Self> {
+        let trace = new_trace(&model, &settings, trace_config)?;
+
+        let chains = (0..settings.num_chains() as u64)
+            .map(|chain_id| {
+                let chain_trace = trace
+                    .initialize_trace_for_chain(chain_id)
+                    .context("Failed to create trace object")?;
+                let shared = ChainShared::new(
+                    chain_trace,
+                    settings.hint_num_draws() + settings.hint_num_tune(),
+                );
+                ChainRunner::new(
+                    Arc::clone(&model),
+                    chain_id,
+                    settings.seed(),
+                    settings,
+                    shared,
+                )
+            })
+            .collect::<Result<Vec<_>>>()
+            .context("Could not start chains")?;
+
+        Ok(Self {
+            trace,
+            chains,
+            next_chain: 0,
+            paused: false,
+            callback,
+            sampling_time: Duration::ZERO,
+            last_progress: None,
+        })
+    }
+
+    fn report_progress(&mut self, force: bool) {
+        let Some(ProgressCallback { callback, rate }) = &mut self.callback else {
+            return;
+        };
+        if !force
+            && self
+                .last_progress
+                .is_some_and(|last| last.elapsed() < *rate)
+        {
+            return;
+        }
+        let progress = self
+            .chains
+            .iter()
+            .map(|chain| chain.shared.progress())
+            .collect_vec();
+        callback(self.sampling_time, progress.into());
+        self.last_progress = Some(Instant::now());
+    }
+
+    /// The next chain after the one that drew last that still has draws left.
+    fn next_unfinished(&self) -> Option<usize> {
+        let n = self.chains.len();
+        (0..n)
+            .map(|offset| (self.next_chain + offset) % n)
+            .find(|&idx| !self.chains[idx].is_finished())
+    }
+}
+
+#[cfg(not(feature = "parallel"))]
+impl<M, S, T> Driver<T::Finalized> for SequentialDriver<M, S, T>
+where
+    M: Model,
+    S: Settings,
+    T: TraceStorage,
+{
+    fn pause(&mut self) -> Result<()> {
+        self.paused = true;
+        Ok(())
+    }
+
+    fn resume(&mut self) -> Result<()> {
+        self.paused = false;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        for chain in self.chains.iter() {
+            chain.shared.flush()?;
+        }
+        Ok(())
+    }
+
+    fn inspect(&mut self) -> Result<(Option<anyhow::Error>, T::Finalized)> {
+        inspect_traces(&self.trace, self.chains.iter().map(|chain| &chain.shared))
+    }
+
+    fn progress(&mut self) -> Result<Box<[ChainProgress]>> {
+        Ok(self
+            .chains
+            .iter()
+            .map(|chain| chain.shared.progress())
+            .collect())
+    }
+
+    fn wait_timeout(mut self: Box<Self>, timeout: Duration) -> SamplerWaitResult<T::Finalized> {
+        // Paused chains cannot make progress, so there is nothing to wait for.
+        if self.paused {
+            return SamplerWaitResult::Timeout(Sampler { driver: self });
+        }
+
+        let start = Instant::now();
+        loop {
+            self.report_progress(false);
+
+            let Some(idx) = self.next_unfinished() else {
+                return finished_to_wait_result(self.abort());
+            };
+
+            let draw_start = Instant::now();
+            let result = self.chains[idx].step();
+            self.sampling_time += draw_start.elapsed();
+            self.next_chain = idx + 1;
+
+            if let Err(err) = result {
+                return SamplerWaitResult::Err(err, None);
+            }
+
+            if start.elapsed() >= timeout {
+                return SamplerWaitResult::Timeout(Sampler { driver: self });
+            }
+        }
+    }
+
+    fn abort(mut self: Box<Self>) -> Result<(Option<anyhow::Error>, T::Finalized)> {
+        self.report_progress(true);
+        let this = *self;
+        finalize_traces(this.trace, this.chains.iter().map(|chain| &chain.shared))
+    }
+}
+
+/// Runs each chain on a rayon thread, controlled from a separate controller thread
+/// through channels.
+#[cfg(feature = "parallel")]
+struct ThreadedDriver<F: Send + 'static> {
     main_thread: JoinHandle<Result<(Option<anyhow::Error>, F)>>,
     commands: SyncSender<SamplerCommand>,
     responses: Receiver<SamplerResponse<(Option<anyhow::Error>, F)>>,
@@ -1393,15 +1788,9 @@ pub struct Sampler<F: Send + 'static> {
 }
 
 #[cfg(feature = "parallel")]
-pub struct ProgressCallback {
-    pub callback: Box<dyn FnMut(Duration, Box<[ChainProgress]>) + Send>,
-    pub rate: Duration,
-}
-
-#[cfg(feature = "parallel")]
-impl<F: Send + 'static> Sampler<F> {
-    pub fn new<M, S, C, T>(
-        model: M,
+impl<F: Send + 'static> ThreadedDriver<F> {
+    fn new<M, S, C, T>(
+        model: Arc<M>,
         settings: S,
         trace_config: C,
         num_cores: usize,
@@ -1424,35 +1813,24 @@ impl<F: Send + 'static> Sampler<F> {
                 .build()
                 .context("Could not start thread pool")?;
 
-            let settings_ref = &settings;
-            let model_ref = &model;
             let mut callback = callback;
 
             pool.scope_fifo(move |scope| {
                 let results = results_tx;
                 let mut chains = Vec::with_capacity(settings.num_chains());
 
-                let mut rng = ChaCha8Rng::seed_from_u64(settings.seed());
-                rng.set_stream(0);
-
-                let math = model_ref
-                    .math(&mut rng)
-                    .context("Could not create model density")?;
-                let trace = trace_config
-                    .new_trace(settings_ref, &math)
-                    .context("Could not create trace object")?;
-                drop(math);
+                let trace = new_trace(&model, &settings, trace_config)?;
 
                 for chain_id in 0..settings.num_chains() {
                     let chain_trace_val = trace
                         .initialize_trace_for_chain(chain_id as u64)
                         .context("Failed to create trace object")?;
                     let chain = ChainProcess::start(
-                        model_ref,
+                        Arc::clone(&model),
                         chain_trace_val,
                         chain_id as u64,
                         settings.seed(),
-                        settings_ref,
+                        settings,
                         scope,
                         results.clone(),
                     );
@@ -1462,7 +1840,7 @@ impl<F: Send + 'static> Sampler<F> {
 
                 let (chains, errors): (Vec<_>, Vec<_>) = chains.into_iter().partition_result();
                 if let Some(error) = errors.into_iter().next() {
-                    let _ = ChainProcess::finalize_many(trace, chains);
+                    let _ = finalize_traces(trace, chains.iter().map(|chain| &chain.shared));
                     return Err(error).context("Could not start chains");
                 }
 
@@ -1473,7 +1851,10 @@ impl<F: Send + 'static> Sampler<F> {
 
                     let mut progress_rate = Duration::MAX;
                     if let Some(ProgressCallback { callback, rate }) = &mut callback {
-                        let progress = chains.iter().map(|chain| chain.progress()).collect_vec();
+                        let progress = chains
+                            .iter()
+                            .map(|chain| chain.shared.progress())
+                            .collect_vec();
                         callback(start_time.elapsed(), progress.into());
                         progress_rate = *rate;
                     }
@@ -1484,8 +1865,10 @@ impl<F: Send + 'static> Sampler<F> {
                         let timeout = progress_rate.checked_sub(last_progress.elapsed());
                         let timeout = timeout.unwrap_or_else(|| {
                             if let Some(ProgressCallback { callback, .. }) = &mut callback {
-                                let progress =
-                                    chains.iter().map(|chain| chain.progress()).collect_vec();
+                                let progress = chains
+                                    .iter()
+                                    .map(|chain| chain.shared.progress())
+                                    .collect_vec();
                                 let mut elapsed = start_time.elapsed().saturating_sub(pause_time);
                                 if is_paused {
                                     elapsed = elapsed.saturating_sub(pause_start.elapsed());
@@ -1529,8 +1912,10 @@ impl<F: Send + 'static> Sampler<F> {
                                 })?;
                             }
                             Ok(SamplerCommand::Progress) => {
-                                let progress =
-                                    chains.iter().map(|chain| chain.progress()).collect_vec();
+                                let progress = chains
+                                    .iter()
+                                    .map(|chain| chain.shared.progress())
+                                    .collect_vec();
                                 responses_tx.send(SamplerResponse::Progress(progress.into())).map_err(|e| {
                                     anyhow::anyhow!(
                                         "Could not send progress response to controller thread: {e}"
@@ -1538,18 +1923,10 @@ impl<F: Send + 'static> Sampler<F> {
                                 })?;
                             }
                             Ok(SamplerCommand::Inspect) => {
-                                let traces = chains
-                                    .iter()
-                                    .filter_map(|chain| {
-                                        chain
-                                            .trace
-                                            .lock()
-                                            .expect("Poisoned lock")
-                                            .as_ref()
-                                            .map(|v| v.inspect())
-                                    })
-                                    .collect_vec();
-                                let finalized_trace = trace.inspect(traces)?;
+                                let finalized_trace = inspect_traces(
+                                    &trace,
+                                    chains.iter().map(|chain| &chain.shared),
+                                )?;
                                 responses_tx.send(SamplerResponse::Inspect(finalized_trace)).map_err(|e| {
                                     anyhow::anyhow!(
                                         "Could not send inspect response to controller thread: {e}"
@@ -1558,7 +1935,7 @@ impl<F: Send + 'static> Sampler<F> {
                             }
                             Ok(SamplerCommand::Flush) => {
                                 for chain in chains.iter() {
-                                    chain.flush()?;
+                                    chain.shared.flush()?;
                                 }
                                 responses_tx.send(SamplerResponse::Ok()).map_err(|e| {
                                     anyhow::anyhow!(
@@ -1569,8 +1946,10 @@ impl<F: Send + 'static> Sampler<F> {
                             Err(RecvTimeoutError::Timeout) => {}
                             Err(RecvTimeoutError::Disconnected) => {
                                 if let Some(ProgressCallback { callback, .. }) = &mut callback {
-                                    let progress =
-                                        chains.iter().map(|chain| chain.progress()).collect_vec();
+                                    let progress = chains
+                                        .iter()
+                                        .map(|chain| chain.shared.progress())
+                                        .collect_vec();
                                     let mut elapsed =
                                         start_time.elapsed().saturating_sub(pause_time);
                                     if is_paused {
@@ -1585,7 +1964,7 @@ impl<F: Send + 'static> Sampler<F> {
                 };
                 let result: Result<()> = main_loop();
                 // Run finalization even if something failed
-                let output = ChainProcess::finalize_many(trace, chains)?;
+                let output = finalize_traces(trace, chains.iter().map(|chain| &chain.shared))?;
 
                 result?;
                 Ok(output)
@@ -1599,8 +1978,11 @@ impl<F: Send + 'static> Sampler<F> {
             results: results_rx,
         })
     }
+}
 
-    pub fn pause(&mut self) -> Result<()> {
+#[cfg(feature = "parallel")]
+impl<F: Send + 'static> Driver<F> for ThreadedDriver<F> {
+    fn pause(&mut self) -> Result<()> {
         self.commands
             .send(SamplerCommand::Pause)
             .context("Could not send pause command to controller thread")?;
@@ -1614,7 +1996,7 @@ impl<F: Send + 'static> Sampler<F> {
         Ok(())
     }
 
-    pub fn resume(&mut self) -> Result<()> {
+    fn resume(&mut self) -> Result<()> {
         self.commands.send(SamplerCommand::Continue)?;
         let response = self.responses.recv()?;
         let SamplerResponse::Ok() = response else {
@@ -1623,7 +2005,7 @@ impl<F: Send + 'static> Sampler<F> {
         Ok(())
     }
 
-    pub fn flush(&mut self) -> Result<()> {
+    fn flush(&mut self) -> Result<()> {
         self.commands.send(SamplerCommand::Flush)?;
         let response = self
             .responses
@@ -1635,7 +2017,7 @@ impl<F: Send + 'static> Sampler<F> {
         Ok(())
     }
 
-    pub fn inspect(&mut self) -> Result<(Option<anyhow::Error>, F)> {
+    fn inspect(&mut self) -> Result<(Option<anyhow::Error>, F)> {
         self.commands.send(SamplerCommand::Inspect)?;
         let response = self
             .responses
@@ -1647,7 +2029,7 @@ impl<F: Send + 'static> Sampler<F> {
         Ok(trace)
     }
 
-    pub fn abort(self) -> Result<(Option<anyhow::Error>, F)> {
+    fn abort(self: Box<Self>) -> Result<(Option<anyhow::Error>, F)> {
         drop(self.commands);
         let result = self.main_thread.join();
         match result {
@@ -1657,25 +2039,23 @@ impl<F: Send + 'static> Sampler<F> {
         }
     }
 
-    pub fn wait_timeout(self, timeout: Duration) -> SamplerWaitResult<F> {
+    fn wait_timeout(self: Box<Self>, timeout: Duration) -> SamplerWaitResult<F> {
         let start = Instant::now();
         let mut remaining = Some(timeout);
         while remaining.is_some() {
             match self.results.recv_timeout(timeout) {
                 Ok(Ok(_)) => remaining = timeout.checked_sub(start.elapsed()),
                 Ok(Err(e)) => return SamplerWaitResult::Err(e, None),
-                Err(RecvTimeoutError::Disconnected) => match self.abort() {
-                    Ok((Some(err), trace)) => return SamplerWaitResult::Err(err, Some(trace)),
-                    Ok((None, trace)) => return SamplerWaitResult::Trace(trace),
-                    Err(err) => return SamplerWaitResult::Err(err, None),
-                },
+                Err(RecvTimeoutError::Disconnected) => {
+                    return finished_to_wait_result(self.abort());
+                }
                 Err(RecvTimeoutError::Timeout) => break,
             }
         }
-        SamplerWaitResult::Timeout(self)
+        SamplerWaitResult::Timeout(Sampler { driver: self })
     }
 
-    pub fn progress(&mut self) -> Result<Box<[ChainProgress]>> {
+    fn progress(&mut self) -> Result<Box<[ChainProgress]>> {
         self.commands.send(SamplerCommand::Progress)?;
         let response = self.responses.recv()?;
         let SamplerResponse::Progress(progress) = response else {
@@ -1687,6 +2067,8 @@ impl<F: Send + 'static> Sampler<F> {
 
 #[cfg(test)]
 pub mod test_logps {
+    use std::sync::Arc;
+
     use crate::{Model, math::CpuLogpFunc, math::CpuMath};
     use anyhow::Result;
     use rand::Rng;
@@ -1703,13 +2085,12 @@ pub mod test_logps {
 
     impl<F> Model for CpuModel<F>
     where
-        F: Send + Sync + 'static,
-        for<'a> &'a F: CpuLogpFunc,
+        F: CpuLogpFunc + Clone + Send + Sync + 'static,
     {
-        type Math<'model> = CpuMath<&'model F>;
+        type Math = CpuMath<F>;
 
-        fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> Result<Self::Math<'_>> {
-            Ok(CpuMath::new(&self.logp))
+        fn math<R: Rng + ?Sized>(self: Arc<Self>, _rng: &mut R) -> Result<Self::Math> {
+            Ok(CpuMath::new(self.logp.clone()))
         }
 
         fn init_position<R: rand::prelude::Rng + ?Sized>(
@@ -1732,7 +2113,7 @@ mod tests {
         sampler::LowRankMclmcSettings, sampler::LowRankNutsSettings, sampler::Settings,
     };
 
-    #[cfg(feature = "zarr")]
+    #[cfg(any(feature = "zarr", not(feature = "parallel")))]
     use super::test_logps::CpuModel;
 
     use anyhow::Result;
@@ -1872,7 +2253,7 @@ mod tests {
         let store = MemoryStore::new();
 
         let zarr_config = ZarrConfig::new(Arc::new(store));
-        let mut sampler = Sampler::new(model, settings, zarr_config, 4, None)?;
+        let mut sampler = Sampler::new(Arc::new(model), settings, zarr_config, 4, None)?;
         sampler.pause()?;
         sampler.pause()?;
         // TODO flush trace
@@ -1885,7 +2266,7 @@ mod tests {
         let store = MemoryStore::new();
         let zarr_config = ZarrConfig::new(Arc::new(store));
         let model = CpuModel::new(logp.clone());
-        let mut sampler = Sampler::new(model, settings, zarr_config, 4, None)?;
+        let mut sampler = Sampler::new(Arc::new(model), settings, zarr_config, 4, None)?;
         sampler.pause()?;
         if let (Some(err), _) = sampler.abort()? {
             Err(err)?;
@@ -1895,7 +2276,7 @@ mod tests {
         let zarr_config = ZarrConfig::new(Arc::new(store));
         let model = CpuModel::new(logp.clone());
         let start = Instant::now();
-        let sampler = Sampler::new(model, settings, zarr_config, 4, None)?;
+        let sampler = Sampler::new(Arc::new(model), settings, zarr_config, 4, None)?;
 
         let mut sampler = match sampler.wait_timeout(Duration::from_nanos(100)) {
             super::SamplerWaitResult::Trace(_) => {
@@ -1947,5 +2328,143 @@ mod tests {
         assert_eq!(vals.len(), 10);
         assert_eq!(stats.chain, 1);
         assert_eq!(stats.draw, 100);
+    }
+
+    /// Tests for the sequential driver, which only exists without `parallel`:
+    /// `cargo test --no-default-features`.
+    #[cfg(not(feature = "parallel"))]
+    mod sequential {
+        use std::{
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
+            time::Duration,
+        };
+
+        use anyhow::Result;
+        use itertools::Itertools;
+
+        use super::CpuModel;
+        use crate::{
+            DiagNutsSettings, HashMapConfig, ProgressCallback, Sampler, SamplerWaitResult,
+            math::test_logps::NormalLogp, storage::HashMapResult,
+        };
+
+        fn sample_to_end(
+            mut sampler: Sampler<Vec<HashMapResult>>,
+            timeout: Duration,
+        ) -> Result<Vec<HashMapResult>> {
+            loop {
+                match sampler.wait_timeout(timeout) {
+                    SamplerWaitResult::Trace(trace) => return Ok(trace),
+                    SamplerWaitResult::Timeout(new_sampler) => sampler = new_sampler,
+                    SamplerWaitResult::Err(err, _) => return Err(err),
+                }
+            }
+        }
+
+        /// Debug-print the draws in a stable order, so traces can be compared exactly.
+        fn draws_fingerprint(trace: &[HashMapResult]) -> Vec<String> {
+            trace
+                .iter()
+                .map(|chain| {
+                    chain
+                        .draws
+                        .iter()
+                        .sorted_by_key(|(name, _)| name.as_str())
+                        .map(|(name, value)| format!("{name}: {value:?}"))
+                        .join("\n")
+                })
+                .collect()
+        }
+
+        fn new_sampler(callback: Option<ProgressCallback>) -> Result<Sampler<Vec<HashMapResult>>> {
+            let settings = DiagNutsSettings {
+                num_tune: 50,
+                num_draws: 50,
+                num_chains: 3,
+                seed: 5,
+                ..Default::default()
+            };
+            let model = Arc::new(CpuModel::new(NormalLogp { dim: 5, mu: 0.1 }));
+            Sampler::new(model, settings, HashMapConfig::new(), 1, callback)
+        }
+
+        #[test]
+        fn runs_all_chains() -> Result<()> {
+            let trace = sample_to_end(new_sampler(None)?, Duration::from_millis(1))?;
+            assert_eq!(trace.len(), 3);
+            for chain in trace.iter() {
+                let crate::HashMapValue::Bool(diverging) = &chain.stats["diverging"] else {
+                    panic!("diverging stat should be bool");
+                };
+                assert_eq!(diverging.len(), 100);
+            }
+            Ok(())
+        }
+
+        /// Each chain has its own seed stream, so how draws are interleaved across
+        /// `wait_timeout` calls must not change them.
+        #[test]
+        fn draws_do_not_depend_on_scheduling() -> Result<()> {
+            let one_draw_per_call = sample_to_end(new_sampler(None)?, Duration::ZERO)?;
+            let all_at_once = sample_to_end(new_sampler(None)?, Duration::from_secs(600))?;
+            assert_eq!(
+                draws_fingerprint(&one_draw_per_call),
+                draws_fingerprint(&all_at_once)
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn pause_progress_and_inspect() -> Result<()> {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let callback = ProgressCallback {
+                callback: Box::new({
+                    let calls = calls.clone();
+                    move |_elapsed, _progress| {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                    }
+                }),
+                rate: Duration::from_millis(1),
+            };
+            let mut sampler = new_sampler(Some(callback))?;
+
+            // Nothing draws until `wait_timeout`, and not at all while paused.
+            sampler.pause()?;
+            let SamplerWaitResult::Timeout(mut sampler) =
+                sampler.wait_timeout(Duration::from_millis(50))
+            else {
+                panic!("paused sampler should time out");
+            };
+            assert!(
+                sampler
+                    .progress()?
+                    .iter()
+                    .all(|chain| chain.finished_draws == 0)
+            );
+            sampler.resume()?;
+
+            let SamplerWaitResult::Timeout(mut sampler) = sampler.wait_timeout(Duration::ZERO)
+            else {
+                panic!("a single draw should not finish sampling");
+            };
+            let drawn: usize = sampler
+                .progress()?
+                .iter()
+                .map(|chain| chain.finished_draws)
+                .sum();
+            assert_eq!(drawn, 1);
+
+            let (err, partial) = sampler.inspect()?;
+            assert!(err.is_none());
+            assert_eq!(partial.len(), 3);
+
+            let trace = sample_to_end(sampler, Duration::from_millis(1))?;
+            assert_eq!(trace.len(), 3);
+            assert!(calls.load(Ordering::Relaxed) >= 2);
+            Ok(())
+        }
     }
 }

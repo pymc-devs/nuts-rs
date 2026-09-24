@@ -2,6 +2,7 @@
 use std::{
     collections::HashMap,
     f64,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -111,12 +112,9 @@ struct MvnModel {
 
 /// Implementation of McmcModel for the ndarray backend
 impl Model for MvnModel {
-    type Math<'model>
-        = CpuMath<MvnLogp>
-    where
-        Self: 'model;
+    type Math = CpuMath<MvnLogp>;
 
-    fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> Result<Self::Math<'_>> {
+    fn math<R: Rng + ?Sized>(self: Arc<Self>, _rng: &mut R) -> Result<Self::Math> {
         Ok(self.math.clone())
     }
 
@@ -162,7 +160,7 @@ fn main() -> Result<()> {
     let start = Instant::now();
     let trace_config = NdarrayConfig::new();
     let mut sampler = Some(Sampler::new(
-        model,
+        Arc::new(model),
         settings,
         trace_config,
         num_chains,

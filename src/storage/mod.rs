@@ -17,6 +17,8 @@ pub use zarr::{ZarrAsyncConfig, ZarrAsyncTraceStorage, ZarrConfig, ZarrTraceStor
 
 pub use csv::{CsvConfig, CsvTraceStorage};
 pub use hashmap::{HashMapConfig, HashMapValue};
+#[cfg(all(test, not(feature = "parallel")))]
+pub(crate) use hashmap::HashMapResult;
 #[cfg(feature = "ndarray")]
 pub use ndarray::{NdarrayConfig, NdarrayTrace, NdarrayValue};
 

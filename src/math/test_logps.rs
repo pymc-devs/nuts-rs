@@ -103,6 +103,7 @@ impl CpuLogpFunc for &NormalLogp {
 
 /// Expands into two variables but declares only one, the way a model restricted to a subset
 /// of its variables does (nutpie's `var_names`).
+#[derive(Clone, Debug)]
 pub struct PartialExpandLogp {
     pub inner: NormalLogp,
 }
@@ -131,13 +132,13 @@ impl<P: HasDims> Storable<P> for PartialExpanded {
     }
 }
 
-impl HasDims for &PartialExpandLogp {
+impl HasDims for PartialExpandLogp {
     fn dim_sizes(&self) -> HashMap<String, u64> {
         self.inner.dim_sizes()
     }
 }
 
-impl CpuLogpFunc for &PartialExpandLogp {
+impl CpuLogpFunc for PartialExpandLogp {
     type LogpError = NormalLogpError;
     type FlowParameters = ();
     type ExpandedVector = PartialExpanded;

@@ -701,7 +701,7 @@ impl TraceStorage for ArrowTraceStorage {
 
 #[cfg(test)]
 mod tests {
-    use std::{default::Default, time::Duration};
+    use std::{default::Default, sync::Arc, time::Duration};
 
     use arrow::array::RecordBatch;
 
@@ -735,7 +735,7 @@ mod tests {
             inner: NormalLogp::new(3, 0.5),
         };
         let sampler = Sampler::new(
-            CpuModel::new(logp),
+            Arc::new(CpuModel::new(logp)),
             settings,
             ArrowConfig::default(),
             1,
@@ -782,7 +782,7 @@ mod tests {
             };
             let logp = NormalLogp::new(13, 4.0);
             let model = CpuModel::new(logp);
-            let sampler = Sampler::new(model, settings, conf, 1, None).unwrap();
+            let sampler = Sampler::new(Arc::new(model), settings, conf, 1, None).unwrap();
 
             let SamplerWaitResult::Trace(mut trace) = sampler.wait_timeout(Duration::from_secs(5))
             else {

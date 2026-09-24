@@ -12,6 +12,7 @@
 use std::{
     collections::HashMap,
     f64,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -174,12 +175,9 @@ struct MvnModel {
 }
 
 impl Model for MvnModel {
-    type Math<'model>
-        = CpuMath<MvnLogp>
-    where
-        Self: 'model;
+    type Math = CpuMath<MvnLogp>;
 
-    fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> Result<Self::Math<'_>> {
+    fn math<R: Rng + ?Sized>(self: Arc<Self>, _rng: &mut R) -> Result<Self::Math> {
         Ok(self.math.clone())
     }
 
@@ -253,7 +251,13 @@ fn main() -> Result<()> {
 
     // Create sampler with 4 worker threads
     // The sampler runs asynchronously, so we can monitor progress
-    let mut sampler = Some(Sampler::new(model, settings, csv_config, 4, None)?);
+    let mut sampler = Some(Sampler::new(
+        Arc::new(model),
+        settings,
+        csv_config,
+        4,
+        None,
+    )?);
 
     let mut num_progress_updates = 0;
 
