@@ -2,11 +2,64 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.18.3] - 2026-06-15
+## [0.19.0] - 2026-09-25
+
+### Bug Fixes
+
+- Zarr(Async)Config invalidates group paths by appending / (fncnt)
+
+- Clip eigenvalues in low rank adapt (Adrian Seyboldt)
+
+- Initial step size on divergence (Adrian Seyboldt)
+
+- Check turning on first leapfrog for exact normal (Adrian Seyboldt)
+
+- String stats in hashmap storage (Adrian Seyboldt)
+
+- Check expected shapes in arrow and hashmap storage (Adrian Seyboldt)
+
+- Return trace on failure (Adrian Seyboldt)
+
+
+### Features
+
+- Gate pulp's relaxed-simd behind a default-on cargo feature (habakan)
+
+- Add soft gradient clipping (Adrian Seyboldt)
+
+- More divergence sample stats (Adrian Seyboldt)
+
+- [**breaking**] Remove GAT from Model and implement sequential sampling (Adrian Seyboldt)
+
+- Avoid panics and better errors (Adrian Seyboldt)
+
+- Add wasm32 support (Adrian Seyboldt)
+
+- Small Storage API improvements (Adrian Seyboldt)
+
+- [**breaking**] Expose chain_id in Model.init_position (Adrian Seyboldt)
+
+- [**breaking**] Resumable errors in model init (Adrian Seyboldt)
+
 
 ### Miscellaneous Tasks
 
 - Update arrow (Adrian Seyboldt)
+
+
+### Refactor
+
+- Use plain std threads instead of rayon (Adrian Seyboldt)
+
+
+### Testing
+
+- Fix flaky numerics test (Adrian Seyboldt)
+
+
+### Examples
+
+- Clean up output directory (Adrian Seyboldt)
 
 
 ## [0.18.2] - 2026-06-03
