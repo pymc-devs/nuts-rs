@@ -623,6 +623,19 @@ pub struct ArrowConfig {
     pub store_warmup: bool,
 }
 
+impl ArrowConfig {
+    /// Store all draws, including the warmup draws.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether to store the warmup draws as well.
+    pub fn store_warmup(mut self, store: bool) -> Self {
+        self.store_warmup = store;
+        self
+    }
+}
+
 impl Default for ArrowConfig {
     fn default() -> Self {
         Self { store_warmup: true }

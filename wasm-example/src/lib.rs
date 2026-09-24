@@ -103,8 +103,7 @@ pub fn sample(seed: u64) -> Result<Vec<ArrowTrace>> {
         ..Default::default()
     };
     // Only keep the draws after tuning.
-    let mut config = ArrowConfig::default();
-    config.store_warmup = false;
+    let config = ArrowConfig::new().store_warmup(false);
     let mut sampler = Sampler::new(Arc::new(NormalModel), settings, config, 1, None)?;
     loop {
         match sampler.wait_timeout(Duration::from_millis(10)) {
