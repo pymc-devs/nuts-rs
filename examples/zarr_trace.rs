@@ -245,6 +245,11 @@ fn main() -> Result<()> {
     settings.num_draws = num_draws as _;
     settings.seed = 54; // For reproducible results
 
+    // Start from an empty directory, so no arrays from an earlier run are left behind.
+    if std::path::Path::new(output_path).exists() {
+        std::fs::remove_dir_all(output_path)?;
+    }
+
     // Set up Zarr storage
     // FilesystemStore writes to a directory on disk in Zarr format
     let store: zarrs::storage::ReadableWritableListableStorage =
