@@ -245,6 +245,12 @@ fn main() -> Result<()> {
     settings.num_draws = num_draws as _;
     settings.seed = 54; // For reproducible results
 
+    // Start from an empty directory, so no arrays from an earlier run are left behind.
+    // It has to exist before `canonicalize`.
+    if std::path::Path::new(output_path).exists() {
+        std::fs::remove_dir_all(output_path)?;
+    }
+    std::fs::create_dir_all(output_path)?;
     let path = std::path::Path::new(output_path).canonicalize()?;
     let object_store = object_store::local::LocalFileSystem::new_with_prefix(path)?;
     let store = Arc::new(AsyncObjectStore::new(object_store));
