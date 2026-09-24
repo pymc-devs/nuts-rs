@@ -729,6 +729,7 @@ fn nuts_options(settings: &NutsSettings<impl Debug + Copy + Default + Serialize>
         target_integration_time: settings.target_integration_time,
         extra_doublings: settings.extra_doublings,
         max_energy_error: settings.max_energy_error,
+        uturn_check_first_step: matches!(settings.trajectory_kind, KineticEnergyKind::ExactNormal),
     }
 }
 
