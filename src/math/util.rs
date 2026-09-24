@@ -821,6 +821,30 @@ mod tests {
         assert_ulps_eq!(a, b, max_ulps = 32);
     }
 
+    /// Compare two evaluations of `x * y + z * w` whose terms have magnitude `scale`, which
+    /// is `|x * y| + |z * w|`.
+    ///
+    /// Fused and unfused evaluations can each be off by about `EPSILON * scale`. When the
+    /// terms cancel, that is many ulps of the result, so ulps are the wrong measure here.
+    fn assert_close_to_scale(a: f64, b: f64, scale: f64) {
+        if a.is_nan() && b.is_nan() | b.is_infinite() {
+            return;
+        }
+        if b.is_nan() && a.is_nan() | a.is_infinite() {
+            return;
+        }
+        if a == b {
+            return;
+        }
+        // Includes the smallest subnormal, for products that underflow.
+        let tolerance = 4.0 * f64::EPSILON * scale + 4.0 * f64::from_bits(1);
+        assert!(
+            (a - b).abs() <= tolerance,
+            "{a:e} and {b:e} differ by {:e}, more than {tolerance:e} for terms of size {scale:e}",
+            (a - b).abs()
+        );
+    }
+
     prop_compose! {
         fn array1(maxsize: usize) (size in 0..maxsize) (
             vec1 in prop::collection::vec(prop::num::f64::ANY, size)
@@ -876,6 +900,29 @@ mod tests {
         }
     }
 
+    /// The terms of the new position cancel to 1/358 of their size here, so the fused
+    /// multiply-add in the SIMD kernel and the unfused reference differ by 114 ulps of the
+    /// result, although both are within 4e-17 of the exact value relative to the terms.
+    #[test]
+    fn std_norm_flow_cancellation() {
+        // Enough elements for the first one to go through the SIMD loop instead of the
+        // unfused scalar tail, for vectors of up to 8 lanes.
+        let mut pos = [0f64; 16];
+        let mut vel = [0f64; 16];
+        pos[0] = -2.6658947403963834e179;
+        vel[0] = -2.4640940421634138e179;
+        let epsilon = -0.8219272244648163;
+
+        let mut pos_out = [0f64; 16];
+        let mut vel_out = vel;
+        std_norm_flow(Arch::default(), &pos, &mut pos_out, &mut vel_out, epsilon);
+
+        let (eps_sin, eps_cos) = epsilon.sin_cos();
+        let pos_ref = pos[0] * eps_cos + vel[0] * eps_sin;
+        let pos_scale = (pos[0] * eps_cos).abs() + (vel[0] * eps_sin).abs();
+        assert_close_to_scale(pos_out[0], pos_ref, pos_scale);
+    }
+
     proptest! {
         #[test]
         fn test_std_norm_flow(
@@ -899,11 +946,12 @@ mod tests {
                 *v = new_v;
             });
 
-            for ((po_simd, vo_simd), (po_ref, vo_ref)) in
-                pos_out_simd.iter().zip(vel_simd.iter()).zip(pos_out_ref.iter().zip(vel_ref.iter()))
-            {
-                assert_approx_eq(*po_simd, *po_ref);
-                assert_approx_eq(*vo_simd, *vo_ref);
+            let (eps_sin, eps_cos) = epsilon.sin_cos();
+            for (i, (&p, &v)) in pos.iter().zip(vel.iter()).enumerate() {
+                let pos_scale = (p * eps_cos).abs() + (v * eps_sin).abs();
+                let vel_scale = (p * eps_sin).abs() + (v * eps_cos).abs();
+                assert_close_to_scale(pos_out_simd[i], pos_out_ref[i], pos_scale);
+                assert_close_to_scale(vel_simd[i], vel_ref[i], vel_scale);
             }
         }
 
