@@ -1523,6 +1523,21 @@ fn finished_to_wait_result<F: Send + 'static>(
     }
 }
 
+/// A chain failed with `err`, and the sampler was aborted to stop the others. Report the
+/// chain's error together with everything drawn up to that point.
+fn chain_failed_wait_result<F: Send + 'static>(
+    err: anyhow::Error,
+    aborted: Result<(Option<anyhow::Error>, F)>,
+) -> SamplerWaitResult<F> {
+    match aborted {
+        Ok((_, trace)) => SamplerWaitResult::Err(err, Some(trace)),
+        Err(abort_err) => SamplerWaitResult::Err(
+            anyhow::anyhow!("{err:#}\n\nThe trace could not be finalized: {abort_err:#}"),
+            None,
+        ),
+    }
+}
+
 #[cfg(feature = "parallel")]
 enum ChainCommand {
     Resume,
@@ -1886,7 +1901,7 @@ where
             self.next_chain = idx + 1;
 
             if let Err(err) = result {
-                return SamplerWaitResult::Err(err, None);
+                return chain_failed_wait_result(err, self.abort());
             }
 
             if start.elapsed() >= timeout {
@@ -2181,19 +2196,27 @@ impl<F: Send + 'static> Driver<F> for ThreadedDriver<F> {
     }
 
     fn wait_timeout(self: Box<Self>, timeout: Duration) -> SamplerWaitResult<F> {
-        let start = Instant::now();
-        let mut remaining = Some(timeout);
-        while remaining.is_some() {
-            match self.results.recv_timeout(timeout) {
-                Ok(Ok(_)) => remaining = timeout.checked_sub(start.elapsed()),
-                Ok(Err(e)) => return SamplerWaitResult::Err(e, None),
+        // `None` if the timeout is too long to represent, which means waiting until done.
+        let deadline = Instant::now().checked_add(timeout);
+        loop {
+            // Each chain reports once when it is done, so wait only for what is left of the
+            // timeout, not the whole timeout again after every chain.
+            let remaining = match deadline {
+                Some(deadline) => deadline.saturating_duration_since(Instant::now()),
+                None => Duration::MAX,
+            };
+            match self.results.recv_timeout(remaining) {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => return chain_failed_wait_result(err, self.abort()),
+                // Every chain has reported
                 Err(RecvTimeoutError::Disconnected) => {
                     return finished_to_wait_result(self.abort());
                 }
-                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    return SamplerWaitResult::Timeout(Sampler { driver: self });
+                }
             }
         }
-        SamplerWaitResult::Timeout(Sampler { driver: self })
     }
 
     fn progress(&mut self) -> Result<Box<[ChainProgress]>> {
@@ -2545,9 +2568,41 @@ mod tests {
             LowRankMclmcSettings, LowRankNutsSettings, MclmcTrajectoryKind, Sampler,
             SamplerWaitResult, Settings, StepSizeAdaptMethod,
             math::CpuMath,
-            math::test_logps::{ExpandMismatch, MismatchedExpandLogp, NormalLogp},
+            math::test_logps::{ExpandMismatch, FailingLogp, MismatchedExpandLogp, NormalLogp},
             storage::{StorageConfig, TraceStorage},
         };
+
+        /// A chain that fails stops the others, and `wait_timeout` returns what all chains
+        /// have drawn together with the error.
+        #[test]
+        fn failing_chain_keeps_trace() {
+            let settings = DiagNutsSettings {
+                num_tune: 100,
+                num_draws: 100,
+                num_chains: 3,
+                seed: 1,
+                ..Default::default()
+            };
+            let logp = FailingLogp {
+                inner: NormalLogp { dim: 3, mu: 0.1 },
+                fail_after: 100,
+                calls: 0,
+            };
+            let model = Arc::new(CpuModel::new(logp));
+            let mut sampler = Sampler::new(model, settings, HashMapConfig::new(), 3, None)
+                .expect("Sampler should start");
+            let (err, trace) = loop {
+                match sampler.wait_timeout(Duration::from_secs(10)) {
+                    SamplerWaitResult::Trace(_) => panic!("sampling should fail"),
+                    SamplerWaitResult::Timeout(new_sampler) => sampler = new_sampler,
+                    SamplerWaitResult::Err(err, trace) => break (err, trace),
+                }
+            };
+            assert!(format!("{err:#}").contains("FailOnPurpose"), "{err:#}");
+            let trace = trace.expect("the draws before the failure should be kept");
+            assert_eq!(trace.len(), 3);
+            assert!(trace.iter().all(|chain| !chain.stats.is_empty()));
+        }
 
         fn new_chain_error<S: Settings>(settings: S, dim: usize) -> String {
             let logp = NormalLogp { dim, mu: 0.1 };

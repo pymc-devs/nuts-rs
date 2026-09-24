@@ -235,3 +235,56 @@ impl CpuLogpFunc for MismatchedExpandLogp {
         Ok(MismatchedExpanded(array.to_vec(), self.mismatch))
     }
 }
+
+#[derive(Error, Debug)]
+#[error("logp failed on purpose")]
+pub struct FailOnPurpose;
+
+impl LogpError for FailOnPurpose {
+    fn is_recoverable(&self) -> bool {
+        false
+    }
+}
+
+/// Fails with a non-recoverable error once it has been evaluated `fail_after` times, like
+/// a model that hits a bug partway through sampling. Each clone counts on its own.
+#[derive(Clone, Debug)]
+pub struct FailingLogp {
+    pub inner: NormalLogp,
+    pub fail_after: usize,
+    pub calls: usize,
+}
+
+impl HasDims for FailingLogp {
+    fn dim_sizes(&self) -> HashMap<String, u64> {
+        self.inner.dim_sizes()
+    }
+}
+
+impl CpuLogpFunc for FailingLogp {
+    type LogpError = FailOnPurpose;
+    type FlowParameters = ();
+    type ExpandedVector = Vec<f64>;
+
+    fn dim(&self) -> usize {
+        self.inner.dim
+    }
+
+    fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, FailOnPurpose> {
+        self.calls += 1;
+        if self.calls > self.fail_after {
+            return Err(FailOnPurpose);
+        }
+        self.inner
+            .logp(position, gradient)
+            .map_err(|never| match never {})
+    }
+
+    fn expand_vector<R: rand::Rng + ?Sized>(
+        &mut self,
+        _rng: &mut R,
+        array: &[f64],
+    ) -> Result<Self::ExpandedVector, CpuMathError> {
+        Ok(array.to_vec())
+    }
+}
