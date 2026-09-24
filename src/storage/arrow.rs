@@ -11,17 +11,24 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema};
 use nuts_storable::{ItemType, Value};
 
-use crate::storage::{ChainStorage, StorageConfig, TraceStorage};
+use crate::storage::{ChainStorage, ExpectedLen, StorageConfig, TraceStorage};
 use crate::{Math, Progress, Settings};
 
 /// Container for different types of Arrow array builders
 enum ArrowBuilder {
-    Tensor(LargeListBuilder<Box<dyn ArrayBuilder>>),
+    Tensor(LargeListBuilder<Box<dyn ArrayBuilder>>, ExpectedLen),
     Scalar(Box<dyn ArrayBuilder>),
 }
 
 impl ArrowBuilder {
-    fn new(item_type: ItemType, capacity: usize, shape: Vec<usize>) -> Result<Self> {
+    /// `has_event_dim` marks stats that store whole events rather than one value of
+    /// `shape` per draw.
+    fn new(
+        item_type: ItemType,
+        capacity: usize,
+        shape: Vec<usize>,
+        has_event_dim: bool,
+    ) -> Result<Self> {
         let list_size = shape.iter().product::<usize>();
         let capacity = capacity
             .checked_mul(list_size)
@@ -48,17 +55,25 @@ impl ArrowBuilder {
             let data_type = item_type_to_arrow_type(item_type)?;
             let list_builder = LargeListBuilder::new(value_builder);
             let list_builder = list_builder.with_field(Field::new("item", data_type, false));
-            Ok(ArrowBuilder::Tensor(list_builder))
+            let expected_len = if has_event_dim {
+                ExpectedLen::PerEvent(list_size)
+            } else {
+                ExpectedLen::Exact(list_size)
+            };
+            Ok(ArrowBuilder::Tensor(list_builder, expected_len))
         }
     }
 
     fn append_value(&mut self, value: Value) -> Result<()> {
         macro_rules! downcast_builder {
             ($builder:expr, $ty:ty, $variant:ident) => {
-                $builder
-                    .as_any_mut()
-                    .downcast_mut::<$ty>()
-                    .ok_or_else(|| anyhow::anyhow!(concat!("Expected ", stringify!($ty))))
+                $builder.as_any_mut().downcast_mut::<$ty>().ok_or_else(|| {
+                    anyhow::anyhow!(concat!(
+                        "Got a ",
+                        stringify!($variant),
+                        " value, which does not match the declared type"
+                    ))
+                })
             };
         }
         match self {
@@ -115,7 +130,8 @@ impl ArrowBuilder {
                     bail!("TimeDelta64 values are not supported in arrow traces")
                 }
             },
-            ArrowBuilder::Tensor(list_builder) => {
+            ArrowBuilder::Tensor(list_builder, expected_len) => {
+                expected_len.check(&value)?;
                 match value {
                     Value::F64(v) => {
                         downcast_builder!(list_builder.values(), Float64Builder, F64)?
@@ -202,7 +218,7 @@ impl ArrowBuilder {
                     return Err(anyhow::anyhow!("Unknown builder type for null"));
                 }
             }
-            ArrowBuilder::Tensor(builder) => builder.append(false),
+            ArrowBuilder::Tensor(builder, _) => builder.append(false),
         }
         Ok(())
     }
@@ -210,14 +226,14 @@ impl ArrowBuilder {
     fn finish(&mut self) -> ArrayRef {
         match self {
             ArrowBuilder::Scalar(builder) => Arc::new(builder.finish()),
-            ArrowBuilder::Tensor(builder) => Arc::new(builder.finish()),
+            ArrowBuilder::Tensor(builder, _) => Arc::new(builder.finish()),
         }
     }
 
     fn finish_cloned(&self) -> ArrayRef {
         match self {
             ArrowBuilder::Scalar(builder) => Arc::new(builder.finish_cloned()),
-            ArrowBuilder::Tensor(builder) => Arc::new(builder.finish_cloned()),
+            ArrowBuilder::Tensor(builder, _) => Arc::new(builder.finish_cloned()),
         }
     }
 }
@@ -365,7 +381,7 @@ impl ArrowChainStorage {
                     .collect::<Result<Vec<_>>>()?;
                 Ok((
                     name.clone(),
-                    ArrowBuilder::new(*item_type, expected_draws, shape)?,
+                    ArrowBuilder::new(*item_type, expected_draws, shape, false)?,
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -373,7 +389,8 @@ impl ArrowChainStorage {
         let stats_builders = stat_types
             .iter()
             .zip(stat_dims.iter())
-            .map(|((name, item_type), (name2, dims))| {
+            .zip(stat_event_dims.iter())
+            .map(|(((name, item_type), (name2, dims)), event_dim)| {
                 assert_eq!(
                     name, name2,
                     "Draw types and dims must have matching names and order"
@@ -392,7 +409,7 @@ impl ArrowChainStorage {
                     .collect::<Result<Vec<_>>>()?;
                 Ok((
                     name.clone(),
-                    ArrowBuilder::new(*item_type, expected_draws, shape)?,
+                    ArrowBuilder::new(*item_type, expected_draws, shape, event_dim.is_some())?,
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -495,7 +512,9 @@ impl ChainStorage for ArrowChainStorage {
                 }
 
                 if let Some(value) = value {
-                    builder.append_value(value)?;
+                    builder
+                        .append_value(value)
+                        .with_context(|| format!("Could not store sampler stat {name}"))?;
                 } else {
                     builder.append_null()?;
                 }
@@ -514,7 +533,9 @@ impl ChainStorage for ArrowChainStorage {
                 }
 
                 if let Some(value) = value {
-                    builder.append_value(value)?;
+                    builder
+                        .append_value(value)
+                        .with_context(|| format!("Could not store posterior variable {name}"))?;
                 } else {
                     builder.append_null()?;
                 }

@@ -3,8 +3,9 @@
 use anyhow::{Context, Result, bail};
 use nuts_storable::{ItemType, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::storage::{ChainStorage, StorageConfig, TraceStorage, value_type_name};
+use crate::storage::{ChainStorage, ExpectedLen, StorageConfig, TraceStorage, value_type_name};
 use crate::{Progress, Settings};
 
 /// Container for different types of sample values in HashMaps
@@ -79,6 +80,8 @@ impl HashMapValue {
 pub struct HashMapTraceStorage {
     draw_types: Vec<(String, ItemType)>,
     param_types: Vec<(String, ItemType)>,
+    draw_lens: Arc<HashMap<String, ExpectedLen>>,
+    param_lens: Arc<HashMap<String, ExpectedLen>>,
 }
 
 /// Per-chain storage for HashMap MCMC traces
@@ -88,6 +91,8 @@ pub struct HashMapChainStorage {
     sample_stats: HashMap<String, HashMapValue>,
     warmup_draws: HashMap<String, HashMapValue>,
     sample_draws: HashMap<String, HashMapValue>,
+    draw_lens: Arc<HashMap<String, ExpectedLen>>,
+    param_lens: Arc<HashMap<String, ExpectedLen>>,
     last_sample_was_warmup: bool,
 }
 
@@ -102,7 +107,9 @@ pub struct HashMapResult {
 
 impl HashMapChainStorage {
     /// Create a new chain storage with HashMaps for parameters and samples
-    fn new(param_types: &[(String, ItemType)], draw_types: &[(String, ItemType)]) -> Self {
+    fn new(trace: &HashMapTraceStorage) -> Self {
+        let param_types = &trace.param_types;
+        let draw_types = &trace.draw_types;
         let warmup_stats = param_types
             .iter()
             .cloned()
@@ -132,6 +139,8 @@ impl HashMapChainStorage {
             sample_stats,
             warmup_draws,
             sample_draws,
+            draw_lens: trace.draw_lens.clone(),
+            param_lens: trace.param_lens.clone(),
             last_sample_was_warmup: true,
         }
     }
@@ -148,11 +157,14 @@ impl HashMapChainStorage {
             &mut self.sample_stats
         };
 
-        let Some(hash_value) = target_map.get_mut(name) else {
+        let (Some(hash_value), Some(expected_len)) =
+            (target_map.get_mut(name), self.param_lens.get(name))
+        else {
             bail!("Unknown sampler stat: {name}");
         };
-        hash_value
-            .push(value)
+        expected_len
+            .check(&value)
+            .and_then(|()| hash_value.push(value))
             .with_context(|| format!("Could not store sampler stat {name}"))
     }
 
@@ -168,11 +180,14 @@ impl HashMapChainStorage {
             &mut self.sample_draws
         };
 
-        let Some(hash_value) = target_map.get_mut(name) else {
+        let (Some(hash_value), Some(expected_len)) =
+            (target_map.get_mut(name), self.draw_lens.get(name))
+        else {
             bail!("Unknown posterior variable: {name}");
         };
-        hash_value
-            .push(value)
+        expected_len
+            .check(&value)
+            .and_then(|()| hash_value.push(value))
             .with_context(|| format!("Could not store posterior variable {name}"))
     }
 }
@@ -311,9 +326,22 @@ impl StorageConfig for HashMapConfig {
         settings: &impl Settings,
         math: &M,
     ) -> Result<Self::Storage> {
+        let stat_event_dims: HashMap<String, Option<String>> =
+            settings.stat_event_dims(math).into_iter().collect();
+        let param_lens = ExpectedLen::for_variables(
+            &settings.stat_dims_all(math),
+            &settings.stat_dim_sizes(math),
+            |name| stat_event_dims.get(name).is_some_and(Option::is_some),
+        )?;
+        let draw_lens =
+            ExpectedLen::for_variables(&settings.data_dims_all(math), &math.dim_sizes(), |_| {
+                false
+            })?;
         Ok(HashMapTraceStorage {
             param_types: settings.stat_types(math),
             draw_types: settings.data_types(math),
+            draw_lens: Arc::new(draw_lens),
+            param_lens: Arc::new(param_lens),
         })
     }
 }
@@ -324,10 +352,7 @@ impl TraceStorage for HashMapTraceStorage {
     type Finalized = Vec<HashMapResult>;
 
     fn initialize_trace_for_chain(&self, _chain_id: u64) -> Result<Self::ChainStorage> {
-        Ok(HashMapChainStorage::new(
-            &self.param_types,
-            &self.draw_types,
-        ))
+        Ok(HashMapChainStorage::new(self))
     }
 
     fn finalize(
