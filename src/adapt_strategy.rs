@@ -387,6 +387,7 @@ mod test {
             target_integration_time: None,
             extra_doublings: 0,
             max_energy_error: 1000.0,
+            uturn_check_first_step: false,
         };
 
         let rng = {
