@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use arrow::array::{
     ArrayBuilder, ArrayRef, BooleanBuilder, Float32Builder, Float64Builder, Int64Builder,
     LargeListBuilder, RecordBatch, RecordBatchOptions, StringBuilder, UInt64Builder,
@@ -11,17 +11,24 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema};
 use nuts_storable::{ItemType, Value};
 
-use crate::storage::{ChainStorage, StorageConfig, TraceStorage};
+use crate::storage::{ChainStorage, ExpectedLen, StorageConfig, TraceStorage};
 use crate::{Math, Progress, Settings};
 
 /// Container for different types of Arrow array builders
 enum ArrowBuilder {
-    Tensor(LargeListBuilder<Box<dyn ArrayBuilder>>),
+    Tensor(LargeListBuilder<Box<dyn ArrayBuilder>>, ExpectedLen),
     Scalar(Box<dyn ArrayBuilder>),
 }
 
 impl ArrowBuilder {
-    fn new(item_type: ItemType, capacity: usize, shape: Vec<usize>) -> Result<Self> {
+    /// `has_event_dim` marks stats that store whole events rather than one value of
+    /// `shape` per draw.
+    fn new(
+        item_type: ItemType,
+        capacity: usize,
+        shape: Vec<usize>,
+        has_event_dim: bool,
+    ) -> Result<Self> {
         let list_size = shape.iter().product::<usize>();
         let capacity = capacity
             .checked_mul(list_size)
@@ -35,30 +42,38 @@ impl ArrowBuilder {
             ItemType::U64 => Box::new(UInt64Builder::with_capacity(capacity)),
             ItemType::String => Box::new(StringBuilder::with_capacity(capacity, capacity)),
             ItemType::DateTime64(_) => {
-                panic!("DateTime values not supported as values in arrow storage")
+                bail!("DateTime64 values are not supported in arrow traces")
             }
             ItemType::TimeDelta64(_) => {
-                panic!("TimeDelta values not supported as values in arrow storage")
+                bail!("TimeDelta64 values are not supported in arrow traces")
             }
         };
 
         if shape.is_empty() {
             Ok(ArrowBuilder::Scalar(value_builder))
         } else {
-            let data_type = item_type_to_arrow_type(item_type);
+            let data_type = item_type_to_arrow_type(item_type)?;
             let list_builder = LargeListBuilder::new(value_builder);
             let list_builder = list_builder.with_field(Field::new("item", data_type, false));
-            Ok(ArrowBuilder::Tensor(list_builder))
+            let expected_len = if has_event_dim {
+                ExpectedLen::PerEvent(list_size)
+            } else {
+                ExpectedLen::Exact(list_size)
+            };
+            Ok(ArrowBuilder::Tensor(list_builder, expected_len))
         }
     }
 
     fn append_value(&mut self, value: Value) -> Result<()> {
         macro_rules! downcast_builder {
             ($builder:expr, $ty:ty, $variant:ident) => {
-                $builder
-                    .as_any_mut()
-                    .downcast_mut::<$ty>()
-                    .ok_or_else(|| anyhow::anyhow!(concat!("Expected ", stringify!($ty))))
+                $builder.as_any_mut().downcast_mut::<$ty>().ok_or_else(|| {
+                    anyhow::anyhow!(concat!(
+                        "Got a ",
+                        stringify!($variant),
+                        " value, which does not match the declared type"
+                    ))
+                })
             };
         }
         match self {
@@ -82,23 +97,23 @@ impl ArrowBuilder {
                     downcast_builder!(builder, StringBuilder, ScalarString)?.append_value(&v);
                 }
                 Value::U64(items) => {
-                    assert!(items.len() == 1);
+                    check_scalar_len(items.len())?;
                     downcast_builder!(builder, UInt64Builder, U64)?.append_slice(items.as_slice());
                 }
                 Value::I64(items) => {
-                    assert!(items.len() == 1);
+                    check_scalar_len(items.len())?;
                     downcast_builder!(builder, Int64Builder, I64)?.append_slice(items.as_slice());
                 }
                 Value::F64(items) => {
-                    assert!(items.len() == 1);
+                    check_scalar_len(items.len())?;
                     downcast_builder!(builder, Float64Builder, F64)?.append_slice(items.as_slice());
                 }
                 Value::F32(items) => {
-                    assert!(items.len() == 1);
+                    check_scalar_len(items.len())?;
                     downcast_builder!(builder, Float32Builder, F32)?.append_slice(items.as_slice());
                 }
                 Value::Bool(items) => {
-                    assert!(items.len() == 1);
+                    check_scalar_len(items.len())?;
                     downcast_builder!(builder, BooleanBuilder, Bool)?
                         .append_slice(items.as_slice());
                 }
@@ -109,13 +124,14 @@ impl ArrowBuilder {
                     }
                 }
                 Value::DateTime64(_, _) => {
-                    panic!("DateTime64 scalar values not supported in arrow storage")
+                    bail!("DateTime64 values are not supported in arrow traces")
                 }
                 Value::TimeDelta64(_, _) => {
-                    panic!("TimeDelta64 scalar values not supported in arrow storage")
+                    bail!("TimeDelta64 values are not supported in arrow traces")
                 }
             },
-            ArrowBuilder::Tensor(list_builder) => {
+            ArrowBuilder::Tensor(list_builder, expected_len) => {
+                expected_len.check(&value)?;
                 match value {
                     Value::F64(v) => {
                         downcast_builder!(list_builder.values(), Float64Builder, F64)?
@@ -169,10 +185,10 @@ impl ArrowBuilder {
                             .append_value(val);
                     }
                     Value::DateTime64(_, _) => {
-                        panic!("DateTime64 scalar values not supported in arrow storage")
+                        bail!("DateTime64 values are not supported in arrow traces")
                     }
                     Value::TimeDelta64(_, _) => {
-                        panic!("TimeDelta64 scalar values not supported in arrow storage")
+                        bail!("TimeDelta64 values are not supported in arrow traces")
                     }
                 }
                 list_builder.append(true);
@@ -202,7 +218,7 @@ impl ArrowBuilder {
                     return Err(anyhow::anyhow!("Unknown builder type for null"));
                 }
             }
-            ArrowBuilder::Tensor(builder) => builder.append(false),
+            ArrowBuilder::Tensor(builder, _) => builder.append(false),
         }
         Ok(())
     }
@@ -210,21 +226,21 @@ impl ArrowBuilder {
     fn finish(&mut self) -> ArrayRef {
         match self {
             ArrowBuilder::Scalar(builder) => Arc::new(builder.finish()),
-            ArrowBuilder::Tensor(builder) => Arc::new(builder.finish()),
+            ArrowBuilder::Tensor(builder, _) => Arc::new(builder.finish()),
         }
     }
 
     fn finish_cloned(&self) -> ArrayRef {
         match self {
             ArrowBuilder::Scalar(builder) => Arc::new(builder.finish_cloned()),
-            ArrowBuilder::Tensor(builder) => Arc::new(builder.finish_cloned()),
+            ArrowBuilder::Tensor(builder, _) => Arc::new(builder.finish_cloned()),
         }
     }
 }
 
 /// Convert ItemType to Arrow DataType
-fn item_type_to_arrow_type(item_type: ItemType) -> DataType {
-    match item_type {
+fn item_type_to_arrow_type(item_type: ItemType) -> Result<DataType> {
+    Ok(match item_type {
         ItemType::F64 => DataType::Float64,
         ItemType::F32 => DataType::Float32,
         ItemType::U64 => DataType::UInt64,
@@ -232,12 +248,20 @@ fn item_type_to_arrow_type(item_type: ItemType) -> DataType {
         ItemType::Bool => DataType::Boolean,
         ItemType::String => DataType::Utf8,
         ItemType::DateTime64(_) => {
-            panic!("DateTime64 scalar values not supported in arrow storage")
+            bail!("DateTime64 values are not supported in arrow traces")
         }
         ItemType::TimeDelta64(_) => {
-            panic!("TimeDelta64 scalar values not supported in arrow storage")
+            bail!("TimeDelta64 values are not supported in arrow traces")
         }
+    })
+}
+
+/// A variable without dims stores one value per draw.
+fn check_scalar_len(len: usize) -> Result<()> {
+    if len != 1 {
+        bail!("Expected a single value for a variable without dims, but got {len}");
     }
+    Ok(())
 }
 
 /// Create a field with tensor extension type if shape is provided
@@ -248,7 +272,7 @@ fn create_field_with_shape(
     dim_sizes: &HashMap<String, u64>,
     event_dim: Option<&str>,
 ) -> Result<Field> {
-    let arrow_type = item_type_to_arrow_type(item_type);
+    let arrow_type = item_type_to_arrow_type(item_type)?;
 
     if !dims.is_empty() {
         // Multi-dimensional tensor
@@ -263,11 +287,10 @@ fn create_field_with_shape(
                     .map(|dim| {
                         dim_sizes
                             .get(dim)
-                            .copied()
                             .map(|size| size.to_string())
-                            .expect("Dimension size not found")
+                            .with_context(|| format!("Unknown size of dimension {dim} of {name}"))
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Result<Vec<_>>>()?
                     .join(","),
             ),
         ]);
@@ -358,7 +381,7 @@ impl ArrowChainStorage {
                     .collect::<Result<Vec<_>>>()?;
                 Ok((
                     name.clone(),
-                    ArrowBuilder::new(*item_type, expected_draws, shape)?,
+                    ArrowBuilder::new(*item_type, expected_draws, shape, false)?,
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -366,7 +389,8 @@ impl ArrowChainStorage {
         let stats_builders = stat_types
             .iter()
             .zip(stat_dims.iter())
-            .map(|((name, item_type), (name2, dims))| {
+            .zip(stat_event_dims.iter())
+            .map(|(((name, item_type), (name2, dims)), event_dim)| {
                 assert_eq!(
                     name, name2,
                     "Draw types and dims must have matching names and order"
@@ -385,7 +409,7 @@ impl ArrowChainStorage {
                     .collect::<Result<Vec<_>>>()?;
                 Ok((
                     name.clone(),
-                    ArrowBuilder::new(*item_type, expected_draws, shape)?,
+                    ArrowBuilder::new(*item_type, expected_draws, shape, event_dim.is_some())?,
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -481,14 +505,16 @@ impl ChainStorage for ArrowChainStorage {
             .zip(self.stats_builders.iter_mut())
             .try_for_each(|((name, value), (expected_name, builder))| {
                 if name != expected_name {
-                    panic!(
-                        "Draw name mismatch: expected {}, got {}",
-                        expected_name, name
+                    bail!(
+                        "Values arrived out of order: expected {expected_name}, got {name}. \
+                         Storable::get_all must return values in the order of Storable::names"
                     );
                 }
 
                 if let Some(value) = value {
-                    builder.append_value(value)?;
+                    builder
+                        .append_value(value)
+                        .with_context(|| format!("Could not store sampler stat {name}"))?;
                 } else {
                     builder.append_null()?;
                 }
@@ -500,14 +526,16 @@ impl ChainStorage for ArrowChainStorage {
             .zip(self.draw_builders.iter_mut())
             .try_for_each(|((name, value), (expected_name, builder))| {
                 if name != expected_name {
-                    panic!(
-                        "Draw name mismatch: expected {}, got {}",
-                        expected_name, name
+                    bail!(
+                        "Values arrived out of order: expected {expected_name}, got {name}. \
+                         Storable::get_all must return values in the order of Storable::names"
                     );
                 }
 
                 if let Some(value) = value {
-                    builder.append_value(value)?;
+                    builder
+                        .append_value(value)
+                        .with_context(|| format!("Could not store posterior variable {name}"))?;
                 } else {
                     builder.append_null()?;
                 }
@@ -593,6 +621,19 @@ impl ChainStorage for ArrowChainStorage {
 #[non_exhaustive]
 pub struct ArrowConfig {
     pub store_warmup: bool,
+}
+
+impl ArrowConfig {
+    /// Store all draws, including the warmup draws.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether to store the warmup draws as well.
+    pub fn store_warmup(mut self, store: bool) -> Self {
+        self.store_warmup = store;
+        self
+    }
 }
 
 impl Default for ArrowConfig {
@@ -701,7 +742,7 @@ impl TraceStorage for ArrowTraceStorage {
 
 #[cfg(test)]
 mod tests {
-    use std::{default::Default, time::Duration};
+    use std::{default::Default, sync::Arc, time::Duration};
 
     use arrow::array::RecordBatch;
 
@@ -735,7 +776,7 @@ mod tests {
             inner: NormalLogp::new(3, 0.5),
         };
         let sampler = Sampler::new(
-            CpuModel::new(logp),
+            Arc::new(CpuModel::new(logp)),
             settings,
             ArrowConfig::default(),
             1,
@@ -782,7 +823,7 @@ mod tests {
             };
             let logp = NormalLogp::new(13, 4.0);
             let model = CpuModel::new(logp);
-            let sampler = Sampler::new(model, settings, conf, 1, None).unwrap();
+            let sampler = Sampler::new(Arc::new(model), settings, conf, 1, None).unwrap();
 
             let SamplerWaitResult::Trace(mut trace) = sampler.wait_timeout(Duration::from_secs(5))
             else {

@@ -6,7 +6,8 @@ use std::{
 use anyhow::Context;
 use nuts_rs::{
     Chain, CpuLogpFunc, CpuMath, DiagAdaptExpSettings, DiagNutsSettings, EuclideanAdaptOptions,
-    LogpError, LowRankNutsSettings, Model, Sampler, SamplerWaitResult, Settings, ZarrConfig,
+    InitPositionError, LogpError, LowRankNutsSettings, Model, Sampler, SamplerWaitResult, Settings,
+    ZarrConfig,
 };
 use nuts_storable::HasDims;
 use rand::SeedableRng;
@@ -107,9 +108,8 @@ impl CpuLogpFunc for CorrelatedNormalLogp {
     }
 }
 
-struct NormalLogp<'a> {
-    dim: usize,
-    mu: &'a [f64],
+struct NormalLogp {
+    model: Arc<NormalModel>,
 }
 
 #[derive(Error, Debug)]
@@ -121,22 +121,22 @@ impl LogpError for NormalLogpError {
     }
 }
 
-impl HasDims for NormalLogp<'_> {
+impl HasDims for NormalLogp {
     fn dim_sizes(&self) -> std::collections::HashMap<String, u64> {
         std::collections::HashMap::from([
-            ("unconstrained_parameter".to_string(), self.dim as u64),
-            ("dim".to_string(), self.dim as u64),
+            ("unconstrained_parameter".to_string(), self.dim() as u64),
+            ("dim".to_string(), self.dim() as u64),
         ])
     }
 }
 
-impl<'a> CpuLogpFunc for NormalLogp<'a> {
+impl CpuLogpFunc for NormalLogp {
     type LogpError = NormalLogpError;
     type FlowParameters = ();
     type ExpandedVector = Vec<f64>;
 
     fn dim(&self) -> usize {
-        self.dim
+        self.model.mu.len()
     }
 
     fn logp(&mut self, position: &[f64], grad: &mut [f64]) -> Result<f64, Self::LogpError> {
@@ -146,7 +146,7 @@ impl<'a> CpuLogpFunc for NormalLogp<'a> {
 
         position
             .iter()
-            .zip(self.mu.iter())
+            .zip(self.model.mu.iter())
             .zip(grad.iter_mut())
             .for_each(|((&p, &mu), grad)| {
                 let diff = p - mu;
@@ -179,23 +179,18 @@ impl NormalModel {
 }
 
 impl Model for NormalModel {
-    type Math<'model>
-        = CpuMath<NormalLogp<'model>>
-    where
-        Self: 'model;
+    type Math = CpuMath<NormalLogp>;
 
-    fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> anyhow::Result<Self::Math<'_>> {
-        Ok(CpuMath::new(NormalLogp {
-            dim: self.mu.len(),
-            mu: &self.mu,
-        }))
+    fn math<R: Rng + ?Sized>(self: Arc<Self>, _rng: &mut R) -> anyhow::Result<Self::Math> {
+        Ok(CpuMath::new(NormalLogp { model: self }))
     }
 
     fn init_position<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
+        _chain_id: u64,
         position: &mut [f64],
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<(), InitPositionError> {
         let normal = StandardNormal;
         position.iter_mut().for_each(|x| *x = normal.sample(rng));
         Ok(())
@@ -213,7 +208,7 @@ fn sample() -> anyhow::Result<Arc<MemoryStore>> {
 
     let store = Arc::new(MemoryStore::new());
     let trace_config = ZarrConfig::new(store.clone());
-    let mut sampler = Sampler::new(model, settings, trace_config, 6, None)?;
+    let mut sampler = Sampler::new(Arc::new(model), settings, trace_config, 6, None)?;
 
     let _ = loop {
         match sampler.wait_timeout(Duration::from_secs(1)) {
@@ -247,7 +242,7 @@ fn sample_debug_stats() -> anyhow::Result<Arc<dyn ReadableListableStorageTraits>
 
     let store = Arc::new(MemoryStore::new());
     let trace_config = ZarrConfig::new(store.clone());
-    let mut sampler = Sampler::new(model, settings, trace_config, 6, None)?;
+    let mut sampler = Sampler::new(Arc::new(model), settings, trace_config, 6, None)?;
 
     let _ = loop {
         match sampler.wait_timeout(Duration::from_secs(1)) {
@@ -304,7 +299,7 @@ fn sample_eigs_debug_stats() -> anyhow::Result<Arc<MemoryStore>> {
 
     let store = Arc::new(MemoryStore::new());
     let trace_config = ZarrConfig::new(store.clone());
-    let mut sampler = Sampler::new(model, settings, trace_config, 1, None)?;
+    let mut sampler = Sampler::new(Arc::new(model), settings, trace_config, 1, None)?;
 
     let _trace = loop {
         match sampler.wait_timeout(Duration::from_secs(1)) {
@@ -338,7 +333,7 @@ fn low_rank_exact_gaussian() -> anyhow::Result<()> {
         settings.adapt_options.mass_matrix_options.eigval_cutoff = 1.00001;
 
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-        let mut chain = settings.new_chain(0, math, &mut rng);
+        let mut chain = settings.new_chain(0, math, &mut rng).unwrap();
         chain.set_position(&vec![1.0f64; dim])?;
 
         for _ in 0..(settings.num_tune + settings.num_draws) {

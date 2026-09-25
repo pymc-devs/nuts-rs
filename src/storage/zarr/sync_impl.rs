@@ -2,13 +2,15 @@ use std::collections::HashMap;
 use std::iter::once;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use nuts_storable::{ItemType, Value};
 use zarrs::array::{ArrayBuilder, ArraySubset};
 use zarrs::group::GroupBuilder;
 use zarrs::storage::{ReadableWritableListableStorage, ReadableWritableListableStorageTraits};
 
-use super::common::{Chunk, SampleBuffer, SampleBufferValue, value_to_zarr_coord_params};
+use super::common::{
+    Chunk, SampleBuffer, SampleBufferValue, check_chunk_len, value_to_zarr_coord_params,
+};
 use super::create_arrays;
 use crate::storage::{ChainStorage, StorageConfig, TraceStorage};
 use crate::{Math, Progress, Settings};
@@ -29,7 +31,8 @@ pub fn store_coords(
     coords: &HashMap<String, Value>,
 ) -> Result<()> {
     for (name, coord) in coords {
-        let (data_type, len, fill_value) = value_to_zarr_coord_params(coord);
+        let (data_type, len, fill_value) = value_to_zarr_coord_params(coord)
+            .with_context(|| format!("Could not store coordinate {name}"))?;
         let name: &String = name;
 
         let coord_array =
@@ -122,23 +125,23 @@ fn store_zarr_chunk(array: &Array, data: Chunk, chain_chunk_index: u64) -> Resul
         let chunk_subset = ArraySubset::new_with_shape(shape);
         match data.values {
             SampleBufferValue::F64(v) => {
-                assert!(v.len() == chunk_subset.num_elements_usize());
+                check_chunk_len(v.len(), &chunk_subset, &array)?;
                 array.store_chunk_subset(&chunk, &chunk_subset, &v)
             }
             SampleBufferValue::F32(v) => {
-                assert!(v.len() == chunk_subset.num_elements_usize());
+                check_chunk_len(v.len(), &chunk_subset, &array)?;
                 array.store_chunk_subset(&chunk, &chunk_subset, &v)
             }
             SampleBufferValue::U64(v) => {
-                assert!(v.len() == chunk_subset.num_elements_usize());
+                check_chunk_len(v.len(), &chunk_subset, &array)?;
                 array.store_chunk_subset(&chunk, &chunk_subset, &v)
             }
             SampleBufferValue::I64(v) => {
-                assert!(v.len() == chunk_subset.num_elements_usize());
+                check_chunk_len(v.len(), &chunk_subset, &array)?;
                 array.store_chunk_subset(&chunk, &chunk_subset, &v)
             }
             SampleBufferValue::Bool(v) => {
-                assert!(v.len() == chunk_subset.num_elements_usize());
+                check_chunk_len(v.len(), &chunk_subset, &array)?;
                 array.store_chunk_subset(&chunk, &chunk_subset, &v)
             }
             SampleBufferValue::String(_) => unreachable!(),
@@ -163,17 +166,25 @@ impl ZarrChainStorage {
         buffer_size: u64,
         chain: u64,
         event_dim_of_stat: HashMap<String, String>,
-    ) -> Self {
+    ) -> Result<Self> {
         let draw_buffers = draw_types
             .iter()
-            .map(|(name, item_type)| (name.clone(), SampleBuffer::new(*item_type, buffer_size)))
-            .collect();
+            .map(|(name, item_type)| {
+                let buffer = SampleBuffer::new(*item_type, buffer_size)
+                    .with_context(|| format!("Could not create storage for {name}"))?;
+                Ok((name.clone(), buffer))
+            })
+            .collect::<Result<_>>()?;
 
         let stats_buffers = param_types
             .iter()
-            .map(|(name, item_type)| (name.clone(), SampleBuffer::new(*item_type, buffer_size)))
-            .collect();
-        Self {
+            .map(|(name, item_type)| {
+                let buffer = SampleBuffer::new(*item_type, buffer_size)
+                    .with_context(|| format!("Could not create storage for {name}"))?;
+                Ok((name.clone(), buffer))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self {
             draw_buffers,
             stats_buffers,
             arrays,
@@ -181,7 +192,7 @@ impl ZarrChainStorage {
             last_sample_was_warmup: true,
             event_dim_of_stat,
             warmup_event_counts: HashMap::new(),
-        }
+        })
     }
 
     /// Store a parameter value, writing to Zarr when buffer is full
@@ -190,9 +201,12 @@ impl ZarrChainStorage {
             return Ok(());
         }
         let Some(buffer) = self.stats_buffers.get_mut(name) else {
-            panic!("Unknown param name: {}", name);
+            bail!("Unknown sampler stat: {name}");
         };
-        if let Some(chunk) = buffer.push(value) {
+        if let Some(chunk) = buffer
+            .push(value)
+            .with_context(|| format!("Could not store sampler stat {name}"))?
+        {
             let array = if is_warmup {
                 &self.arrays.warmup_param_arrays[name]
             } else {
@@ -209,9 +223,12 @@ impl ZarrChainStorage {
             return Ok(());
         }
         let Some(buffer) = self.draw_buffers.get_mut(name) else {
-            panic!("Unknown posterior variable name: {}", name);
+            bail!("Unknown posterior variable: {name}");
         };
-        if let Some(chunk) = buffer.push(value) {
+        if let Some(chunk) = buffer
+            .push(value)
+            .with_context(|| format!("Could not store posterior variable {name}"))?
+        {
             let array = if is_warmup {
                 &self.arrays.warmup_draw_arrays[name]
             } else {
@@ -268,7 +285,7 @@ impl ChainStorage for ZarrChainStorage {
             if let Some(value) = value {
                 self.push_draw(name, value, info.tuning)?;
             } else {
-                panic!("Missing draw value for {}", name);
+                bail!("The model returned no value for posterior variable {name}");
             }
         }
         Ok(())
@@ -621,14 +638,14 @@ impl TraceStorage for ZarrTraceStorage {
     type Finalized = ();
 
     fn initialize_trace_for_chain(&self, chain_id: u64) -> Result<Self::ChainStorage> {
-        Ok(ZarrChainStorage::new(
+        ZarrChainStorage::new(
             self.arrays.clone(),
             &self.param_types,
             &self.draw_types,
             self.draw_chunk_size,
             chain_id as _,
             self.event_dim_of_stat.clone(),
-        ))
+        )
     }
 
     fn finalize(
@@ -728,7 +745,7 @@ mod tests {
         };
         let store = Arc::new(MemoryStore::new());
         let sampler = Sampler::new(
-            CpuModel::new(logp),
+            Arc::new(CpuModel::new(logp)),
             settings,
             ZarrConfig::new(store.clone()),
             1,

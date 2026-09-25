@@ -18,8 +18,8 @@ use std::{
 
 use anyhow::Result;
 use nuts_rs::{
-    CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, LogpError, Model, Sampler,
-    SamplerWaitResult, Storable, ZarrConfig,
+    CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, InitPositionError, LogpError, Model,
+    Sampler, SamplerWaitResult, Storable, ZarrConfig,
 };
 use nuts_storable::{HasDims, Value};
 use rand::{Rng, RngExt};
@@ -186,12 +186,9 @@ struct MvnModel {
 }
 
 impl Model for MvnModel {
-    type Math<'model>
-        = CpuMath<MvnLogp>
-    where
-        Self: 'model;
+    type Math = CpuMath<MvnLogp>;
 
-    fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> Result<Self::Math<'_>> {
+    fn math<R: Rng + ?Sized>(self: Arc<Self>, _rng: &mut R) -> Result<Self::Math> {
         Ok(self.math.clone())
     }
 
@@ -200,7 +197,12 @@ impl Model for MvnModel {
     /// Good initialization is important for MCMC efficiency. The starting
     /// points should be in a reasonable region of the parameter space
     /// where the log probability is finite.
-    fn init_position<R: Rng + ?Sized>(&self, rng: &mut R, position: &mut [f64]) -> Result<()> {
+    fn init_position<R: Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        _chain_id: u64,
+        position: &mut [f64],
+    ) -> Result<(), InitPositionError> {
         // Initialize each parameter randomly in the range [-2, 2]
         // For this simple example, this should put us in a reasonable
         // region around the mode of the distribution
@@ -248,6 +250,11 @@ fn main() -> Result<()> {
     settings.num_draws = num_draws as _;
     settings.seed = 54; // For reproducible results
 
+    // Start from an empty directory, so no arrays from an earlier run are left behind.
+    if std::path::Path::new(output_path).exists() {
+        std::fs::remove_dir_all(output_path)?;
+    }
+
     // Set up Zarr storage
     // FilesystemStore writes to a directory on disk in Zarr format
     let store: zarrs::storage::ReadableWritableListableStorage =
@@ -270,7 +277,13 @@ fn main() -> Result<()> {
 
     // Create sampler with 4 worker threads
     // The sampler runs asynchronously, so we can monitor progress
-    let mut sampler = Some(Sampler::new(model, settings, zarr_config, 4, None)?);
+    let mut sampler = Some(Sampler::new(
+        Arc::new(model),
+        settings,
+        zarr_config,
+        4,
+        None,
+    )?);
 
     let mut num_progress_updates = 0;
 

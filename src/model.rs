@@ -3,10 +3,27 @@
 //! Provides the `Model` trait which defines the interface for MCMC models,
 //! including the math backend and initialization methods needed for sampling.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use rand::Rng;
 
 use crate::Math;
+
+#[derive(Debug, thiserror::Error)]
+#[error("Error initializing position: {0}")]
+pub enum InitPositionError {
+    /// Discard this attempt and call `init_position` again (counts toward the retry limit).
+    Retry(anyhow::Error),
+    /// Abort sampling for this chain.
+    Fatal(anyhow::Error),
+}
+
+impl From<anyhow::Error> for InitPositionError {
+    fn from(err: anyhow::Error) -> Self {
+        Self::Fatal(err)
+    }
+}
 
 /// Trait for MCMC models with associated math backend and initialization.
 ///
@@ -21,17 +38,25 @@ pub trait Model: Send + Sync + 'static {
     /// Specifies which math implementation will be used for computing log probability
     /// densities, gradients, and other operations required during sampling.
     ///
-    /// The lifetime parameter allows the math backend to borrow from the model instance.
-    type Math<'model>: Math
-    where
-        Self: 'model;
+    /// The math backend owns whatever it needs from the model, usually by holding
+    /// on to the `Arc` passed to [`Model::math`], so it can outlive any particular
+    /// borrow of the model.
+    type Math: Math;
 
     /// Returns the math backend for this model.
-    fn math<R: Rng + ?Sized>(&self, rng: &mut R) -> Result<Self::Math<'_>>;
+    ///
+    /// Called once per chain, and once more to set up the trace. Call it as
+    /// `Arc::clone(&model).math(rng)` to keep your own handle.
+    fn math<R: Rng + ?Sized>(self: Arc<Self>, rng: &mut R) -> Result<Self::Math>;
 
     /// Initializes the starting position for MCMC sampling.
     ///
     /// Sets initial values for the parameter vector. The starting position should
     /// be in a reasonable region where the log probability density is finite.
-    fn init_position<R: Rng + ?Sized>(&self, rng: &mut R, position: &mut [f64]) -> Result<()>;
+    fn init_position<R: Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        chain_id: u64,
+        position: &mut [f64],
+    ) -> Result<(), InitPositionError>;
 }

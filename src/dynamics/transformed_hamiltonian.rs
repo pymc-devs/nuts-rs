@@ -98,6 +98,7 @@ pub struct PointStats {
     pub index_in_trajectory: i64,
     pub logp: f64,
     pub energy: f64,
+    pub kinetic_energy: f64,
     pub energy_error: f64,
     #[storable(dims("unconstrained_parameter"))]
     pub unconstrained_draw: Option<Vec<f64>>,
@@ -145,6 +146,7 @@ impl<M: Math> SamplerStats<M> for TransformedPoint<M> {
             index_in_trajectory: self.index_in_trajectory,
             logp: self.logp,
             energy: self.energy(),
+            kinetic_energy: self.kinetic_energy,
             energy_error: self.energy_error(),
             unconstrained_draw,
             gradient,
@@ -165,6 +167,7 @@ impl<M: Math> TransformedPoint<M> {
         epsilon: f64,
         kind: KineticEnergyKind,
     ) {
+        assert!(self.transform_id == out.transform_id);
         match kind {
             KineticEnergyKind::ExactNormal => {
                 math.std_norm_grad_flow(
@@ -200,6 +203,7 @@ impl<M: Math> TransformedPoint<M> {
 
     /// Position (and, for geodesic integrators, simultaneous velocity) step.
     fn position_step(&self, math: &mut M, out: &mut Self, epsilon: f64, kind: KineticEnergyKind) {
+        assert!(self.transform_id == out.transform_id);
         match kind {
             //   q' =  q cos ε + v sin ε
             //   v' = −q sin ε + v cos ε
@@ -265,6 +269,7 @@ impl<M: Math> TransformedPoint<M> {
         &mut self,
         transformation: &T,
         math: &mut M,
+        clip: Option<f64>,
     ) -> Result<(), M::LogpErr> {
         let (logp, logdet) = transformation.init_from_untransformed_position(
             math,
@@ -272,6 +277,7 @@ impl<M: Math> TransformedPoint<M> {
             &mut self.untransformed_gradient,
             &mut self.transformed_position,
             &mut self.transformed_gradient,
+            clip,
         )?;
         self.logp = logp;
         self.logdet = logdet;
@@ -283,6 +289,7 @@ impl<M: Math> TransformedPoint<M> {
         &mut self,
         transformation: &T,
         math: &mut M,
+        clip: Option<f64>,
     ) -> Result<(), M::LogpErr> {
         let (logp, logdet) = transformation.init_from_transformed_position(
             math,
@@ -290,6 +297,7 @@ impl<M: Math> TransformedPoint<M> {
             &mut self.untransformed_gradient,
             &self.transformed_position,
             &mut self.transformed_gradient,
+            clip,
         )?;
         self.logp = logp;
         self.logdet = logdet;
@@ -416,10 +424,16 @@ pub struct TransformedHamiltonian<M: Math, T: Transformation<M>> {
     transformation: T,
     pub kinetic_energy_kind: KineticEnergyKind,
     pool: StatePool<M, TransformedPoint<M>>,
+    clip: Option<f64>,
 }
 
 impl<M: Math, T: Transformation<M>> TransformedHamiltonian<M, T> {
-    pub fn new(math: &mut M, transformation: T, kinetic_energy_kind: KineticEnergyKind) -> Self {
+    pub fn new(
+        math: &mut M,
+        transformation: T,
+        kinetic_energy_kind: KineticEnergyKind,
+        clip: Option<f64>,
+    ) -> Self {
         let mut ones = math.new_array();
         math.fill_array(&mut ones, 1f64);
         let mut zeros = math.new_array();
@@ -433,6 +447,7 @@ impl<M: Math, T: Transformation<M>> TransformedHamiltonian<M, T> {
             transformation,
             kinetic_energy_kind,
             pool,
+            clip,
         }
     }
 
@@ -471,7 +486,7 @@ impl<M: Math> TransformedHamiltonian<M, ExternalTransformation<M>> {
         let mut position_array = math.new_array();
         math.read_from_slice(&mut position_array, position);
         let _ = math
-            .logp_array(&position_array, &mut gradient_array)
+            .logp_array_softclip(&position_array, &mut gradient_array, self.clip)
             .map_err(|e| NutsError::BadInitGrad(Box::new(e)))?;
         let mut params = math
             .init_transformation(rng, &position_array, &gradient_array, chain)
@@ -559,18 +574,24 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
 
         // --- Evaluate log-density at new position ---
         let transformation = self.transformation();
-        if let Err(logp_error) = out_point.init_from_transformed_position(transformation, math) {
+        if let Err(logp_error) =
+            out_point.init_from_transformed_position(transformation, math, self.clip)
+        {
             if !logp_error.is_recoverable() {
                 return LeapfrogResult::Err(logp_error);
             }
             let div_info = DivergenceInfo {
                 logp_function_error: Some(Arc::new(Box::new(logp_error))),
                 start_location: Some(math.box_array(start.point().position())),
+                start_location_transformed: Some(
+                    math.box_array(&start.point().transformed_position),
+                ),
                 start_gradient: Some(math.box_array(start.point().gradient())),
-                start_momentum: None,
-                end_location: None,
+                start_momentum: Some(math.box_array(&start.point().velocity)),
+                end_location: Some(math.box_array(out_point.position())),
+                end_location_transformed: Some(math.box_array(&out_point.transformed_position)),
                 start_idx_in_trajectory: Some(start.point().index_in_trajectory()),
-                end_idx_in_trajectory: None,
+                end_idx_in_trajectory: Some(out_point.index_in_trajectory),
                 energy_error: None,
             };
             collector.register_leapfrog(math, start, &out, Some(&div_info));
@@ -598,9 +619,13 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
             let divergence_info = DivergenceInfo {
                 logp_function_error: None,
                 start_location: Some(math.box_array(start.point().position())),
+                start_location_transformed: Some(
+                    math.box_array(&start.point().transformed_position),
+                ),
                 start_gradient: Some(math.box_array(start.point().gradient())),
                 end_location: Some(math.box_array(out_point.position())),
-                start_momentum: None,
+                end_location_transformed: Some(math.box_array(&out_point.transformed_position)),
+                start_momentum: Some(math.box_array(&start.point().velocity)),
                 start_idx_in_trajectory: Some(start.index_in_trajectory()),
                 end_idx_in_trajectory: Some(out.index_in_trajectory()),
                 energy_error: Some(energy_error),
@@ -648,7 +673,7 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
 
         let transformation = self.transformation();
         point
-            .init_from_untransformed_position(transformation, math)
+            .init_from_untransformed_position(transformation, math, self.clip)
             .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
 
         if !point.check_all(math) {
@@ -668,9 +693,10 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         let mut state = self.pool().new_state(math);
         let point = state.try_point_mut().expect("State already in use");
         math.read_from_slice(&mut point.untransformed_position, untransformed_position);
-        math.logp_array(
+        math.logp_array_softclip(
             &point.untransformed_position,
             &mut point.untransformed_gradient,
+            self.clip,
         )
         .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
         // Force recomputation of transformed coordinates on first leapfrog step

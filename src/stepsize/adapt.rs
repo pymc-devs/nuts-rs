@@ -119,11 +119,12 @@ impl Strategy {
             &mut collector,
         );
 
-        let LeapfrogResult::Ok(_) = state_next else {
-            return Ok(());
+        let accept_stat = match state_next {
+            LeapfrogResult::Ok(_) => collector.mean.current(),
+            LeapfrogResult::Divergence(_) => 0.0,
+            LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
         };
 
-        let accept_stat = collector.mean.current();
         let dir = if accept_stat > self.options.target_accept {
             Direction::Forward
         } else {
@@ -142,27 +143,21 @@ impl Strategy {
                 1000.0,
                 &mut collector,
             );
-            let LeapfrogResult::Ok(_) = state_next else {
-                *hamiltonian.step_size_mut() = self.options.initial_step;
-                return Ok(());
+            let accept_stat = match state_next {
+                LeapfrogResult::Ok(_) => collector.mean.current(),
+                LeapfrogResult::Divergence(_) => 0.0,
+                LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
             };
-            let accept_stat = collector.mean.current();
             match dir {
                 Direction::Forward => {
                     if (accept_stat <= self.options.target_accept) | (hamiltonian.step_size() > 1e5)
                     {
                         match self.adaptation.as_mut().expect("Adaptation must be set") {
                             Either::Left(adapt) => {
-                                *adapt = DualAverage::new(
-                                    self.options.adapt_options.dual_average,
-                                    hamiltonian.step_size(),
-                                );
+                                adapt.set_initial_step_size(hamiltonian.step_size());
                             }
                             Either::Right(adapt) => {
-                                *adapt = Adam::new(
-                                    self.options.adapt_options.adam,
-                                    hamiltonian.step_size(),
-                                );
+                                adapt.set_initial_step_size(hamiltonian.step_size());
                             }
                         }
                         return Ok(());
@@ -175,16 +170,10 @@ impl Strategy {
                     {
                         match self.adaptation.as_mut().expect("Adaptation must be set") {
                             Either::Left(adapt) => {
-                                *adapt = DualAverage::new(
-                                    self.options.adapt_options.dual_average,
-                                    hamiltonian.step_size(),
-                                );
+                                adapt.set_initial_step_size(hamiltonian.step_size());
                             }
                             Either::Right(adapt) => {
-                                *adapt = Adam::new(
-                                    self.options.adapt_options.adam,
-                                    hamiltonian.step_size(),
-                                );
+                                adapt.set_initial_step_size(hamiltonian.step_size());
                             }
                         }
                         return Ok(());
@@ -315,6 +304,28 @@ pub struct StepSizeSettings {
     pub jitter: Option<f64>,
     /// Adaptation options specific to the chosen method
     pub adapt_options: StepSizeAdaptOptions,
+}
+
+impl StepSizeSettings {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        if !(self.initial_step.is_finite() && self.initial_step > 0.0) {
+            anyhow::bail!(
+                "initial_step must be positive and finite, got {}",
+                self.initial_step
+            );
+        }
+        if let Some(jitter) = self.jitter
+            && !(jitter > 0.0 && jitter < 1.0)
+        {
+            anyhow::bail!("jitter must be between 0 and 1, got {jitter}");
+        }
+        if let StepSizeAdaptMethod::Fixed(step_size) = self.adapt_options.method
+            && !(step_size.is_finite() && step_size > 0.0)
+        {
+            anyhow::bail!("Fixed step size must be positive and finite, got {step_size}");
+        }
+        Ok(())
+    }
 }
 
 impl Default for StepSizeSettings {

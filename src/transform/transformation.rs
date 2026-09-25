@@ -23,6 +23,7 @@ pub trait Transformation<M: Math>: SamplerStats<M> + Debug {
         untransformed_gradient: &mut M::Vector,
         transformed_position: &mut M::Vector,
         transformed_gradient: &mut M::Vector,
+        clip: Option<f64>,
     ) -> Result<(f64, f64), M::LogpErr>;
 
     /// Map from transformed → untransformed space, computing logp and logdet.
@@ -38,6 +39,7 @@ pub trait Transformation<M: Math>: SamplerStats<M> + Debug {
         untransformed_gradient: &mut M::Vector,
         transformed_position: &M::Vector,
         transformed_gradient: &mut M::Vector,
+        clip: Option<f64>,
     ) -> Result<(f64, f64), M::LogpErr>;
 
     /// Recompute only the transformed coordinates from an already-evaluated

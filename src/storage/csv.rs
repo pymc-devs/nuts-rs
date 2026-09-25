@@ -194,7 +194,8 @@ impl CsvChainStorage {
                     vec[0].to_string()
                 }
             }
-            Value::I64(vec) => {
+            // Date times and time deltas are written as integer counts of their unit.
+            Value::I64(vec) | Value::DateTime64(_, vec) | Value::TimeDelta64(_, vec) => {
                 if vec.is_empty() {
                     "NA".to_string()
                 } else {
@@ -216,8 +217,6 @@ impl CsvChainStorage {
                     vec[0].clone()
                 }
             }
-            Value::DateTime64(_, _) => panic!("DateTime64 not supported in CSV output"),
-            Value::TimeDelta64(_, _) => panic!("TimeDelta64 not supported in CSV output"),
         }
     }
 
@@ -281,7 +280,7 @@ impl CsvChainStorage {
                             "NA".to_string()
                         }
                     }
-                    Value::I64(vec) => {
+                    Value::I64(vec) | Value::DateTime64(_, vec) | Value::TimeDelta64(_, vec) => {
                         if *index < vec.len() {
                             self.format_value(&Value::ScalarI64(vec[*index]))
                         } else {
@@ -621,7 +620,10 @@ impl TraceStorage for CsvTraceStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, LogpError, Model, Sampler};
+    use crate::{
+        CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, InitPositionError, LogpError, Model,
+        Sampler,
+    };
     use anyhow::Result;
     use nuts_derive::Storable;
     use nuts_storable::{HasDims, Value};
@@ -629,6 +631,7 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
+    use std::sync::Arc;
     use thiserror::Error;
 
     #[allow(dead_code)]
@@ -721,16 +724,18 @@ mod tests {
     }
 
     impl Model for MultiDimTestModel {
-        type Math<'model>
-            = CpuMath<MultiDimTestLogp>
-        where
-            Self: 'model;
+        type Math = CpuMath<MultiDimTestLogp>;
 
-        fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> Result<Self::Math<'_>> {
+        fn math<R: Rng + ?Sized>(self: Arc<Self>, _rng: &mut R) -> Result<Self::Math> {
             Ok(self.math.clone())
         }
 
-        fn init_position<R: Rng + ?Sized>(&self, rng: &mut R, position: &mut [f64]) -> Result<()> {
+        fn init_position<R: Rng + ?Sized>(
+            &self,
+            rng: &mut R,
+            _chain_id: u64,
+            position: &mut [f64],
+        ) -> Result<(), InitPositionError> {
             for p in position.iter_mut() {
                 *p = rng.random_range(-1.0..1.0);
             }
@@ -799,16 +804,18 @@ mod tests {
     }
 
     impl Model for SimpleTestModel {
-        type Math<'model>
-            = CpuMath<SimpleTestLogp>
-        where
-            Self: 'model;
+        type Math = CpuMath<SimpleTestLogp>;
 
-        fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> Result<Self::Math<'_>> {
+        fn math<R: Rng + ?Sized>(self: Arc<Self>, _rng: &mut R) -> Result<Self::Math> {
             Ok(self.math.clone())
         }
 
-        fn init_position<R: Rng + ?Sized>(&self, rng: &mut R, position: &mut [f64]) -> Result<()> {
+        fn init_position<R: Rng + ?Sized>(
+            &self,
+            rng: &mut R,
+            _chain_id: u64,
+            position: &mut [f64],
+        ) -> Result<(), InitPositionError> {
             for p in position.iter_mut() {
                 *p = rng.random_range(-1.0..1.0);
             }
@@ -845,7 +852,13 @@ mod tests {
             .with_precision(6)
             .store_warmup(false);
 
-        let mut sampler = Some(Sampler::new(model, settings, csv_config, 1, None)?);
+        let mut sampler = Some(Sampler::new(
+            Arc::new(model),
+            settings,
+            csv_config,
+            1,
+            None,
+        )?);
 
         // Wait for sampling to complete
         while let Some(sampler_) = sampler.take() {
@@ -911,7 +924,13 @@ mod tests {
             .with_precision(6)
             .store_warmup(false);
 
-        let mut sampler = Some(Sampler::new(model, settings, csv_config, 1, None)?);
+        let mut sampler = Some(Sampler::new(
+            Arc::new(model),
+            settings,
+            csv_config,
+            1,
+            None,
+        )?);
 
         // Wait for sampling to complete
         while let Some(sampler_) = sampler.take() {

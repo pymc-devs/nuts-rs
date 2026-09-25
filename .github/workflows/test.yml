@@ -11,21 +11,27 @@ env:
 
 jobs:
   test:
-    name: Test Suite
+    name: Test Suite (${{ matrix.rust }}, ${{ matrix.features }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         rust:
           - stable
           - nightly
+        features:
+          # Threaded sampler and every storage backend
+          - --all-features
+          # Sequential sampler, as used on wasm
+          - --no-default-features
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
-      - run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
-      - run: cargo build --verbose --all-features
-      - run: cargo test --verbose --all-features
+      - run: rustup update ${{ matrix.rust }} && rustup default ${{ matrix.rust }}
+      - run: cargo build --verbose ${{ matrix.features }}
+      - run: cargo test --verbose ${{ matrix.features }}
   wasm32:
-    name: wasm32 check
+    name: wasm32
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
@@ -33,3 +39,7 @@ jobs:
       - run: rustup update stable && rustup default stable
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo check --target wasm32-unknown-unknown --no-default-features
+      # Samples with the sequential sampler and the Arrow backend in node. wasm-pack picks
+      # the wasm-bindgen test runner that matches the lock file.
+      - uses: taiki-e/install-action@wasm-pack
+      - run: wasm-pack test --node wasm-example

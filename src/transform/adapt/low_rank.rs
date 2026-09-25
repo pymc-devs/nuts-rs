@@ -96,10 +96,12 @@ impl LowRankMassMatrixStrategy {
             .filter(|&(&val, _)| {
                 (val > self.settings.eigval_cutoff) | (val < self.settings.eigval_cutoff.recip())
             })
+            // Clamp eigenvalues to sqr(1e10)
+            .map(|(&x, vec)| (x.clamp(1e-20, 1e20), vec))
             .collect_vec();
 
         let vals: Col<f64> =
-            ColRef::from_slice(&filtered.iter().map(|x| *x.0).collect_vec()).to_owned();
+            ColRef::from_slice(&filtered.iter().map(|x| x.0).collect_vec()).to_owned();
 
         let vecs_vec: Vec<_> = filtered.into_iter().map(|x| x.1).collect();
         let mut vecs = Mat::zeros(subspace_basis.ncols(), vals.nrows());
@@ -170,7 +172,7 @@ fn rescale_points(
             .sum::<f64>()
             / n;
 
-        let sigma = (draw_var / grad_var).sqrt().sqrt();
+        let sigma = (draw_var / grad_var).sqrt().sqrt().clamp(1e-10, 1e10);
 
         // μ* = x̄ + σ² · ᾱ
         mu[row] = draw_mean + sigma * sigma * grad_mean;

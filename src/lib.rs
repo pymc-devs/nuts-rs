@@ -77,7 +77,7 @@
 //!
 //! let chain = 0;
 //! let mut rng = rng();
-//! let mut sampler = settings.new_chain(0, math, &mut rng);
+//! let mut sampler = settings.new_chain(0, math, &mut rng).expect("Invalid settings");
 //!
 //! // Set to some initial position and start drawing samples.
 //! sampler.set_position(&vec![0f64; 10]).expect("Unrecoverable error during init");
@@ -121,18 +121,16 @@ pub use chain::Chain;
 pub use dynamics::{DivergenceInfo, KineticEnergyKind};
 pub use math::{CpuLogpFunc, CpuMath, CpuMathError, LogpError, Math};
 pub use mclmc::{MclmcChain, MclmcInfo, MclmcStats, MclmcTrajectoryKind};
-pub use model::Model;
+pub use model::{InitPositionError, Model};
 pub use nuts::NutsError;
 
 #[allow(deprecated)]
 pub use sampler::{
     ChainProgress, DiagGradNutsSettings, DiagMclmcSettings, DiagNutsSettings, FlowMclmcSettings,
     FlowNutsSettings, LowRankMclmcSettings, LowRankNutsSettings, MclmcSettings, NutsSettings,
-    Progress, Settings, TransformedMclmcSettings,
+    Progress, ProgressCallback, Sampler, SamplerWaitResult, Settings, TransformedMclmcSettings,
     TransformedNutsSettings, sample_sequentially,
 };
-#[cfg(feature = "parallel")]
-pub use sampler::{ProgressCallback, Sampler, SamplerWaitResult};
 pub use sampler_stats::SamplerStats;
 
 #[allow(deprecated)]
@@ -145,7 +143,7 @@ pub use transform::LowRankSettings;
 pub use storage::{ZarrAsyncConfig, ZarrAsyncTraceStorage, ZarrConfig, ZarrTraceStorage};
 
 pub use storage::{CsvConfig, CsvTraceStorage};
-pub use storage::{HashMapConfig, HashMapValue};
+pub use storage::{HashMapConfig, HashMapResult, HashMapValue};
 #[cfg(feature = "ndarray")]
 pub use storage::{NdarrayConfig, NdarrayTrace, NdarrayValue};
 

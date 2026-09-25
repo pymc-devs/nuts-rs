@@ -279,8 +279,10 @@ impl<M: Math> Transformation<M> for LowRankMassMatrix<M> {
         untransformed_gradient: &mut M::Vector,
         transformed_position: &mut M::Vector,
         transformed_gradient: &mut M::Vector,
+        clip: Option<f64>,
     ) -> Result<(f64, f64), M::LogpErr> {
-        let logp = math.logp_array(untransformed_position, untransformed_gradient)?;
+        let logp =
+            math.logp_array_softclip(untransformed_position, untransformed_gradient, clip)?;
         self.compute_transformed_position(math, untransformed_position, transformed_position);
         self.compute_transformed_gradient(math, untransformed_gradient, transformed_gradient);
         Ok((logp, self.logdet(math)))
@@ -293,9 +295,11 @@ impl<M: Math> Transformation<M> for LowRankMassMatrix<M> {
         untransformed_gradient: &mut M::Vector,
         transformed_position: &M::Vector,
         transformed_gradient: &mut M::Vector,
+        clip: Option<f64>,
     ) -> Result<(f64, f64), M::LogpErr> {
         self.compute_untransformed_position(math, transformed_position, untransformed_position);
-        let logp = math.logp_array(untransformed_position, untransformed_gradient)?;
+        let logp =
+            math.logp_array_softclip(untransformed_position, untransformed_gradient, clip)?;
         self.compute_transformed_gradient(math, untransformed_gradient, transformed_gradient);
         Ok((logp, self.logdet(math)))
     }

@@ -1,10 +1,11 @@
 //! In-memory storage backend that accumulates draws and statistics into plain Rust `HashMap`s.
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use nuts_storable::{ItemType, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::storage::{ChainStorage, StorageConfig, TraceStorage};
+use crate::storage::{ChainStorage, ExpectedLen, StorageConfig, TraceStorage, value_type_name};
 use crate::{Progress, Settings};
 
 /// Container for different types of sample values in HashMaps
@@ -33,7 +34,7 @@ impl HashMapValue {
     }
 
     /// Push a value to the internal vector
-    fn push(&mut self, value: Value) {
+    fn push(&mut self, value: Value) -> Result<()> {
         match (self, value) {
             // Scalar values - store as single element vectors for array types
             (HashMapValue::F64(vec), Value::ScalarF64(v)) => vec.push(v),
@@ -53,7 +54,23 @@ impl HashMapValue {
             (HashMapValue::I64(vec), Value::DateTime64(_, v)) => vec.extend(v),
             (HashMapValue::I64(vec), Value::TimeDelta64(_, v)) => vec.extend(v),
 
-            _ => panic!("Mismatched item type"),
+            (target, value) => bail!(
+                "Got a {} value, but the declared type is {}",
+                value_type_name(&value),
+                target.type_name()
+            ),
+        }
+        Ok(())
+    }
+
+    fn type_name(&self) -> &'static str {
+        match self {
+            HashMapValue::F64(_) => "F64",
+            HashMapValue::F32(_) => "F32",
+            HashMapValue::Bool(_) => "Bool",
+            HashMapValue::I64(_) => "I64",
+            HashMapValue::U64(_) => "U64",
+            HashMapValue::String(_) => "String",
         }
     }
 }
@@ -63,6 +80,8 @@ impl HashMapValue {
 pub struct HashMapTraceStorage {
     draw_types: Vec<(String, ItemType)>,
     param_types: Vec<(String, ItemType)>,
+    draw_lens: Arc<HashMap<String, ExpectedLen>>,
+    param_lens: Arc<HashMap<String, ExpectedLen>>,
 }
 
 /// Per-chain storage for HashMap MCMC traces
@@ -72,6 +91,8 @@ pub struct HashMapChainStorage {
     sample_stats: HashMap<String, HashMapValue>,
     warmup_draws: HashMap<String, HashMapValue>,
     sample_draws: HashMap<String, HashMapValue>,
+    draw_lens: Arc<HashMap<String, ExpectedLen>>,
+    param_lens: Arc<HashMap<String, ExpectedLen>>,
     last_sample_was_warmup: bool,
 }
 
@@ -86,7 +107,9 @@ pub struct HashMapResult {
 
 impl HashMapChainStorage {
     /// Create a new chain storage with HashMaps for parameters and samples
-    fn new(param_types: &[(String, ItemType)], draw_types: &[(String, ItemType)]) -> Self {
+    fn new(trace: &HashMapTraceStorage) -> Self {
+        let param_types = &trace.param_types;
+        let draw_types = &trace.draw_types;
         let warmup_stats = param_types
             .iter()
             .cloned()
@@ -116,6 +139,8 @@ impl HashMapChainStorage {
             sample_stats,
             warmup_draws,
             sample_draws,
+            draw_lens: trace.draw_lens.clone(),
+            param_lens: trace.param_lens.clone(),
             last_sample_was_warmup: true,
         }
     }
@@ -132,12 +157,15 @@ impl HashMapChainStorage {
             &mut self.sample_stats
         };
 
-        if let Some(hash_value) = target_map.get_mut(name) {
-            hash_value.push(value);
-        } else {
-            panic!("Unknown param name: {}", name);
-        }
-        Ok(())
+        let (Some(hash_value), Some(expected_len)) =
+            (target_map.get_mut(name), self.param_lens.get(name))
+        else {
+            bail!("Unknown sampler stat: {name}");
+        };
+        expected_len
+            .check(&value)
+            .and_then(|()| hash_value.push(value))
+            .with_context(|| format!("Could not store sampler stat {name}"))
     }
 
     /// Store a draw value
@@ -152,12 +180,15 @@ impl HashMapChainStorage {
             &mut self.sample_draws
         };
 
-        if let Some(hash_value) = target_map.get_mut(name) {
-            hash_value.push(value);
-        } else {
-            panic!("Unknown posterior variable name: {}", name);
-        }
-        Ok(())
+        let (Some(hash_value), Some(expected_len)) =
+            (target_map.get_mut(name), self.draw_lens.get(name))
+        else {
+            bail!("Unknown posterior variable: {name}");
+        };
+        expected_len
+            .check(&value)
+            .and_then(|()| hash_value.push(value))
+            .with_context(|| format!("Could not store posterior variable {name}"))
     }
 }
 
@@ -185,7 +216,7 @@ impl ChainStorage for HashMapChainStorage {
             if let Some(value) = value {
                 self.push_draw(name, value, info.tuning)?;
             } else {
-                panic!("Missing draw value for {}", name);
+                bail!("The model returned no value for posterior variable {name}");
             }
         }
         Ok(())
@@ -218,6 +249,9 @@ impl ChainStorage for HashMapChainStorage {
                 (HashMapValue::U64(combined_vec), HashMapValue::U64(sample_vec)) => {
                     combined_vec.extend(sample_vec.iter().cloned());
                 }
+                (HashMapValue::String(combined_vec), HashMapValue::String(sample_vec)) => {
+                    combined_vec.extend(sample_vec.iter().cloned());
+                }
                 _ => panic!("Type mismatch when combining stats for {}", key),
             }
 
@@ -243,6 +277,9 @@ impl ChainStorage for HashMapChainStorage {
                     combined_vec.extend(sample_vec.iter().cloned());
                 }
                 (HashMapValue::U64(combined_vec), HashMapValue::U64(sample_vec)) => {
+                    combined_vec.extend(sample_vec.iter().cloned());
+                }
+                (HashMapValue::String(combined_vec), HashMapValue::String(sample_vec)) => {
                     combined_vec.extend(sample_vec.iter().cloned());
                 }
                 _ => panic!("Type mismatch when combining draws for {}", key),
@@ -289,9 +326,22 @@ impl StorageConfig for HashMapConfig {
         settings: &impl Settings,
         math: &M,
     ) -> Result<Self::Storage> {
+        let stat_event_dims: HashMap<String, Option<String>> =
+            settings.stat_event_dims(math).into_iter().collect();
+        let param_lens = ExpectedLen::for_variables(
+            &settings.stat_dims_all(math),
+            &settings.stat_dim_sizes(math),
+            |name| stat_event_dims.get(name).is_some_and(Option::is_some),
+        )?;
+        let draw_lens =
+            ExpectedLen::for_variables(&settings.data_dims_all(math), &math.dim_sizes(), |_| {
+                false
+            })?;
         Ok(HashMapTraceStorage {
             param_types: settings.stat_types(math),
             draw_types: settings.data_types(math),
+            draw_lens: Arc::new(draw_lens),
+            param_lens: Arc::new(param_lens),
         })
     }
 }
@@ -302,10 +352,7 @@ impl TraceStorage for HashMapTraceStorage {
     type Finalized = Vec<HashMapResult>;
 
     fn initialize_trace_for_chain(&self, _chain_id: u64) -> Result<Self::ChainStorage> {
-        Ok(HashMapChainStorage::new(
-            &self.param_types,
-            &self.draw_types,
-        ))
+        Ok(HashMapChainStorage::new(self))
     }
 
     fn finalize(

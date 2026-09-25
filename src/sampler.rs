@@ -7,29 +7,31 @@ use rand::{Rng, SeedableRng, rngs::ChaCha8Rng};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, fmt::Debug, time::Duration};
 
-#[cfg(feature = "parallel")]
 use anyhow::{Context, bail};
-#[cfg(feature = "parallel")]
 use itertools::Itertools;
-#[cfg(feature = "parallel")]
-use std::{collections::HashSet, ops::Deref};
+use std::{
+    collections::HashSet,
+    ops::Deref,
+    sync::{Arc, Mutex},
+};
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+// `std::time::Instant::now` panics on wasm32-unknown-unknown.
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 #[cfg(feature = "parallel")]
-use rayon::{ScopeFifo, ThreadPoolBuilder};
-#[cfg(feature = "parallel")]
 use std::{
-    sync::{
-        Arc, Mutex,
-        mpsc::{
-            Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel,
-        },
+    collections::VecDeque,
+    sync::mpsc::{
+        Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel,
     },
-    thread::{JoinHandle, spawn},
-    time::Instant,
+    thread::{self, JoinHandle, spawn},
 };
 
 use crate::{
-    DiagAdaptExpSettings, Math, StepSizeAdaptMethod,
+    DiagAdaptExpSettings, InitPositionError, Math, StepSizeAdaptMethod,
     adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy, GlobalStrategyStatsOptions},
     chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
     dynamics::{KineticEnergyKind, TransformedHamiltonian, TransformedPointStatsOptions},
@@ -43,7 +45,6 @@ use crate::{
     },
 };
 
-#[cfg(feature = "parallel")]
 use crate::{
     model::Model,
     storage::{ChainStorage, StorageConfig, TraceStorage},
@@ -55,12 +56,17 @@ pub trait Settings:
 {
     type Chain<M: Math>: Chain<M>;
 
+    /// Check for values the sampler cannot work with.
+    fn validate(&self) -> Result<()>;
+
+    /// Create a new chain. Fails if the settings are invalid (see [`Settings::validate`]),
+    /// or if they need something from `math` it cannot provide.
     fn new_chain<M: Math, R: Rng + ?Sized>(
         &self,
         chain: u64,
         math: M,
         rng: &mut R,
-    ) -> Self::Chain<M>;
+    ) -> Result<Self::Chain<M>>;
 
     fn hint_num_tune(&self) -> usize;
     fn hint_num_draws(&self) -> usize;
@@ -207,7 +213,6 @@ mod private {
 
 /// Drop the values whose name was not declared to the storage backend. Some backends zip the
 /// incoming values against their declared columns, so an undeclared one would shift the rest.
-#[cfg(feature = "parallel")]
 fn retain_declared(declared: &HashSet<String>, values: &mut Vec<(&str, Option<Value>)>) {
     values.retain(|(name, _)| declared.contains(*name));
 }
@@ -274,6 +279,8 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     /// be used to increase the effective sample size at the cost of more
     /// expensive sampling.
     pub extra_doublings: u64,
+    /// Soft clipping for gradients.
+    pub gradient_clipping: Option<f64>,
 }
 
 pub type DiagNutsSettings = NutsSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
@@ -353,6 +360,8 @@ pub struct MclmcSettings<A: Debug + Copy + Default + Serialize> {
     /// `trajectory_kind == MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical`.
     /// Ignored for other trajectory kinds.  Default: `0.3`.
     pub trajectory_switch_fraction: f64,
+    /// Soft clipping for gradients.
+    pub gradient_clipping: Option<f64>,
 }
 
 /// MCLMC settings with a diagonal mass matrix adaptation.
@@ -374,10 +383,39 @@ pub type FlowMclmcSettings = MclmcSettings<FlowSettings>;
 #[deprecated(since = "0.0.0", note = "Use FlowMclmcSettings instead")]
 pub type TransformedMclmcSettings = FlowMclmcSettings;
 
-fn usize_hint(value: u64, field: &str) -> usize {
-    value
-        .try_into()
-        .unwrap_or_else(|_| panic!("{field} must be smaller than usize::MAX"))
+/// Saturates, because `validate_draw_counts` already rejects counts that do not fit.
+fn usize_hint(value: u64) -> usize {
+    value.try_into().unwrap_or(usize::MAX)
+}
+
+fn validate_draw_counts(num_tune: u64, num_draws: u64) -> Result<()> {
+    let total = num_tune
+        .checked_add(num_draws)
+        .context("num_tune + num_draws is too large")?;
+    usize::try_from(total).context("num_tune + num_draws does not fit into usize")?;
+    Ok(())
+}
+
+fn validate_mclmc<A: Debug + Copy + Default + Serialize>(
+    settings: &MclmcSettings<A>,
+) -> Result<()> {
+    validate_draw_counts(settings.num_tune, settings.num_draws)?;
+    if !(settings.step_size.is_finite() && settings.step_size > 0.0) {
+        bail!(
+            "step_size must be positive and finite, got {}",
+            settings.step_size
+        );
+    }
+    Ok(())
+}
+
+/// The microcanonical (ESH) dynamics normalize the momentum onto the unit sphere, which
+/// needs at least two dimensions.
+fn check_microcanonical_dim(microcanonical: bool, dim: usize) -> Result<()> {
+    if microcanonical && dim < 2 {
+        bail!("Microcanonical dynamics need at least 2 dimensions, but the model has {dim}");
+    }
+    Ok(())
 }
 
 fn default_mclmc_settings<A: Debug + Copy + Default + Serialize>(
@@ -403,6 +441,7 @@ fn default_mclmc_settings<A: Debug + Copy + Default + Serialize>(
         dynamic_step_size: true,
         trajectory_kind: MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical,
         trajectory_switch_fraction: 0.3,
+        gradient_clipping: Some(1e10),
     }
 }
 
@@ -450,10 +489,16 @@ impl Settings for DiagMclmcSettings {
         chain: u64,
         mut math: M,
         rng: &mut R,
-    ) -> Self::Chain<M> {
+    ) -> Result<Self::Chain<M>> {
         use crate::dynamics::KineticEnergyKind;
         use crate::mclmc::MclmcChain;
         use crate::stepsize::StepSizeAdaptMethod;
+
+        self.validate()?;
+        check_microcanonical_dim(
+            !matches!(self.trajectory_kind, MclmcTrajectoryKind::Euclidean),
+            math.dim(),
+        )?;
 
         let num_tune = self.num_tune;
         let mut adapt_options = self.adapt_options;
@@ -474,12 +519,17 @@ impl Settings for DiagMclmcSettings {
             MclmcTrajectoryKind::Euclidean
             | MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical => KineticEnergyKind::Euclidean,
         };
-        let mut hamiltonian = TransformedHamiltonian::new(&mut math, mass_matrix, initial_kind);
+        let mut hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            mass_matrix,
+            initial_kind,
+            self.gradient_clipping,
+        );
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
         let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
-        MclmcChain::new(
+        Ok(MclmcChain::new(
             math,
             hamiltonian,
             strategy,
@@ -491,15 +541,20 @@ impl Settings for DiagMclmcSettings {
             switch_draw,
             self.max_energy_error,
             stats_options,
-        )
+        ))
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_mclmc(self)?;
+        self.adapt_options.validate()
     }
 
     fn hint_num_tune(&self) -> usize {
-        usize_hint(self.num_tune, "num_tune")
+        usize_hint(self.num_tune)
     }
 
     fn hint_num_draws(&self) -> usize {
-        usize_hint(self.num_draws, "num_draws")
+        usize_hint(self.num_draws)
     }
 
     fn num_chains(&self) -> usize {
@@ -573,6 +628,7 @@ fn default_nuts_settings<A: Debug + Copy + Default + Serialize>(
         target_integration_time: None,
         trajectory_kind: KineticEnergyKind::Euclidean,
         extra_doublings: 0,
+        gradient_clipping: Some(1e10),
     }
 }
 
@@ -584,10 +640,16 @@ impl Settings for LowRankMclmcSettings {
         chain: u64,
         mut math: M,
         rng: &mut R,
-    ) -> Self::Chain<M> {
+    ) -> Result<Self::Chain<M>> {
         use crate::dynamics::KineticEnergyKind;
         use crate::mclmc::MclmcChain;
         use crate::stepsize::StepSizeAdaptMethod;
+
+        self.validate()?;
+        check_microcanonical_dim(
+            !matches!(self.trajectory_kind, MclmcTrajectoryKind::Euclidean),
+            math.dim(),
+        )?;
 
         let num_tune = self.num_tune;
         let mut adapt_options = self.adapt_options;
@@ -605,12 +667,17 @@ impl Settings for LowRankMclmcSettings {
             MclmcTrajectoryKind::Euclidean
             | MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical => KineticEnergyKind::Euclidean,
         };
-        let mut hamiltonian = TransformedHamiltonian::new(&mut math, mass_matrix, initial_kind);
+        let mut hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            mass_matrix,
+            initial_kind,
+            self.gradient_clipping,
+        );
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
         let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
-        MclmcChain::new(
+        Ok(MclmcChain::new(
             math,
             hamiltonian,
             strategy,
@@ -622,15 +689,20 @@ impl Settings for LowRankMclmcSettings {
             switch_draw,
             self.max_energy_error,
             stats_options,
-        )
+        ))
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_mclmc(self)?;
+        self.adapt_options.validate()
     }
 
     fn hint_num_tune(&self) -> usize {
-        usize_hint(self.num_tune, "num_tune")
+        usize_hint(self.num_tune)
     }
 
     fn hint_num_draws(&self) -> usize {
-        usize_hint(self.num_draws, "num_draws")
+        usize_hint(self.num_draws)
     }
 
     fn num_chains(&self) -> usize {
@@ -713,6 +785,7 @@ fn nuts_options(settings: &NutsSettings<impl Debug + Copy + Default + Serialize>
         target_integration_time: settings.target_integration_time,
         extra_doublings: settings.extra_doublings,
         max_energy_error: settings.max_energy_error,
+        uturn_check_first_step: matches!(settings.trajectory_kind, KineticEnergyKind::ExactNormal),
     }
 }
 
@@ -724,17 +797,28 @@ impl Settings for LowRankNutsSettings {
         chain: u64,
         mut math: M,
         mut rng: &mut R,
-    ) -> Self::Chain<M> {
+    ) -> Result<Self::Chain<M>> {
+        self.validate()?;
+        check_microcanonical_dim(
+            matches!(self.trajectory_kind, KineticEnergyKind::Microcanonical),
+            math.dim(),
+        )?;
+
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
         let mass_matrix = LowRankMassMatrix::new(&mut math, self.adapt_options.mass_matrix_options);
-        let hamiltonian = TransformedHamiltonian::new(&mut math, mass_matrix, self.trajectory_kind);
+        let hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            mass_matrix,
+            self.trajectory_kind,
+            self.gradient_clipping,
+        );
 
         let options = nuts_options(self);
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
 
-        NutsChain::new(
+        Ok(NutsChain::new(
             math,
             hamiltonian,
             strategy,
@@ -742,15 +826,20 @@ impl Settings for LowRankNutsSettings {
             rng,
             chain,
             self.stats_options(),
-        )
+        ))
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_draw_counts(self.num_tune, self.num_draws)?;
+        self.adapt_options.validate()
     }
 
     fn hint_num_tune(&self) -> usize {
-        usize_hint(self.num_tune, "num_tune")
+        usize_hint(self.num_tune)
     }
 
     fn hint_num_draws(&self) -> usize {
-        usize_hint(self.num_draws, "num_draws")
+        usize_hint(self.num_draws)
     }
 
     fn num_chains(&self) -> usize {
@@ -809,20 +898,31 @@ impl Settings for DiagNutsSettings {
         chain: u64,
         mut math: M,
         mut rng: &mut R,
-    ) -> Self::Chain<M> {
+    ) -> Result<Self::Chain<M>> {
+        self.validate()?;
+        check_microcanonical_dim(
+            matches!(self.trajectory_kind, KineticEnergyKind::Microcanonical),
+            math.dim(),
+        )?;
+
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
         let mass_matrix = DiagMassMatrix::new(
             &mut math,
             self.adapt_options.mass_matrix_options.store_mass_matrix,
         );
-        let potential = TransformedHamiltonian::new(&mut math, mass_matrix, self.trajectory_kind);
+        let potential = TransformedHamiltonian::new(
+            &mut math,
+            mass_matrix,
+            self.trajectory_kind,
+            self.gradient_clipping,
+        );
 
         let options = nuts_options(self);
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
 
-        NutsChain::new(
+        Ok(NutsChain::new(
             math,
             potential,
             strategy,
@@ -830,15 +930,20 @@ impl Settings for DiagNutsSettings {
             rng,
             chain,
             self.stats_options(),
-        )
+        ))
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_draw_counts(self.num_tune, self.num_draws)?;
+        self.adapt_options.validate()
     }
 
     fn hint_num_tune(&self) -> usize {
-        usize_hint(self.num_tune, "num_tune")
+        usize_hint(self.num_tune)
     }
 
     fn hint_num_draws(&self) -> usize {
-        usize_hint(self.num_draws, "num_draws")
+        usize_hint(self.num_draws)
     }
 
     fn num_chains(&self) -> usize {
@@ -897,21 +1002,32 @@ impl Settings for FlowNutsSettings {
         chain: u64,
         mut math: M,
         mut rng: &mut R,
-    ) -> Self::Chain<M> {
+    ) -> Result<Self::Chain<M>> {
+        self.validate()?;
+        check_microcanonical_dim(
+            matches!(self.trajectory_kind, KineticEnergyKind::Microcanonical),
+            math.dim(),
+        )?;
+
         let num_tune = self.num_tune;
 
         let strategy =
             ExternalTransformAdaptation::new(&mut math, self.adapt_options, num_tune, chain);
         let params = math
             .new_transformation(rng, math.dim(), chain)
-            .expect("Failed to create external transformation");
+            .context("Failed to create external transformation")?;
         let transform = ExternalTransformation::new(params);
-        let hamiltonian = TransformedHamiltonian::new(&mut math, transform, self.trajectory_kind);
+        let hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            transform,
+            self.trajectory_kind,
+            self.gradient_clipping,
+        );
 
         let options = nuts_options(self);
 
         let rng = ChaCha8Rng::try_from_rng(&mut rng).expect("Could not seed rng");
-        NutsChain::new(
+        Ok(NutsChain::new(
             math,
             hamiltonian,
             strategy,
@@ -919,15 +1035,20 @@ impl Settings for FlowNutsSettings {
             rng,
             chain,
             self.stats_options(),
-        )
+        ))
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_draw_counts(self.num_tune, self.num_draws)?;
+        self.adapt_options.validate()
     }
 
     fn hint_num_tune(&self) -> usize {
-        usize_hint(self.num_tune, "num_tune")
+        usize_hint(self.num_tune)
     }
 
     fn hint_num_draws(&self) -> usize {
-        usize_hint(self.num_draws, "num_draws")
+        usize_hint(self.num_draws)
     }
 
     fn num_chains(&self) -> usize {
@@ -988,28 +1109,35 @@ impl Settings for FlowMclmcSettings {
         chain: u64,
         mut math: M,
         rng: &mut R,
-    ) -> Self::Chain<M> {
+    ) -> Result<Self::Chain<M>> {
         use crate::dynamics::KineticEnergyKind;
         use crate::mclmc::MclmcChain;
+
+        self.validate()?;
+        check_microcanonical_dim(
+            !matches!(self.trajectory_kind, MclmcTrajectoryKind::Euclidean),
+            math.dim(),
+        )?;
 
         let num_tune = self.num_tune;
         let strategy =
             ExternalTransformAdaptation::new(&mut math, self.adapt_options, num_tune, chain);
         let params = math
             .new_transformation(rng, math.dim(), chain)
-            .expect("Failed to create external transformation");
+            .context("Failed to create external transformation")?;
         let transform = ExternalTransformation::new(params);
         let initial_kind = match self.trajectory_kind {
             MclmcTrajectoryKind::Microcanonical => KineticEnergyKind::Microcanonical,
             MclmcTrajectoryKind::Euclidean
             | MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical => KineticEnergyKind::Euclidean,
         };
-        let mut hamiltonian = TransformedHamiltonian::new(&mut math, transform, initial_kind);
+        let mut hamiltonian =
+            TransformedHamiltonian::new(&mut math, transform, initial_kind, self.gradient_clipping);
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
         let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
-        MclmcChain::new(
+        Ok(MclmcChain::new(
             math,
             hamiltonian,
             strategy,
@@ -1021,15 +1149,20 @@ impl Settings for FlowMclmcSettings {
             switch_draw,
             self.max_energy_error,
             stats_options,
-        )
+        ))
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_mclmc(self)?;
+        self.adapt_options.validate()
     }
 
     fn hint_num_tune(&self) -> usize {
-        usize_hint(self.num_tune, "num_tune")
+        usize_hint(self.num_tune)
     }
 
     fn hint_num_draws(&self) -> usize {
-        usize_hint(self.num_draws, "num_draws")
+        usize_hint(self.num_draws)
     }
 
     fn num_chains(&self) -> usize {
@@ -1085,7 +1218,7 @@ pub fn sample_sequentially<'math, M: Math + 'math, R: Rng + ?Sized>(
     chain: u64,
     rng: &mut R,
 ) -> Result<impl Iterator<Item = Result<(Box<[f64]>, Progress)>> + 'math> {
-    let mut sampler = settings.new_chain(chain, math, rng);
+    let mut sampler = settings.new_chain(chain, math, rng)?;
     sampler.set_position(start)?;
     Ok((0..draws).map(move |_| sampler.draw()))
 }
@@ -1136,183 +1269,32 @@ impl ChainProgress {
     }
 }
 
-#[cfg(feature = "parallel")]
-enum ChainCommand {
-    Resume,
-    Pause,
-}
-
-#[cfg(feature = "parallel")]
-struct ChainProcess<T>
-where
-    T: TraceStorage,
-{
-    stop_marker: Sender<ChainCommand>,
-    trace: Arc<Mutex<Option<T::ChainStorage>>>,
+/// The parts of a chain the controller reads while the chain is running: the chain's
+/// trace, which the controller takes at the end, and its progress.
+struct ChainShared<C> {
+    trace: Arc<Mutex<Option<C>>>,
     progress: Arc<Mutex<ChainProgress>>,
 }
 
-#[cfg(feature = "parallel")]
-impl<T: TraceStorage> ChainProcess<T> {
-    fn finalize_many(trace: T, chains: Vec<Self>) -> Result<(Option<anyhow::Error>, T::Finalized)> {
-        let finalized_chain_traces = chains
-            .into_iter()
-            .filter_map(|chain| chain.trace.lock().expect("Poisoned lock").take())
-            .map(|chain| chain.finalize())
-            .collect_vec();
-        trace.finalize(finalized_chain_traces)
+impl<C> Clone for ChainShared<C> {
+    fn clone(&self) -> Self {
+        Self {
+            trace: self.trace.clone(),
+            progress: self.progress.clone(),
+        }
+    }
+}
+
+impl<C: ChainStorage> ChainShared<C> {
+    fn new(trace: C, total_draws: usize) -> Self {
+        Self {
+            trace: Arc::new(Mutex::new(Some(trace))),
+            progress: Arc::new(Mutex::new(ChainProgress::new(total_draws))),
+        }
     }
 
     fn progress(&self) -> ChainProgress {
         self.progress.lock().expect("Poisoned lock").clone()
-    }
-
-    fn resume(&self) -> Result<()> {
-        self.stop_marker.send(ChainCommand::Resume)?;
-        Ok(())
-    }
-
-    fn pause(&self) -> Result<()> {
-        self.stop_marker.send(ChainCommand::Pause)?;
-        Ok(())
-    }
-
-    fn start<'model, M: Model, S: Settings>(
-        model: &'model M,
-        chain_trace: T::ChainStorage,
-        chain_id: u64,
-        seed: u64,
-        settings: &'model S,
-        scope: &ScopeFifo<'model>,
-        results: Sender<Result<()>>,
-    ) -> Result<Self> {
-        let (stop_marker_tx, stop_marker_rx) = channel();
-
-        let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        rng.set_stream(chain_id + 1);
-
-        let chain_trace = Arc::new(Mutex::new(Some(chain_trace)));
-        let progress = Arc::new(Mutex::new(ChainProgress::new(
-            settings.hint_num_draws() + settings.hint_num_tune(),
-        )));
-
-        let trace_inner = chain_trace.clone();
-        let progress_inner = progress.clone();
-
-        scope.spawn_fifo(move |_| {
-            let chain_trace = trace_inner;
-            let progress = progress_inner;
-
-            let mut sample = move || {
-                let logp = model
-                    .math(&mut rng)
-                    .context("Failed to create model density")?;
-                let dim = logp.dim();
-
-                let mut sampler = settings.new_chain(chain_id, logp, &mut rng);
-
-                progress.lock().expect("Poisoned mutex").started = true;
-
-                let mut initval = vec![0f64; dim];
-                // TODO maxtries
-                let mut error = None;
-                for _ in 0..500 {
-                    model
-                        .init_position(&mut rng, &mut initval)
-                        .context("Failed to generate a new initial position")?;
-                    if let Err(err) = sampler.set_position(&initval) {
-                        error = Some(err);
-                        continue;
-                    }
-                    error = None;
-                    break;
-                }
-
-                if let Some(error) = error {
-                    return Err(error.context("All initialization points failed"));
-                }
-
-                let draws = settings.hint_num_tune() + settings.hint_num_draws();
-
-                // The trace was built from these names, so anything else the chain or the
-                // model produces has nowhere to go and is dropped below.
-                let (declared_stats, declared_data) = {
-                    let math = sampler.math();
-                    (
-                        settings
-                            .stat_names(math.deref())
-                            .into_iter()
-                            .collect::<HashSet<_>>(),
-                        settings
-                            .data_names(math.deref())
-                            .into_iter()
-                            .collect::<HashSet<_>>(),
-                    )
-                };
-
-                let mut msg = stop_marker_rx.try_recv();
-                let mut draw = 0;
-                loop {
-                    match msg {
-                        // The remote end is dead
-                        Err(TryRecvError::Disconnected) => {
-                            break;
-                        }
-                        Err(TryRecvError::Empty) => {}
-                        Ok(ChainCommand::Pause) => {
-                            msg = stop_marker_rx.recv().map_err(|e| e.into());
-                            continue;
-                        }
-                        Ok(ChainCommand::Resume) => {}
-                    }
-
-                    let now = Instant::now();
-                    let (_point, mut draw_data, mut stats, info) = sampler.expanded_draw().unwrap();
-
-                    let mut guard = chain_trace
-                        .lock()
-                        .expect("Could not unlock trace lock. Poisoned mutex");
-
-                    let Some(trace_val) = guard.as_mut() else {
-                        // The trace was removed by controller thread. We can stop sampling
-                        break;
-                    };
-                    progress
-                        .lock()
-                        .expect("Poisoned mutex")
-                        .update(&info, now.elapsed());
-
-                    let math = sampler.math();
-                    let dims = StatsDims::from(math.deref());
-                    let mut stat_values = stats.get_all(&dims);
-                    let mut draw_values = draw_data.get_all(math.deref());
-                    retain_declared(&declared_stats, &mut stat_values);
-                    retain_declared(&declared_data, &mut draw_values);
-                    trace_val.record_sample(settings, stat_values, draw_values, &info)?;
-
-                    draw += 1;
-                    if draw == draws {
-                        break;
-                    }
-
-                    msg = stop_marker_rx.try_recv();
-                }
-                Ok(())
-            };
-
-            let result = sample();
-
-            // We intentionally ignore errors here, because this means some other
-            // chain already failed, and should have reported the error.
-            let _ = results.send(result);
-            drop(results);
-        });
-
-        Ok(Self {
-            trace: chain_trace,
-            stop_marker: stop_marker_tx,
-            progress,
-        })
     }
 
     fn flush(&self) -> Result<()> {
@@ -1324,6 +1306,353 @@ impl<T: TraceStorage> ChainProcess<T> {
             .map(|v| v.flush())
             .transpose()?;
         Ok(())
+    }
+}
+
+fn finalize_traces<'a, T: TraceStorage>(
+    trace: T,
+    chains: impl IntoIterator<Item = &'a ChainShared<T::ChainStorage>>,
+) -> Result<(Option<anyhow::Error>, T::Finalized)>
+where
+    T::ChainStorage: 'a,
+{
+    let finalized_chain_traces = chains
+        .into_iter()
+        .filter_map(|chain| chain.trace.lock().expect("Poisoned lock").take())
+        .map(|chain| chain.finalize())
+        .collect_vec();
+    trace.finalize(finalized_chain_traces)
+}
+
+fn inspect_traces<'a, T: TraceStorage>(
+    trace: &T,
+    chains: impl IntoIterator<Item = &'a ChainShared<T::ChainStorage>>,
+) -> Result<(Option<anyhow::Error>, T::Finalized)>
+where
+    T::ChainStorage: 'a,
+{
+    let traces = chains
+        .into_iter()
+        .filter_map(|chain| {
+            chain
+                .trace
+                .lock()
+                .expect("Poisoned lock")
+                .as_ref()
+                .map(|v| v.inspect())
+        })
+        .collect_vec();
+    trace.inspect(traces)
+}
+
+/// A single initialized chain that records its draws into a `ChainShared`.
+///
+/// The threaded and the sequential driver both run chains through this; they only
+/// differ in how they schedule calls to `step`.
+struct ChainRunner<M: Model, S: Settings, C: ChainStorage> {
+    chain: S::Chain<M::Math>,
+    settings: S,
+    shared: ChainShared<C>,
+    declared_stats: HashSet<String>,
+    declared_data: HashSet<String>,
+    draws_left: usize,
+}
+
+impl<M: Model, S: Settings, C: ChainStorage> ChainRunner<M, S, C> {
+    fn new(
+        model: Arc<M>,
+        chain_id: u64,
+        seed: u64,
+        settings: S,
+        shared: ChainShared<C>,
+    ) -> Result<Self> {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        rng.set_stream(chain_id + 1);
+
+        let logp = Arc::clone(&model)
+            .math(&mut rng)
+            .context("Failed to create model density")?;
+        let dim = logp.dim();
+
+        let mut chain = settings.new_chain(chain_id, logp, &mut rng)?;
+
+        shared.progress.lock().expect("Poisoned mutex").started = true;
+
+        let mut initval = vec![0f64; dim];
+        // TODO maxtries
+        let mut error = None;
+        for _ in 0..500 {
+            if let Err(err) = model.init_position(&mut rng, chain_id, &mut initval) {
+                match err {
+                    InitPositionError::Fatal(err) => {
+                        return Err(err.context("Model could not produce a valid initial position"));
+                    }
+                    InitPositionError::Retry(err) => {
+                        error = Some(err);
+                        continue;
+                    }
+                }
+            };
+
+            if let Err(err) = chain.set_position(&initval) {
+                error = Some(err);
+                continue;
+            }
+            error = None;
+            break;
+        }
+
+        if let Some(error) = error {
+            return Err(error.context("All initialization points failed"));
+        }
+
+        // The trace was built from these names, so anything else the chain or the
+        // model produces has nowhere to go and is dropped in `step`.
+        let (declared_stats, declared_data) = {
+            let math = chain.math();
+            (
+                settings
+                    .stat_names(math.deref())
+                    .into_iter()
+                    .collect::<HashSet<_>>(),
+                settings
+                    .data_names(math.deref())
+                    .into_iter()
+                    .collect::<HashSet<_>>(),
+            )
+        };
+
+        Ok(Self {
+            chain,
+            settings,
+            shared,
+            declared_stats,
+            declared_data,
+            draws_left: settings.hint_num_tune() + settings.hint_num_draws(),
+        })
+    }
+
+    fn is_finished(&self) -> bool {
+        self.draws_left == 0
+    }
+
+    /// Draw once and record it. Returns `false` once there is nothing left to do,
+    /// either because all draws are done or because the controller took the trace.
+    fn step(&mut self) -> Result<bool> {
+        if self.is_finished() {
+            return Ok(false);
+        }
+
+        let now = Instant::now();
+        let (_point, mut draw_data, mut stats, info) = self.chain.expanded_draw()?;
+
+        let mut guard = self
+            .shared
+            .trace
+            .lock()
+            .expect("Could not unlock trace lock. Poisoned mutex");
+
+        let Some(trace_val) = guard.as_mut() else {
+            // The trace was removed by the controller. We can stop sampling
+            self.draws_left = 0;
+            return Ok(false);
+        };
+        self.shared
+            .progress
+            .lock()
+            .expect("Poisoned mutex")
+            .update(&info, now.elapsed());
+
+        let math = self.chain.math();
+        let dims = StatsDims::from(math.deref());
+        let mut stat_values = stats.get_all(&dims);
+        let mut draw_values = draw_data.get_all(math.deref());
+        retain_declared(&self.declared_stats, &mut stat_values);
+        retain_declared(&self.declared_data, &mut draw_values);
+        trace_val.record_sample(&self.settings, stat_values, draw_values, &info)?;
+
+        self.draws_left -= 1;
+        Ok(!self.is_finished())
+    }
+}
+
+/// Create the math once on the controller to build the trace, with the same seed stream
+/// in every driver.
+fn new_trace<M: Model, S: Settings, C: StorageConfig>(
+    model: &Arc<M>,
+    settings: &S,
+    trace_config: C,
+) -> Result<C::Storage> {
+    let mut rng = ChaCha8Rng::seed_from_u64(settings.seed());
+    rng.set_stream(0);
+
+    let math = Arc::clone(model)
+        .math(&mut rng)
+        .context("Could not create model density")?;
+    trace_config
+        .new_trace(settings, &math)
+        .context("Could not create trace object")
+}
+
+/// `Send` exactly when the `parallel` feature is on.
+///
+/// The sequential driver keeps its chains between calls, and chains are not `Send`
+/// (the state pool uses `Rc`). Without `parallel`, `Sampler` is therefore not `Send`,
+/// which keeps every chain on the thread that created it.
+#[cfg(feature = "parallel")]
+trait MaybeSend: Send {}
+#[cfg(feature = "parallel")]
+impl<T: Send> MaybeSend for T {}
+#[cfg(not(feature = "parallel"))]
+trait MaybeSend {}
+#[cfg(not(feature = "parallel"))]
+impl<T> MaybeSend for T {}
+
+/// Runs the chains behind a `Sampler`.
+///
+/// `Sampler` only knows the finalized trace type `F`; the model, settings and storage
+/// types live inside the driver.
+trait Driver<F: Send + 'static>: MaybeSend {
+    fn pause(&mut self) -> Result<()>;
+    fn resume(&mut self) -> Result<()>;
+    fn flush(&mut self) -> Result<()>;
+    fn inspect(&mut self) -> Result<(Option<anyhow::Error>, F)>;
+    fn progress(&mut self) -> Result<Box<[ChainProgress]>>;
+    fn wait_timeout(self: Box<Self>, timeout: Duration) -> SamplerWaitResult<F>;
+    fn abort(self: Box<Self>) -> Result<(Option<anyhow::Error>, F)>;
+}
+
+fn finished_to_wait_result<F: Send + 'static>(
+    result: Result<(Option<anyhow::Error>, F)>,
+) -> SamplerWaitResult<F> {
+    match result {
+        Ok((Some(err), trace)) => SamplerWaitResult::Err(err, Some(trace)),
+        Ok((None, trace)) => SamplerWaitResult::Trace(trace),
+        Err(err) => SamplerWaitResult::Err(err, None),
+    }
+}
+
+/// A chain failed with `err`, and the sampler was aborted to stop the others. Report the
+/// chain's error together with everything drawn up to that point.
+fn chain_failed_wait_result<F: Send + 'static>(
+    err: anyhow::Error,
+    aborted: Result<(Option<anyhow::Error>, F)>,
+) -> SamplerWaitResult<F> {
+    match aborted {
+        Ok((_, trace)) => SamplerWaitResult::Err(err, Some(trace)),
+        Err(abort_err) => SamplerWaitResult::Err(
+            anyhow::anyhow!("{err:#}\n\nThe trace could not be finalized: {abort_err:#}"),
+            None,
+        ),
+    }
+}
+
+#[cfg(feature = "parallel")]
+enum ChainCommand {
+    Resume,
+    Pause,
+}
+
+#[cfg(feature = "parallel")]
+struct ChainProcess<C> {
+    stop_marker: Sender<ChainCommand>,
+    shared: ChainShared<C>,
+}
+
+#[cfg(feature = "parallel")]
+impl<C: ChainStorage> ChainProcess<C> {
+    fn resume(&self) -> Result<()> {
+        self.stop_marker.send(ChainCommand::Resume)?;
+        Ok(())
+    }
+
+    fn pause(&self) -> Result<()> {
+        self.stop_marker.send(ChainCommand::Pause)?;
+        Ok(())
+    }
+
+    /// Set up the controller's handle to a chain, and the job a worker thread runs
+    /// to sample it.
+    fn new(
+        chain_trace: C,
+        chain_id: u64,
+        settings: &impl Settings,
+        results: Sender<Result<()>>,
+    ) -> (Self, ChainJob<C>) {
+        let (stop_marker_tx, stop_marker_rx) = channel();
+
+        let shared = ChainShared::new(
+            chain_trace,
+            settings.hint_num_draws() + settings.hint_num_tune(),
+        );
+
+        let job = ChainJob {
+            chain_id,
+            shared: shared.clone(),
+            commands: stop_marker_rx,
+            results,
+        };
+        let process = Self {
+            stop_marker: stop_marker_tx,
+            shared,
+        };
+        (process, job)
+    }
+}
+
+/// A chain waiting for a worker thread. Commands sent before it starts queue up in
+/// its channel and are handled in order once it runs.
+#[cfg(feature = "parallel")]
+struct ChainJob<C> {
+    chain_id: u64,
+    shared: ChainShared<C>,
+    commands: Receiver<ChainCommand>,
+    results: Sender<Result<()>>,
+}
+
+#[cfg(feature = "parallel")]
+impl<C: ChainStorage> ChainJob<C> {
+    fn run<M: Model, S: Settings>(self, model: Arc<M>, settings: S) {
+        let Self {
+            chain_id,
+            shared,
+            commands,
+            results,
+        } = self;
+
+        let sample = move || {
+            let mut runner =
+                ChainRunner::<M, S, C>::new(model, chain_id, settings.seed(), settings, shared)?;
+
+            let mut msg = commands.try_recv();
+            loop {
+                match msg {
+                    // The remote end is dead
+                    Err(TryRecvError::Disconnected) => {
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => {}
+                    Ok(ChainCommand::Pause) => {
+                        msg = commands.recv().map_err(|e| e.into());
+                        continue;
+                    }
+                    Ok(ChainCommand::Resume) => {}
+                }
+
+                if !runner.step()? {
+                    break;
+                }
+
+                msg = commands.try_recv();
+            }
+            Ok(())
+        };
+
+        let result = sample();
+
+        // We intentionally ignore errors here, because this means some other
+        // chain already failed, and should have reported the error.
+        let _ = results.send(result);
     }
 }
 
@@ -1344,15 +1673,263 @@ enum SamplerResponse<T: Send + 'static> {
     Inspect(T),
 }
 
-#[cfg(feature = "parallel")]
 pub enum SamplerWaitResult<F: Send + 'static> {
     Trace(F),
     Timeout(Sampler<F>),
     Err(anyhow::Error, Option<F>),
 }
 
-#[cfg(feature = "parallel")]
+/// Runs a set of chains, either on a thread pool or sequentially on the calling thread.
+///
+/// With the `parallel` feature, chains sample on background threads. Without it, chains
+/// only advance while the caller is inside `wait_timeout`, taking turns one draw at a
+/// time, and `Sampler` is not `Send`. The interface is the same in both cases.
 pub struct Sampler<F: Send + 'static> {
+    driver: Box<dyn Driver<F>>,
+}
+
+pub struct ProgressCallback {
+    pub callback: Box<dyn FnMut(Duration, Box<[ChainProgress]>) + Send>,
+    pub rate: Duration,
+}
+
+impl<F: Send + 'static> Sampler<F> {
+    /// Start sampling on `num_cores` background threads.
+    #[cfg(feature = "parallel")]
+    pub fn new<M, S, C, T>(
+        model: Arc<M>,
+        settings: S,
+        trace_config: C,
+        num_cores: usize,
+        callback: Option<ProgressCallback>,
+    ) -> Result<Self>
+    where
+        S: Settings,
+        C: StorageConfig<Storage = T>,
+        M: Model,
+        T: TraceStorage<Finalized = F>,
+    {
+        settings.validate()?;
+        let driver = ThreadedDriver::new(model, settings, trace_config, num_cores, callback)?;
+        Ok(Self {
+            driver: Box::new(driver),
+        })
+    }
+
+    /// Set up all chains on the calling thread without starting any threads.
+    ///
+    /// Chains only draw while the caller is inside `wait_timeout`. `num_cores` is
+    /// ignored.
+    #[cfg(not(feature = "parallel"))]
+    pub fn new<M, S, C, T>(
+        model: Arc<M>,
+        settings: S,
+        trace_config: C,
+        _num_cores: usize,
+        callback: Option<ProgressCallback>,
+    ) -> Result<Self>
+    where
+        S: Settings,
+        C: StorageConfig<Storage = T>,
+        M: Model,
+        T: TraceStorage<Finalized = F>,
+    {
+        settings.validate()?;
+        let driver = SequentialDriver::new(model, settings, trace_config, callback)?;
+        Ok(Self {
+            driver: Box::new(driver),
+        })
+    }
+
+    pub fn pause(&mut self) -> Result<()> {
+        self.driver.pause()
+    }
+
+    pub fn resume(&mut self) -> Result<()> {
+        self.driver.resume()
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        self.driver.flush()
+    }
+
+    pub fn inspect(&mut self) -> Result<(Option<anyhow::Error>, F)> {
+        self.driver.inspect()
+    }
+
+    pub fn abort(self) -> Result<(Option<anyhow::Error>, F)> {
+        self.driver.abort()
+    }
+
+    pub fn wait_timeout(self, timeout: Duration) -> SamplerWaitResult<F> {
+        self.driver.wait_timeout(timeout)
+    }
+
+    pub fn progress(&mut self) -> Result<Box<[ChainProgress]>> {
+        self.driver.progress()
+    }
+}
+
+/// Runs every chain on the calling thread, one draw per chain in turn, while the
+/// caller is inside `wait_timeout`.
+#[cfg(not(feature = "parallel"))]
+struct SequentialDriver<M: Model, S: Settings, T: TraceStorage> {
+    trace: T,
+    chains: Vec<ChainRunner<M, S, T::ChainStorage>>,
+    next_chain: usize,
+    paused: bool,
+    callback: Option<ProgressCallback>,
+    /// Time spent drawing, which is the only time the chains make progress.
+    sampling_time: Duration,
+    last_progress: Option<Instant>,
+}
+
+#[cfg(not(feature = "parallel"))]
+impl<M: Model, S: Settings, T: TraceStorage> SequentialDriver<M, S, T> {
+    fn new<C: StorageConfig<Storage = T>>(
+        model: Arc<M>,
+        settings: S,
+        trace_config: C,
+        callback: Option<ProgressCallback>,
+    ) -> Result<Self> {
+        let trace = new_trace(&model, &settings, trace_config)?;
+
+        let chains = (0..settings.num_chains() as u64)
+            .map(|chain_id| {
+                let chain_trace = trace
+                    .initialize_trace_for_chain(chain_id)
+                    .context("Failed to create trace object")?;
+                let shared = ChainShared::new(
+                    chain_trace,
+                    settings.hint_num_draws() + settings.hint_num_tune(),
+                );
+                ChainRunner::new(
+                    Arc::clone(&model),
+                    chain_id,
+                    settings.seed(),
+                    settings,
+                    shared,
+                )
+            })
+            .collect::<Result<Vec<_>>>()
+            .context("Could not start chains")?;
+
+        Ok(Self {
+            trace,
+            chains,
+            next_chain: 0,
+            paused: false,
+            callback,
+            sampling_time: Duration::ZERO,
+            last_progress: None,
+        })
+    }
+
+    fn report_progress(&mut self, force: bool) {
+        let Some(ProgressCallback { callback, rate }) = &mut self.callback else {
+            return;
+        };
+        if !force
+            && self
+                .last_progress
+                .is_some_and(|last| last.elapsed() < *rate)
+        {
+            return;
+        }
+        let progress = self
+            .chains
+            .iter()
+            .map(|chain| chain.shared.progress())
+            .collect_vec();
+        callback(self.sampling_time, progress.into());
+        self.last_progress = Some(Instant::now());
+    }
+
+    /// The next chain after the one that drew last that still has draws left.
+    fn next_unfinished(&self) -> Option<usize> {
+        let n = self.chains.len();
+        (0..n)
+            .map(|offset| (self.next_chain + offset) % n)
+            .find(|&idx| !self.chains[idx].is_finished())
+    }
+}
+
+#[cfg(not(feature = "parallel"))]
+impl<M, S, T> Driver<T::Finalized> for SequentialDriver<M, S, T>
+where
+    M: Model,
+    S: Settings,
+    T: TraceStorage,
+{
+    fn pause(&mut self) -> Result<()> {
+        self.paused = true;
+        Ok(())
+    }
+
+    fn resume(&mut self) -> Result<()> {
+        self.paused = false;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        for chain in self.chains.iter() {
+            chain.shared.flush()?;
+        }
+        Ok(())
+    }
+
+    fn inspect(&mut self) -> Result<(Option<anyhow::Error>, T::Finalized)> {
+        inspect_traces(&self.trace, self.chains.iter().map(|chain| &chain.shared))
+    }
+
+    fn progress(&mut self) -> Result<Box<[ChainProgress]>> {
+        Ok(self
+            .chains
+            .iter()
+            .map(|chain| chain.shared.progress())
+            .collect())
+    }
+
+    fn wait_timeout(mut self: Box<Self>, timeout: Duration) -> SamplerWaitResult<T::Finalized> {
+        // Paused chains cannot make progress, so there is nothing to wait for.
+        if self.paused {
+            return SamplerWaitResult::Timeout(Sampler { driver: self });
+        }
+
+        let start = Instant::now();
+        loop {
+            self.report_progress(false);
+
+            let Some(idx) = self.next_unfinished() else {
+                return finished_to_wait_result(self.abort());
+            };
+
+            let draw_start = Instant::now();
+            let result = self.chains[idx].step();
+            self.sampling_time += draw_start.elapsed();
+            self.next_chain = idx + 1;
+
+            if let Err(err) = result {
+                return chain_failed_wait_result(err, self.abort());
+            }
+
+            if start.elapsed() >= timeout {
+                return SamplerWaitResult::Timeout(Sampler { driver: self });
+            }
+        }
+    }
+
+    fn abort(mut self: Box<Self>) -> Result<(Option<anyhow::Error>, T::Finalized)> {
+        self.report_progress(true);
+        let this = *self;
+        finalize_traces(this.trace, this.chains.iter().map(|chain| &chain.shared))
+    }
+}
+
+/// Runs the chains on `num_cores` worker threads, controlled from a separate
+/// controller thread through channels.
+#[cfg(feature = "parallel")]
+struct ThreadedDriver<F: Send + 'static> {
     main_thread: JoinHandle<Result<(Option<anyhow::Error>, F)>>,
     commands: SyncSender<SamplerCommand>,
     responses: Receiver<SamplerResponse<(Option<anyhow::Error>, F)>>,
@@ -1360,15 +1937,9 @@ pub struct Sampler<F: Send + 'static> {
 }
 
 #[cfg(feature = "parallel")]
-pub struct ProgressCallback {
-    pub callback: Box<dyn FnMut(Duration, Box<[ChainProgress]>) + Send>,
-    pub rate: Duration,
-}
-
-#[cfg(feature = "parallel")]
-impl<F: Send + 'static> Sampler<F> {
-    pub fn new<M, S, C, T>(
-        model: M,
+impl<F: Send + 'static> ThreadedDriver<F> {
+    fn new<M, S, C, T>(
+        model: Arc<M>,
         settings: S,
         trace_config: C,
         num_cores: usize,
@@ -1385,52 +1956,55 @@ impl<F: Send + 'static> Sampler<F> {
         let (results_tx, results_rx) = channel();
 
         let main_thread = spawn(move || {
-            let pool = ThreadPoolBuilder::new()
-                .num_threads(num_cores + 1) // One more thread because the controller also uses one
-                .thread_name(|i| format!("nutpie-worker-{i}"))
-                .build()
-                .context("Could not start thread pool")?;
-
-            let settings_ref = &settings;
-            let model_ref = &model;
             let mut callback = callback;
+            let results = results_tx;
+            let num_chains = settings.num_chains();
 
-            pool.scope_fifo(move |scope| {
-                let results = results_tx;
-                let mut chains = Vec::with_capacity(settings.num_chains());
+            let trace = new_trace(&model, &settings, trace_config)?;
 
-                let mut rng = ChaCha8Rng::seed_from_u64(settings.seed());
-                rng.set_stream(0);
+            let mut chains = Vec::with_capacity(num_chains);
+            let mut jobs = VecDeque::with_capacity(num_chains);
+            for chain_id in 0..num_chains as u64 {
+                let chain_trace_val = trace
+                    .initialize_trace_for_chain(chain_id)
+                    .context("Failed to create trace object")?;
+                let (chain, job) =
+                    ChainProcess::new(chain_trace_val, chain_id, &settings, results.clone());
+                chains.push(chain);
+                jobs.push_back(job);
+            }
+            drop(results);
 
-                let math = model_ref
-                    .math(&mut rng)
-                    .context("Could not create model density")?;
-                let trace = trace_config
-                    .new_trace(settings_ref, &math)
-                    .context("Could not create trace object")?;
-                drop(math);
+            // Workers take chains in order, so with more chains than cores the rest
+            // wait their turn.
+            let jobs = Mutex::new(jobs);
+            let jobs = &jobs;
+            let model = &model;
 
-                for chain_id in 0..settings.num_chains() {
-                    let chain_trace_val = trace
-                        .initialize_trace_for_chain(chain_id as u64)
-                        .context("Failed to create trace object")?;
-                    let chain = ChainProcess::start(
-                        model_ref,
-                        chain_trace_val,
-                        chain_id as u64,
-                        settings.seed(),
-                        settings_ref,
-                        scope,
-                        results.clone(),
-                    );
-                    chains.push(chain);
-                }
-                drop(results);
-
-                let (chains, errors): (Vec<_>, Vec<_>) = chains.into_iter().partition_result();
-                if let Some(error) = errors.into_iter().next() {
-                    let _ = ChainProcess::finalize_many(trace, chains);
-                    return Err(error).context("Could not start chains");
+            // The scope joins every worker before it returns, and re-raises their panics.
+            //
+            // `chains` and `trace` are moved in so that they drop before the join: a
+            // paused chain only wakes up once its command sender in `chains` is gone.
+            thread::scope(move |scope| {
+                for worker_id in 0..num_cores.clamp(1, num_chains.max(1)) {
+                    let spawned = thread::Builder::new()
+                        .name(format!("nutpie-worker-{worker_id}"))
+                        .spawn_scoped(scope, move || {
+                            loop {
+                                let job = jobs.lock().expect("Poisoned lock").pop_front();
+                                let Some(job) = job else {
+                                    break;
+                                };
+                                job.run(Arc::clone(model), settings);
+                            }
+                        });
+                    if let Err(err) = spawned {
+                        // Taking the traces stops the chains that already run, so the
+                        // scope can join their workers.
+                        jobs.lock().expect("Poisoned lock").clear();
+                        let _ = finalize_traces(trace, chains.iter().map(|chain| &chain.shared));
+                        return Err(err).context("Could not start worker thread");
+                    }
                 }
 
                 let mut main_loop = || {
@@ -1440,7 +2014,10 @@ impl<F: Send + 'static> Sampler<F> {
 
                     let mut progress_rate = Duration::MAX;
                     if let Some(ProgressCallback { callback, rate }) = &mut callback {
-                        let progress = chains.iter().map(|chain| chain.progress()).collect_vec();
+                        let progress = chains
+                            .iter()
+                            .map(|chain| chain.shared.progress())
+                            .collect_vec();
                         callback(start_time.elapsed(), progress.into());
                         progress_rate = *rate;
                     }
@@ -1451,8 +2028,10 @@ impl<F: Send + 'static> Sampler<F> {
                         let timeout = progress_rate.checked_sub(last_progress.elapsed());
                         let timeout = timeout.unwrap_or_else(|| {
                             if let Some(ProgressCallback { callback, .. }) = &mut callback {
-                                let progress =
-                                    chains.iter().map(|chain| chain.progress()).collect_vec();
+                                let progress = chains
+                                    .iter()
+                                    .map(|chain| chain.shared.progress())
+                                    .collect_vec();
                                 let mut elapsed = start_time.elapsed().saturating_sub(pause_time);
                                 if is_paused {
                                     elapsed = elapsed.saturating_sub(pause_start.elapsed());
@@ -1496,8 +2075,10 @@ impl<F: Send + 'static> Sampler<F> {
                                 })?;
                             }
                             Ok(SamplerCommand::Progress) => {
-                                let progress =
-                                    chains.iter().map(|chain| chain.progress()).collect_vec();
+                                let progress = chains
+                                    .iter()
+                                    .map(|chain| chain.shared.progress())
+                                    .collect_vec();
                                 responses_tx.send(SamplerResponse::Progress(progress.into())).map_err(|e| {
                                     anyhow::anyhow!(
                                         "Could not send progress response to controller thread: {e}"
@@ -1505,18 +2086,10 @@ impl<F: Send + 'static> Sampler<F> {
                                 })?;
                             }
                             Ok(SamplerCommand::Inspect) => {
-                                let traces = chains
-                                    .iter()
-                                    .filter_map(|chain| {
-                                        chain
-                                            .trace
-                                            .lock()
-                                            .expect("Poisoned lock")
-                                            .as_ref()
-                                            .map(|v| v.inspect())
-                                    })
-                                    .collect_vec();
-                                let finalized_trace = trace.inspect(traces)?;
+                                let finalized_trace = inspect_traces(
+                                    &trace,
+                                    chains.iter().map(|chain| &chain.shared),
+                                )?;
                                 responses_tx.send(SamplerResponse::Inspect(finalized_trace)).map_err(|e| {
                                     anyhow::anyhow!(
                                         "Could not send inspect response to controller thread: {e}"
@@ -1525,7 +2098,7 @@ impl<F: Send + 'static> Sampler<F> {
                             }
                             Ok(SamplerCommand::Flush) => {
                                 for chain in chains.iter() {
-                                    chain.flush()?;
+                                    chain.shared.flush()?;
                                 }
                                 responses_tx.send(SamplerResponse::Ok()).map_err(|e| {
                                     anyhow::anyhow!(
@@ -1536,8 +2109,10 @@ impl<F: Send + 'static> Sampler<F> {
                             Err(RecvTimeoutError::Timeout) => {}
                             Err(RecvTimeoutError::Disconnected) => {
                                 if let Some(ProgressCallback { callback, .. }) = &mut callback {
-                                    let progress =
-                                        chains.iter().map(|chain| chain.progress()).collect_vec();
+                                    let progress = chains
+                                        .iter()
+                                        .map(|chain| chain.shared.progress())
+                                        .collect_vec();
                                     let mut elapsed =
                                         start_time.elapsed().saturating_sub(pause_time);
                                     if is_paused {
@@ -1551,8 +2126,10 @@ impl<F: Send + 'static> Sampler<F> {
                     }
                 };
                 let result: Result<()> = main_loop();
+                // Chains that have not started yet should not start anymore.
+                jobs.lock().expect("Poisoned lock").clear();
                 // Run finalization even if something failed
-                let output = ChainProcess::finalize_many(trace, chains)?;
+                let output = finalize_traces(trace, chains.iter().map(|chain| &chain.shared))?;
 
                 result?;
                 Ok(output)
@@ -1566,8 +2143,11 @@ impl<F: Send + 'static> Sampler<F> {
             results: results_rx,
         })
     }
+}
 
-    pub fn pause(&mut self) -> Result<()> {
+#[cfg(feature = "parallel")]
+impl<F: Send + 'static> Driver<F> for ThreadedDriver<F> {
+    fn pause(&mut self) -> Result<()> {
         self.commands
             .send(SamplerCommand::Pause)
             .context("Could not send pause command to controller thread")?;
@@ -1581,7 +2161,7 @@ impl<F: Send + 'static> Sampler<F> {
         Ok(())
     }
 
-    pub fn resume(&mut self) -> Result<()> {
+    fn resume(&mut self) -> Result<()> {
         self.commands.send(SamplerCommand::Continue)?;
         let response = self.responses.recv()?;
         let SamplerResponse::Ok() = response else {
@@ -1590,7 +2170,7 @@ impl<F: Send + 'static> Sampler<F> {
         Ok(())
     }
 
-    pub fn flush(&mut self) -> Result<()> {
+    fn flush(&mut self) -> Result<()> {
         self.commands.send(SamplerCommand::Flush)?;
         let response = self
             .responses
@@ -1602,7 +2182,7 @@ impl<F: Send + 'static> Sampler<F> {
         Ok(())
     }
 
-    pub fn inspect(&mut self) -> Result<(Option<anyhow::Error>, F)> {
+    fn inspect(&mut self) -> Result<(Option<anyhow::Error>, F)> {
         self.commands.send(SamplerCommand::Inspect)?;
         let response = self
             .responses
@@ -1614,7 +2194,7 @@ impl<F: Send + 'static> Sampler<F> {
         Ok(trace)
     }
 
-    pub fn abort(self) -> Result<(Option<anyhow::Error>, F)> {
+    fn abort(self: Box<Self>) -> Result<(Option<anyhow::Error>, F)> {
         drop(self.commands);
         let result = self.main_thread.join();
         match result {
@@ -1624,25 +2204,31 @@ impl<F: Send + 'static> Sampler<F> {
         }
     }
 
-    pub fn wait_timeout(self, timeout: Duration) -> SamplerWaitResult<F> {
-        let start = Instant::now();
-        let mut remaining = Some(timeout);
-        while remaining.is_some() {
-            match self.results.recv_timeout(timeout) {
-                Ok(Ok(_)) => remaining = timeout.checked_sub(start.elapsed()),
-                Ok(Err(e)) => return SamplerWaitResult::Err(e, None),
-                Err(RecvTimeoutError::Disconnected) => match self.abort() {
-                    Ok((Some(err), trace)) => return SamplerWaitResult::Err(err, Some(trace)),
-                    Ok((None, trace)) => return SamplerWaitResult::Trace(trace),
-                    Err(err) => return SamplerWaitResult::Err(err, None),
-                },
-                Err(RecvTimeoutError::Timeout) => break,
+    fn wait_timeout(self: Box<Self>, timeout: Duration) -> SamplerWaitResult<F> {
+        // `None` if the timeout is too long to represent, which means waiting until done.
+        let deadline = Instant::now().checked_add(timeout);
+        loop {
+            // Each chain reports once when it is done, so wait only for what is left of the
+            // timeout, not the whole timeout again after every chain.
+            let remaining = match deadline {
+                Some(deadline) => deadline.saturating_duration_since(Instant::now()),
+                None => Duration::MAX,
+            };
+            match self.results.recv_timeout(remaining) {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => return chain_failed_wait_result(err, self.abort()),
+                // Every chain has reported
+                Err(RecvTimeoutError::Disconnected) => {
+                    return finished_to_wait_result(self.abort());
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    return SamplerWaitResult::Timeout(Sampler { driver: self });
+                }
             }
         }
-        SamplerWaitResult::Timeout(self)
     }
 
-    pub fn progress(&mut self) -> Result<Box<[ChainProgress]>> {
+    fn progress(&mut self) -> Result<Box<[ChainProgress]>> {
         self.commands.send(SamplerCommand::Progress)?;
         let response = self.responses.recv()?;
         let SamplerResponse::Progress(progress) = response else {
@@ -1654,7 +2240,12 @@ impl<F: Send + 'static> Sampler<F> {
 
 #[cfg(test)]
 pub mod test_logps {
-    use crate::{Model, math::CpuLogpFunc, math::CpuMath};
+    use std::sync::Arc;
+
+    use crate::{
+        InitPositionError, Model,
+        math::{CpuLogpFunc, CpuMath},
+    };
     use anyhow::Result;
     use rand::Rng;
 
@@ -1670,20 +2261,20 @@ pub mod test_logps {
 
     impl<F> Model for CpuModel<F>
     where
-        F: Send + Sync + 'static,
-        for<'a> &'a F: CpuLogpFunc,
+        F: CpuLogpFunc + Clone + Send + Sync + 'static,
     {
-        type Math<'model> = CpuMath<&'model F>;
+        type Math = CpuMath<F>;
 
-        fn math<R: Rng + ?Sized>(&self, _rng: &mut R) -> Result<Self::Math<'_>> {
-            Ok(CpuMath::new(&self.logp))
+        fn math<R: Rng + ?Sized>(self: Arc<Self>, _rng: &mut R) -> Result<Self::Math> {
+            Ok(CpuMath::new(self.logp.clone()))
         }
 
         fn init_position<R: rand::prelude::Rng + ?Sized>(
             &self,
             _rng: &mut R,
+            _chain_id: u64,
             position: &mut [f64],
-        ) -> Result<()> {
+        ) -> Result<(), InitPositionError> {
             position.iter_mut().for_each(|x| *x = 0.);
             Ok(())
         }
@@ -1699,7 +2290,6 @@ mod tests {
         sampler::LowRankMclmcSettings, sampler::LowRankNutsSettings, sampler::Settings,
     };
 
-    #[cfg(feature = "zarr")]
     use super::test_logps::CpuModel;
 
     use anyhow::Result;
@@ -1729,7 +2319,7 @@ mod tests {
         assert!(!stat_names.is_empty());
         assert_eq!(stat_names.len(), stat_types.len());
 
-        let mut chain = settings.new_chain(0, math, &mut rng);
+        let mut chain = settings.new_chain(0, math, &mut rng)?;
         chain.set_position(&vec![0.2; 4])?;
         let (_draw, _info) = chain.draw()?;
         Ok(())
@@ -1805,7 +2395,7 @@ mod tests {
 
         let mut rng = StdRng::seed_from_u64(42);
 
-        let mut chain = settings.new_chain(0, math, &mut rng);
+        let mut chain = settings.new_chain(0, math, &mut rng)?;
 
         let (_draw, info) = chain.draw()?;
         assert!(info.tuning);
@@ -1839,7 +2429,7 @@ mod tests {
         let store = MemoryStore::new();
 
         let zarr_config = ZarrConfig::new(Arc::new(store));
-        let mut sampler = Sampler::new(model, settings, zarr_config, 4, None)?;
+        let mut sampler = Sampler::new(Arc::new(model), settings, zarr_config, 4, None)?;
         sampler.pause()?;
         sampler.pause()?;
         // TODO flush trace
@@ -1852,7 +2442,7 @@ mod tests {
         let store = MemoryStore::new();
         let zarr_config = ZarrConfig::new(Arc::new(store));
         let model = CpuModel::new(logp.clone());
-        let mut sampler = Sampler::new(model, settings, zarr_config, 4, None)?;
+        let mut sampler = Sampler::new(Arc::new(model), settings, zarr_config, 4, None)?;
         sampler.pause()?;
         if let (Some(err), _) = sampler.abort()? {
             Err(err)?;
@@ -1862,7 +2452,7 @@ mod tests {
         let zarr_config = ZarrConfig::new(Arc::new(store));
         let model = CpuModel::new(logp.clone());
         let start = Instant::now();
-        let sampler = Sampler::new(model, settings, zarr_config, 4, None)?;
+        let sampler = Sampler::new(Arc::new(model), settings, zarr_config, 4, None)?;
 
         let mut sampler = match sampler.wait_timeout(Duration::from_nanos(100)) {
             super::SamplerWaitResult::Trace(_) => {
@@ -1914,5 +2504,466 @@ mod tests {
         assert_eq!(vals.len(), 10);
         assert_eq!(stats.chain, 1);
         assert_eq!(stats.draw, 100);
+    }
+
+    /// More chains than worker threads: the extra chains queue up, including their
+    /// pause and resume commands, and still all finish.
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn threaded_more_chains_than_cores() -> Result<()> {
+        use crate::{HashMapConfig, HashMapValue, Sampler, SamplerWaitResult};
+        use std::{sync::Arc, time::Duration};
+
+        let settings = DiagNutsSettings {
+            num_tune: 50,
+            num_draws: 50,
+            num_chains: 5,
+            seed: 5,
+            ..Default::default()
+        };
+        let model = Arc::new(CpuModel::new(NormalLogp { dim: 5, mu: 0.1 }));
+        let mut sampler = Sampler::new(model, settings, HashMapConfig::new(), 2, None)?;
+        sampler.pause()?;
+        sampler.resume()?;
+
+        let trace = loop {
+            match sampler.wait_timeout(Duration::from_secs(10)) {
+                SamplerWaitResult::Trace(trace) => break trace,
+                SamplerWaitResult::Timeout(new_sampler) => sampler = new_sampler,
+                SamplerWaitResult::Err(err, _) => return Err(err),
+            }
+        };
+        assert_eq!(trace.len(), 5);
+        for chain in trace.iter() {
+            let HashMapValue::Bool(diverging) = &chain.stats["diverging"] else {
+                panic!("diverging stat should be bool");
+            };
+            assert_eq!(diverging.len(), 100);
+        }
+        Ok(())
+    }
+
+    /// Aborting while paused must not wait for the paused chains, including the ones
+    /// still queued behind the worker threads.
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn threaded_abort_while_paused() -> Result<()> {
+        use crate::{HashMapConfig, Sampler};
+        use std::sync::Arc;
+
+        let settings = DiagNutsSettings {
+            num_tune: 1000,
+            num_draws: 1000,
+            num_chains: 5,
+            seed: 5,
+            ..Default::default()
+        };
+        let model = Arc::new(CpuModel::new(NormalLogp { dim: 5, mu: 0.1 }));
+        let mut sampler = Sampler::new(model, settings, HashMapConfig::new(), 2, None)?;
+        sampler.pause()?;
+        let (err, trace) = sampler.abort()?;
+        assert!(err.is_none());
+        assert_eq!(trace.len(), 5);
+        Ok(())
+    }
+
+    /// Bad settings and inconsistent models must produce errors instead of panics, both
+    /// when building a chain directly and through `Sampler`.
+    mod input_errors {
+        use std::{sync::Arc, time::Duration};
+
+        use anyhow::Result;
+        use rand::{SeedableRng, rngs::StdRng};
+
+        use super::CpuModel;
+        use crate::{
+            Chain, DiagMclmcSettings, DiagNutsSettings, HashMapConfig, KineticEnergyKind,
+            LowRankMclmcSettings, LowRankNutsSettings, MclmcTrajectoryKind, Sampler,
+            SamplerWaitResult, Settings, StepSizeAdaptMethod,
+            math::CpuMath,
+            math::test_logps::{ExpandMismatch, FailingLogp, MismatchedExpandLogp, NormalLogp},
+            storage::{StorageConfig, TraceStorage},
+        };
+
+        /// A chain that fails stops the others, and `wait_timeout` returns what all chains
+        /// have drawn together with the error.
+        #[test]
+        fn failing_chain_keeps_trace() {
+            let settings = DiagNutsSettings {
+                num_tune: 100,
+                num_draws: 100,
+                num_chains: 3,
+                seed: 1,
+                ..Default::default()
+            };
+            let logp = FailingLogp {
+                inner: NormalLogp { dim: 3, mu: 0.1 },
+                fail_after: 100,
+                calls: 0,
+            };
+            let model = Arc::new(CpuModel::new(logp));
+            let mut sampler = Sampler::new(model, settings, HashMapConfig::new(), 3, None)
+                .expect("Sampler should start");
+            let (err, trace) = loop {
+                match sampler.wait_timeout(Duration::from_secs(10)) {
+                    SamplerWaitResult::Trace(_) => panic!("sampling should fail"),
+                    SamplerWaitResult::Timeout(new_sampler) => sampler = new_sampler,
+                    SamplerWaitResult::Err(err, trace) => break (err, trace),
+                }
+            };
+            assert!(format!("{err:#}").contains("FailOnPurpose"), "{err:#}");
+            let trace = trace.expect("the draws before the failure should be kept");
+            assert_eq!(trace.len(), 3);
+            assert!(trace.iter().all(|chain| !chain.stats.is_empty()));
+        }
+
+        fn new_chain_error<S: Settings>(settings: S, dim: usize) -> String {
+            let logp = NormalLogp { dim, mu: 0.1 };
+            let mut rng = StdRng::seed_from_u64(42);
+            let Err(err) = settings.new_chain(0, CpuMath::new(&logp), &mut rng) else {
+                panic!("new_chain should fail");
+            };
+            format!("{err:#}")
+        }
+
+        #[test]
+        fn invalid_settings() {
+            let base = DiagNutsSettings::default();
+            let mut cases = vec![];
+
+            let mut settings = base;
+            settings.adapt_options.step_size_settings.jitter = Some(0.0);
+            cases.push(("jitter", settings));
+
+            let mut settings = base;
+            settings.adapt_options.step_size_settings.initial_step = 0.0;
+            cases.push(("initial_step", settings));
+
+            let mut settings = base;
+            settings
+                .adapt_options
+                .step_size_settings
+                .adapt_options
+                .method = StepSizeAdaptMethod::Fixed(-1.0);
+            cases.push(("Fixed step size", settings));
+
+            let mut settings = base;
+            settings.adapt_options.early_window = 1.0;
+            cases.push(("early_window", settings));
+
+            let mut settings = base;
+            settings.adapt_options.mass_matrix_window_growth = 0.5;
+            cases.push(("mass_matrix_window_growth", settings));
+
+            for (field, settings) in cases {
+                let err = new_chain_error(settings, 4);
+                assert!(err.contains(field), "{field}: {err}");
+            }
+
+            let settings = DiagMclmcSettings {
+                step_size: 0.0,
+                ..Default::default()
+            };
+            let err = new_chain_error(settings, 4);
+            assert!(err.contains("step_size"), "{err}");
+        }
+
+        #[test]
+        fn sampler_rejects_invalid_settings() {
+            let mut settings = DiagNutsSettings::default();
+            settings.adapt_options.step_size_settings.jitter = Some(-0.1);
+            let model = Arc::new(CpuModel::new(NormalLogp { dim: 4, mu: 0.1 }));
+            let result = Sampler::new(model, settings, HashMapConfig::new(), 1, None);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn microcanonical_needs_two_dims() {
+            let settings = DiagNutsSettings {
+                trajectory_kind: KineticEnergyKind::Microcanonical,
+                ..Default::default()
+            };
+            assert!(new_chain_error(settings, 1).contains("2 dimensions"));
+
+            let settings = DiagMclmcSettings {
+                trajectory_kind: MclmcTrajectoryKind::Microcanonical,
+                ..Default::default()
+            };
+            assert!(new_chain_error(settings, 1).contains("2 dimensions"));
+        }
+
+        fn sample_without_tuning<S: Settings>(settings: S) -> Result<()> {
+            let logp = NormalLogp { dim: 4, mu: 0.1 };
+            let mut rng = StdRng::seed_from_u64(42);
+            let mut chain = settings.new_chain(0, CpuMath::new(&logp), &mut rng)?;
+            chain.set_position(&[0.2; 4])?;
+            for _ in 0..10 {
+                let (_draw, info) = chain.draw()?;
+                assert!(!info.tuning);
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn no_tuning() -> Result<()> {
+            sample_without_tuning(DiagNutsSettings {
+                num_tune: 0,
+                ..Default::default()
+            })?;
+            sample_without_tuning(LowRankNutsSettings {
+                num_tune: 0,
+                ..Default::default()
+            })?;
+            sample_without_tuning(DiagMclmcSettings {
+                num_tune: 0,
+                ..Default::default()
+            })?;
+            sample_without_tuning(LowRankMclmcSettings {
+                num_tune: 0,
+                ..Default::default()
+            })?;
+            Ok(())
+        }
+
+        #[test]
+        fn wrong_initial_position_length() -> Result<()> {
+            let logp = NormalLogp { dim: 4, mu: 0.1 };
+            let mut rng = StdRng::seed_from_u64(42);
+            let mut chain =
+                DiagNutsSettings::default().new_chain(0, CpuMath::new(&logp), &mut rng)?;
+            let err = chain.set_position(&[0.2; 3]).unwrap_err();
+            assert!(format!("{err}").contains("length 3"), "{err}");
+            Ok(())
+        }
+
+        /// Sample a model whose expanded draws do not match their declaration, and return
+        /// the error the sampler reports.
+        fn sample_error<C, T>(config: C, mismatch: ExpandMismatch) -> String
+        where
+            C: StorageConfig<Storage = T>,
+            T: TraceStorage,
+        {
+            let settings = DiagNutsSettings {
+                num_tune: 5,
+                num_draws: 5,
+                num_chains: 1,
+                seed: 1,
+                ..Default::default()
+            };
+            let logp = MismatchedExpandLogp {
+                inner: NormalLogp { dim: 3, mu: 0.1 },
+                mismatch,
+            };
+            let mut sampler =
+                Sampler::new(Arc::new(CpuModel::new(logp)), settings, config, 1, None)
+                    .expect("Sampler should start");
+            loop {
+                match sampler.wait_timeout(Duration::from_secs(10)) {
+                    SamplerWaitResult::Trace(_) => panic!("sampling should fail for {mismatch:?}"),
+                    SamplerWaitResult::Timeout(new_sampler) => sampler = new_sampler,
+                    SamplerWaitResult::Err(err, _) => return format!("{err:#}"),
+                }
+            }
+        }
+
+        fn assert_explains(err: &str, mismatch: ExpandMismatch) {
+            let expected = match mismatch {
+                ExpandMismatch::WrongType => "Got a F32 value",
+                ExpandMismatch::WrongLength => "values",
+                ExpandMismatch::Missing => "no value for posterior variable x",
+            };
+            assert!(err.contains(expected), "{mismatch:?}: {err}");
+            assert!(
+                err.contains("posterior variable x") || err.contains("/x"),
+                "error should name the variable: {err}"
+            );
+        }
+
+        #[test]
+        fn hashmap_storage_mismatch() {
+            for mismatch in [
+                ExpandMismatch::WrongType,
+                ExpandMismatch::WrongLength,
+                ExpandMismatch::Missing,
+            ] {
+                assert_explains(&sample_error(HashMapConfig::new(), mismatch), mismatch);
+            }
+        }
+
+        #[cfg(feature = "ndarray")]
+        #[test]
+        fn ndarray_storage_mismatch() {
+            use crate::NdarrayConfig;
+            for mismatch in [
+                ExpandMismatch::WrongType,
+                ExpandMismatch::WrongLength,
+                ExpandMismatch::Missing,
+            ] {
+                assert_explains(&sample_error(NdarrayConfig::new(), mismatch), mismatch);
+            }
+        }
+
+        #[cfg(feature = "zarr")]
+        #[test]
+        fn zarr_storage_mismatch() {
+            use crate::ZarrConfig;
+            use zarrs::storage::store::MemoryStore;
+            for mismatch in [
+                ExpandMismatch::WrongType,
+                ExpandMismatch::WrongLength,
+                ExpandMismatch::Missing,
+            ] {
+                let config = ZarrConfig::new(Arc::new(MemoryStore::new()));
+                assert_explains(&sample_error(config, mismatch), mismatch);
+            }
+        }
+
+        #[cfg(feature = "arrow")]
+        #[test]
+        fn arrow_storage_mismatch() {
+            use crate::ArrowConfig;
+            // Arrow stores a missing draw as null.
+            for mismatch in [ExpandMismatch::WrongType, ExpandMismatch::WrongLength] {
+                assert_explains(&sample_error(ArrowConfig::default(), mismatch), mismatch);
+            }
+        }
+    }
+
+    /// Tests for the sequential driver, which only exists without `parallel`:
+    /// `cargo test --no-default-features`.
+    #[cfg(not(feature = "parallel"))]
+    mod sequential {
+        use std::{
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
+            time::Duration,
+        };
+
+        use anyhow::Result;
+        use itertools::Itertools;
+
+        use super::CpuModel;
+        use crate::{
+            DiagNutsSettings, HashMapConfig, ProgressCallback, Sampler, SamplerWaitResult,
+            math::test_logps::NormalLogp, storage::HashMapResult,
+        };
+
+        fn sample_to_end(
+            mut sampler: Sampler<Vec<HashMapResult>>,
+            timeout: Duration,
+        ) -> Result<Vec<HashMapResult>> {
+            loop {
+                match sampler.wait_timeout(timeout) {
+                    SamplerWaitResult::Trace(trace) => return Ok(trace),
+                    SamplerWaitResult::Timeout(new_sampler) => sampler = new_sampler,
+                    SamplerWaitResult::Err(err, _) => return Err(err),
+                }
+            }
+        }
+
+        /// Debug-print the draws in a stable order, so traces can be compared exactly.
+        fn draws_fingerprint(trace: &[HashMapResult]) -> Vec<String> {
+            trace
+                .iter()
+                .map(|chain| {
+                    chain
+                        .draws
+                        .iter()
+                        .sorted_by_key(|(name, _)| name.as_str())
+                        .map(|(name, value)| format!("{name}: {value:?}"))
+                        .join("\n")
+                })
+                .collect()
+        }
+
+        fn new_sampler(callback: Option<ProgressCallback>) -> Result<Sampler<Vec<HashMapResult>>> {
+            let settings = DiagNutsSettings {
+                num_tune: 50,
+                num_draws: 50,
+                num_chains: 3,
+                seed: 5,
+                ..Default::default()
+            };
+            let model = Arc::new(CpuModel::new(NormalLogp { dim: 5, mu: 0.1 }));
+            Sampler::new(model, settings, HashMapConfig::new(), 1, callback)
+        }
+
+        #[test]
+        fn runs_all_chains() -> Result<()> {
+            let trace = sample_to_end(new_sampler(None)?, Duration::from_millis(1))?;
+            assert_eq!(trace.len(), 3);
+            for chain in trace.iter() {
+                let crate::HashMapValue::Bool(diverging) = &chain.stats["diverging"] else {
+                    panic!("diverging stat should be bool");
+                };
+                assert_eq!(diverging.len(), 100);
+            }
+            Ok(())
+        }
+
+        /// Each chain has its own seed stream, so how draws are interleaved across
+        /// `wait_timeout` calls must not change them.
+        #[test]
+        fn draws_do_not_depend_on_scheduling() -> Result<()> {
+            let one_draw_per_call = sample_to_end(new_sampler(None)?, Duration::ZERO)?;
+            let all_at_once = sample_to_end(new_sampler(None)?, Duration::from_secs(600))?;
+            assert_eq!(
+                draws_fingerprint(&one_draw_per_call),
+                draws_fingerprint(&all_at_once)
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn pause_progress_and_inspect() -> Result<()> {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let callback = ProgressCallback {
+                callback: Box::new({
+                    let calls = calls.clone();
+                    move |_elapsed, _progress| {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                    }
+                }),
+                rate: Duration::from_millis(1),
+            };
+            let mut sampler = new_sampler(Some(callback))?;
+
+            // Nothing draws until `wait_timeout`, and not at all while paused.
+            sampler.pause()?;
+            let SamplerWaitResult::Timeout(mut sampler) =
+                sampler.wait_timeout(Duration::from_millis(50))
+            else {
+                panic!("paused sampler should time out");
+            };
+            assert!(
+                sampler
+                    .progress()?
+                    .iter()
+                    .all(|chain| chain.finished_draws == 0)
+            );
+            sampler.resume()?;
+
+            let SamplerWaitResult::Timeout(mut sampler) = sampler.wait_timeout(Duration::ZERO)
+            else {
+                panic!("a single draw should not finish sampling");
+            };
+            let drawn: usize = sampler
+                .progress()?
+                .iter()
+                .map(|chain| chain.finished_draws)
+                .sum();
+            assert_eq!(drawn, 1);
+
+            let (err, partial) = sampler.inspect()?;
+            assert!(err.is_none());
+            assert_eq!(partial.len(), 3);
+
+            let trace = sample_to_end(sampler, Duration::from_millis(1))?;
+            assert_eq!(trace.len(), 3);
+            assert!(calls.load(Ordering::Relaxed) >= 2);
+            Ok(())
+        }
     }
 }

@@ -76,7 +76,7 @@ impl CpuLogpFunc for PosteriorDensity {
 fn make_sampler(dim: usize) -> impl Chain<CpuMath<PosteriorDensity>> {
     let func = PosteriorDensity { dim: dim };
 
-    let settings = nuts_rs::DiagGradNutsSettings {
+    let settings = nuts_rs::DiagNutsSettings {
         num_tune: 1000,
         maxdepth: 3, // small value just for testing...
         ..Default::default()
@@ -84,7 +84,9 @@ fn make_sampler(dim: usize) -> impl Chain<CpuMath<PosteriorDensity>> {
 
     let math = nuts_rs::CpuMath::new(func);
     let mut rng = rand::rngs::StdRng::seed_from_u64(42u64);
-    settings.new_chain(0, math, &mut rng)
+    settings
+        .new_chain(0, math, &mut rng)
+        .expect("benchmark settings are valid")
 }
 
 pub fn sample_one(out: &mut [f64]) {
@@ -183,6 +185,24 @@ fn criterion_benchmark(c: &mut Criterion) {
                     black_box(&x),
                     black_box(&y),
                 )
+            });
+        });
+
+        c.bench_function(&format!("softclip {}", n), |b| {
+            b.iter(|| {
+                math.array_softclip(&mut y, 1e10);
+            });
+        });
+
+        c.bench_function(&format!("softclip_naive {}", n), |b| {
+            b.iter(|| {
+                let c = 1e10;
+                y.iter_mut().for_each(|x| {
+                    if x.abs() < 1e9 {
+                        *x = c * (*x / c).asinh();
+                    }
+                });
+                math.array_softclip(&mut y, 1e10);
             });
         });
     }

@@ -147,7 +147,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
 
         let turning = if options.check_turning {
             let mut turning = hamiltonian.is_turning(math, first, last);
-            if self.depth > 0 {
+            if options.uturn_check_first_step || (self.depth > 0) {
                 if !turning {
                     turning = hamiltonian.is_turning(math, &self.right, &other.right);
                 }
@@ -262,6 +262,7 @@ pub struct NutsOptions {
     pub target_integration_time: Option<f64>,
     pub extra_doublings: u64,
     pub max_energy_error: f64,
+    pub uturn_check_first_step: bool,
 }
 
 impl Default for NutsOptions {
@@ -274,6 +275,7 @@ impl Default for NutsOptions {
             target_integration_time: None,
             extra_doublings: 0,
             max_energy_error: 1000.0,
+            uturn_check_first_step: true,
         }
     }
 }
@@ -392,8 +394,7 @@ mod tests {
     use rand::rng;
 
     use crate::{
-        Chain, Settings, math::test_logps::NormalLogp, math::CpuMath,
-        sampler::DiagNutsSettings,
+        Chain, Settings, math::CpuMath, math::test_logps::NormalLogp, sampler::DiagNutsSettings,
     };
 
     #[test]
@@ -405,7 +406,7 @@ mod tests {
         let settings = DiagNutsSettings::default();
         let mut rng = rng();
 
-        let mut chain = settings.new_chain(0, math, &mut rng);
+        let mut chain = settings.new_chain(0, math, &mut rng).unwrap();
 
         chain.set_position(&vec![0.0; ndim]).unwrap();
 

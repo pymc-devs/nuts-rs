@@ -37,7 +37,7 @@ pub trait Math: HasDims {
 
     /// Compute the unnormalized log probability density of the posterior
     ///
-    /// This needs to be implemnted by users of the library to define
+    /// This needs to be implemented by users of the library to define
     /// what distribution the users wants to sample from.
     ///
     /// Errors during that computation can be recoverable or non-recoverable.
@@ -50,6 +50,19 @@ pub trait Math: HasDims {
     ) -> Result<f64, Self::LogpErr>;
 
     fn logp(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, Self::LogpErr>;
+
+    fn logp_array_softclip(
+        &mut self,
+        position: &Self::Vector,
+        gradient: &mut Self::Vector,
+        clip: Option<f64>,
+    ) -> Result<f64, Self::LogpErr> {
+        let logp = self.logp_array(position, gradient);
+        if let Some(clip) = clip {
+            self.array_softclip(gradient, clip);
+        }
+        logp
+    }
 
     fn init_position<R: Rng + ?Sized>(
         &mut self,
@@ -123,6 +136,7 @@ pub trait Math: HasDims {
     fn array_mult(&mut self, array1: &Self::Vector, array2: &Self::Vector, dest: &mut Self::Vector);
     fn array_mult_inplace(&mut self, array1: &mut Self::Vector, array2: &Self::Vector);
     fn array_recip(&mut self, array: &Self::Vector, dest: &mut Self::Vector);
+    fn array_softclip(&mut self, array: &mut Self::Vector, clip: f64);
 
     /// Apply the low-rank linear map `(I + U * (diag(vals) - I) * U^T) * rhs` into `dest`.
     ///
@@ -275,6 +289,7 @@ pub trait Math: HasDims {
         untransformed_gradient: &mut Self::Vector,
         transformed_position: &mut Self::Vector,
         transformed_gradient: &mut Self::Vector,
+        clip: Option<f64>,
     ) -> Result<(f64, f64), Self::LogpErr>;
 
     fn init_from_transformed_position(
@@ -284,6 +299,7 @@ pub trait Math: HasDims {
         untransformed_gradient: &mut Self::Vector,
         transformed_position: &Self::Vector,
         transformed_gradient: &mut Self::Vector,
+        clip: Option<f64>,
     ) -> Result<(f64, f64), Self::LogpErr>;
 
     fn update_transformation<'a, R: rand::Rng + ?Sized>(
