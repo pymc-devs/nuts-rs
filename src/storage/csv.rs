@@ -620,7 +620,10 @@ impl TraceStorage for CsvTraceStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, LogpError, Model, Sampler};
+    use crate::{
+        CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, InitPositionError, LogpError, Model,
+        Sampler,
+    };
     use anyhow::Result;
     use nuts_derive::Storable;
     use nuts_storable::{HasDims, Value};
@@ -732,7 +735,7 @@ mod tests {
             rng: &mut R,
             _chain_id: u64,
             position: &mut [f64],
-        ) -> Result<()> {
+        ) -> Result<(), InitPositionError> {
             for p in position.iter_mut() {
                 *p = rng.random_range(-1.0..1.0);
             }
@@ -812,7 +815,7 @@ mod tests {
             rng: &mut R,
             _chain_id: u64,
             position: &mut [f64],
-        ) -> Result<()> {
+        ) -> Result<(), InitPositionError> {
             for p in position.iter_mut() {
                 *p = rng.random_range(-1.0..1.0);
             }

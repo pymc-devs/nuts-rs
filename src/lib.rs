@@ -121,7 +121,7 @@ pub use chain::Chain;
 pub use dynamics::{DivergenceInfo, KineticEnergyKind};
 pub use math::{CpuLogpFunc, CpuMath, CpuMathError, LogpError, Math};
 pub use mclmc::{MclmcChain, MclmcInfo, MclmcStats, MclmcTrajectoryKind};
-pub use model::Model;
+pub use model::{InitPositionError, Model};
 pub use nuts::NutsError;
 
 #[allow(deprecated)]

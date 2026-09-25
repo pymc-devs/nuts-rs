@@ -14,8 +14,8 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use anyhow::{Context, Result, bail};
 use arrow::array::{Array, Float64Array, LargeListArray};
 use nuts_rs::{
-    ArrowConfig, ArrowTrace, CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, LogpError,
-    Model, Sampler, SamplerWaitResult,
+    ArrowConfig, ArrowTrace, CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings,
+    InitPositionError, LogpError, Model, Sampler, SamplerWaitResult,
 };
 use nuts_storable::HasDims;
 use rand::Rng;
@@ -91,7 +91,7 @@ impl Model for NormalModel {
         _rng: &mut R,
         _chain_id: u64,
         position: &mut [f64],
-    ) -> Result<()> {
+    ) -> Result<(), InitPositionError> {
         position.fill(0.0);
         Ok(())
     }

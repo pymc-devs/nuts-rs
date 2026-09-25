@@ -10,6 +10,21 @@ use rand::Rng;
 
 use crate::Math;
 
+#[derive(Debug, thiserror::Error)]
+#[error("Error initializing position: {0}")]
+pub enum InitPositionError {
+    /// Discard this attempt and call `init_position` again (counts toward the retry limit).
+    Retry(anyhow::Error),
+    /// Abort sampling for this chain.
+    Fatal(anyhow::Error),
+}
+
+impl From<anyhow::Error> for InitPositionError {
+    fn from(err: anyhow::Error) -> Self {
+        Self::Fatal(err)
+    }
+}
+
 /// Trait for MCMC models with associated math backend and initialization.
 ///
 /// Defines the interface for models that can be used with MCMC sampling algorithms.
@@ -43,5 +58,5 @@ pub trait Model: Send + Sync + 'static {
         rng: &mut R,
         chain_id: u64,
         position: &mut [f64],
-    ) -> Result<()>;
+    ) -> Result<(), InitPositionError>;
 }

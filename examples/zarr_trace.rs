@@ -18,8 +18,8 @@ use std::{
 
 use anyhow::Result;
 use nuts_rs::{
-    CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, LogpError, Model, Sampler,
-    SamplerWaitResult, Storable, ZarrConfig,
+    CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, InitPositionError, LogpError, Model,
+    Sampler, SamplerWaitResult, Storable, ZarrConfig,
 };
 use nuts_storable::{HasDims, Value};
 use rand::{Rng, RngExt};
@@ -202,7 +202,7 @@ impl Model for MvnModel {
         rng: &mut R,
         _chain_id: u64,
         position: &mut [f64],
-    ) -> Result<()> {
+    ) -> Result<(), InitPositionError> {
         // Initialize each parameter randomly in the range [-2, 2]
         // For this simple example, this should put us in a reasonable
         // region around the mode of the distribution
