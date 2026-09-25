@@ -7,8 +7,8 @@ use std::{
 
 use anyhow::Result;
 use nuts_rs::{
-    CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, HashMapConfig, LogpError, Model, Sampler,
-    SamplerWaitResult,
+    CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings, HashMapConfig, InitPositionError,
+    LogpError, Model, Sampler, SamplerWaitResult,
 };
 use nuts_storable::HasDims;
 use rand::{Rng, RngExt};
@@ -123,7 +123,7 @@ impl Model for MvnModel {
         rng: &mut R,
         _chain_id: u64,
         position: &mut [f64],
-    ) -> Result<()> {
+    ) -> Result<(), InitPositionError> {
         // Initialize position randomly in [-2, 2]
         for p in position.iter_mut() {
             *p = rng.random_range(-2.0..2.0);

@@ -31,7 +31,7 @@ use std::{
 };
 
 use crate::{
-    DiagAdaptExpSettings, Math, StepSizeAdaptMethod,
+    DiagAdaptExpSettings, InitPositionError, Math, StepSizeAdaptMethod,
     adapt_strategy::{EuclideanAdaptOptions, GlobalStrategy, GlobalStrategyStatsOptions},
     chain::{AdaptStrategy, Chain, NutsChain, StatOptions},
     dynamics::{KineticEnergyKind, TransformedHamiltonian, TransformedPointStatsOptions},
@@ -1382,9 +1382,18 @@ impl<M: Model, S: Settings, C: ChainStorage> ChainRunner<M, S, C> {
         // TODO maxtries
         let mut error = None;
         for _ in 0..500 {
-            model
-                .init_position(&mut rng, chain_id, &mut initval)
-                .context("Failed to generate a new initial position")?;
+            if let Err(err) = model.init_position(&mut rng, chain_id, &mut initval) {
+                match err {
+                    InitPositionError::Fatal(err) => {
+                        return Err(err.context("Model could not produce a valid initial position"));
+                    }
+                    InitPositionError::Retry(err) => {
+                        error = Some(err);
+                        continue;
+                    }
+                }
+            };
+
             if let Err(err) = chain.set_position(&initval) {
                 error = Some(err);
                 continue;
@@ -2233,7 +2242,10 @@ impl<F: Send + 'static> Driver<F> for ThreadedDriver<F> {
 pub mod test_logps {
     use std::sync::Arc;
 
-    use crate::{Model, math::CpuLogpFunc, math::CpuMath};
+    use crate::{
+        InitPositionError, Model,
+        math::{CpuLogpFunc, CpuMath},
+    };
     use anyhow::Result;
     use rand::Rng;
 
@@ -2262,7 +2274,7 @@ pub mod test_logps {
             _rng: &mut R,
             _chain_id: u64,
             position: &mut [f64],
-        ) -> Result<()> {
+        ) -> Result<(), InitPositionError> {
             position.iter_mut().for_each(|x| *x = 0.);
             Ok(())
         }

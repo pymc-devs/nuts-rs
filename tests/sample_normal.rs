@@ -6,7 +6,8 @@ use std::{
 use anyhow::Context;
 use nuts_rs::{
     Chain, CpuLogpFunc, CpuMath, DiagAdaptExpSettings, DiagNutsSettings, EuclideanAdaptOptions,
-    LogpError, LowRankNutsSettings, Model, Sampler, SamplerWaitResult, Settings, ZarrConfig,
+    InitPositionError, LogpError, LowRankNutsSettings, Model, Sampler, SamplerWaitResult, Settings,
+    ZarrConfig,
 };
 use nuts_storable::HasDims;
 use rand::SeedableRng;
@@ -189,7 +190,7 @@ impl Model for NormalModel {
         rng: &mut R,
         _chain_id: u64,
         position: &mut [f64],
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<(), InitPositionError> {
         let normal = StandardNormal;
         position.iter_mut().for_each(|x| *x = normal.sample(rng));
         Ok(())
