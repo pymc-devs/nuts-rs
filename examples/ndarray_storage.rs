@@ -1,7 +1,6 @@
 //! ndarray storage implementation example for MCMC traces
 use std::{
     collections::HashMap,
-    f64,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -119,7 +118,12 @@ impl Model for MvnModel {
     }
 
     /// Generate random initial positions for the chain
-    fn init_position<R: Rng + ?Sized>(&self, rng: &mut R, position: &mut [f64]) -> Result<()> {
+    fn init_position<R: Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        _chain_id: u64,
+        position: &mut [f64],
+    ) -> Result<()> {
         // Initialize position randomly in [-2, 2]
         for p in position.iter_mut() {
             *p = rng.random_range(-2.0..2.0);

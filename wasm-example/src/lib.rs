@@ -86,7 +86,12 @@ impl Model for NormalModel {
         Ok(CpuMath::new(NormalLogp))
     }
 
-    fn init_position<R: Rng + ?Sized>(&self, _rng: &mut R, position: &mut [f64]) -> Result<()> {
+    fn init_position<R: Rng + ?Sized>(
+        &self,
+        _rng: &mut R,
+        _chain_id: u64,
+        position: &mut [f64],
+    ) -> Result<()> {
         position.fill(0.0);
         Ok(())
     }

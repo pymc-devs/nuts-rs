@@ -38,5 +38,10 @@ pub trait Model: Send + Sync + 'static {
     ///
     /// Sets initial values for the parameter vector. The starting position should
     /// be in a reasonable region where the log probability density is finite.
-    fn init_position<R: Rng + ?Sized>(&self, rng: &mut R, position: &mut [f64]) -> Result<()>;
+    fn init_position<R: Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        chain_id: u64,
+        position: &mut [f64],
+    ) -> Result<()>;
 }

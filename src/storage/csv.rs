@@ -727,7 +727,12 @@ mod tests {
             Ok(self.math.clone())
         }
 
-        fn init_position<R: Rng + ?Sized>(&self, rng: &mut R, position: &mut [f64]) -> Result<()> {
+        fn init_position<R: Rng + ?Sized>(
+            &self,
+            rng: &mut R,
+            _chain_id: u64,
+            position: &mut [f64],
+        ) -> Result<()> {
             for p in position.iter_mut() {
                 *p = rng.random_range(-1.0..1.0);
             }
@@ -802,7 +807,12 @@ mod tests {
             Ok(self.math.clone())
         }
 
-        fn init_position<R: Rng + ?Sized>(&self, rng: &mut R, position: &mut [f64]) -> Result<()> {
+        fn init_position<R: Rng + ?Sized>(
+            &self,
+            rng: &mut R,
+            _chain_id: u64,
+            position: &mut [f64],
+        ) -> Result<()> {
             for p in position.iter_mut() {
                 *p = rng.random_range(-1.0..1.0);
             }
