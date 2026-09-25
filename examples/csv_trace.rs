@@ -186,7 +186,12 @@ impl Model for MvnModel {
     /// Good initialization is important for MCMC efficiency. The starting
     /// points should be in a reasonable region of the parameter space
     /// where the log probability is finite.
-    fn init_position<R: Rng + ?Sized>(&self, rng: &mut R, position: &mut [f64]) -> Result<()> {
+    fn init_position<R: Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        _chain_id: u64,
+        position: &mut [f64],
+    ) -> Result<()> {
         // Initialize each parameter randomly in the range [-2, 2]
         // For this simple example, this should put us in a reasonable
         // region around the mode of the distribution

@@ -187,6 +187,7 @@ impl Model for NormalModel {
     fn init_position<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
+        _chain_id: u64,
         position: &mut [f64],
     ) -> anyhow::Result<()> {
         let normal = StandardNormal;

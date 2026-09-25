@@ -1383,7 +1383,7 @@ impl<M: Model, S: Settings, C: ChainStorage> ChainRunner<M, S, C> {
         let mut error = None;
         for _ in 0..500 {
             model
-                .init_position(&mut rng, &mut initval)
+                .init_position(&mut rng, chain_id, &mut initval)
                 .context("Failed to generate a new initial position")?;
             if let Err(err) = chain.set_position(&initval) {
                 error = Some(err);
@@ -2260,6 +2260,7 @@ pub mod test_logps {
         fn init_position<R: rand::prelude::Rng + ?Sized>(
             &self,
             _rng: &mut R,
+            _chain_id: u64,
             position: &mut [f64],
         ) -> Result<()> {
             position.iter_mut().for_each(|x| *x = 0.);
