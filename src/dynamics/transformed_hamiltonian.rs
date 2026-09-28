@@ -18,6 +18,7 @@ use crate::{
     DivergenceInfo, LogpError, Math, NutsError,
     dynamics::{Direction, Hamiltonian, LeapfrogResult, Point},
     dynamics::{State, StatePool},
+    nuts::StepInfo,
     sampler_stats::{SamplerStats, StatsDims},
     transform::{ExternalTransformation, Transformation},
 };
@@ -345,6 +346,10 @@ impl<M: Math> Point<M> for TransformedPoint<M> {
         self.index_in_trajectory
     }
 
+    fn set_index_in_trajectory(&mut self, index: i64) {
+        self.index_in_trajectory = index;
+    }
+
     /// The Hamiltonian energy at this point.
     ///
     /// For Euclidean / ExactNormal:  `E = ½‖v‖² − (logp + logdet)`
@@ -594,7 +599,7 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
                 end_idx_in_trajectory: Some(out_point.index_in_trajectory),
                 energy_error: None,
             };
-            collector.register_leapfrog(math, start, &out, Some(&div_info));
+            collector.register_leapfrog(math, start, &out, Some(&div_info), &StepInfo::PLAIN);
             return LeapfrogResult::Divergence(div_info);
         }
 
@@ -630,11 +635,17 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
                 end_idx_in_trajectory: Some(out.index_in_trajectory()),
                 energy_error: Some(energy_error),
             };
-            collector.register_leapfrog(math, start, &out, Some(&divergence_info));
+            collector.register_leapfrog(
+                math,
+                start,
+                &out,
+                Some(&divergence_info),
+                &StepInfo::PLAIN,
+            );
             return LeapfrogResult::Divergence(divergence_info);
         }
 
-        collector.register_leapfrog(math, start, &out, None);
+        collector.register_leapfrog(math, start, &out, None, &StepInfo::PLAIN);
 
         LeapfrogResult::Ok(out)
     }

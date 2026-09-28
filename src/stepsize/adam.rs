@@ -114,4 +114,10 @@ impl Adam {
         assert!(step_size > 0.0);
         self.log_step = step_size.ln();
     }
+
+    /// Multiply the step size by `factor`.
+    pub(crate) fn rescale(&mut self, factor: f64) {
+        assert!(factor > 0.0);
+        self.log_step += factor.ln();
+    }
 }

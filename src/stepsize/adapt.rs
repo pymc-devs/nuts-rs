@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::adam::{Adam, AdamOptions};
 use super::dual_avg::{AcceptanceRateCollector, DualAverage, DualAverageOptions};
+use super::min_micro_steps::{MinMicroStepsAdaptation, MinMicroStepsStats};
 use crate::{
     Math, NutsError,
     dynamics::{Direction, Hamiltonian, LeapfrogResult, Point},
@@ -60,8 +61,14 @@ pub struct Strategy {
     pub last_sym_mean_tree_accept: f64,
     /// Last number of steps
     pub last_n_steps: u64,
+    /// Number of gradient evaluations in the last trajectory
+    pub last_n_gradients: u64,
     /// Maximum absolute energy error observed in the last trajectory
     pub last_max_energy_error: f64,
+    /// Depth of the last trajectory
+    last_depth: u64,
+    /// Adaptation of the WALNUTS `min_micro_steps`, which scales the step size
+    min_micro_steps: MinMicroStepsAdaptation,
 }
 
 impl Strategy {
@@ -82,9 +89,12 @@ impl Strategy {
             adaptation,
             options,
             last_n_steps: 0,
+            last_n_gradients: 0,
             last_sym_mean_tree_accept: 0.0,
             last_mean_tree_accept: 0.0,
             last_max_energy_error: 0.0,
+            last_depth: 0,
+            min_micro_steps: MinMicroStepsAdaptation::default(),
         }
     }
 
@@ -103,6 +113,14 @@ impl Strategy {
         let mut state = hamiltonian.init_state(math, position)?;
         hamiltonian.initialize_trajectory(math, &mut state, true, rng)?;
 
+        // The search looks at the acceptance of single leapfrog steps. With
+        // WALNUTS, those are the micro steps of the first attempt of a macro
+        // step, so we scale them accordingly.
+        let step_size_factor = options
+            .walnuts
+            .map(|walnuts| 1.0 / walnuts.min_micro_steps as f64)
+            .unwrap_or(1.0);
+
         let mut collector = AcceptanceRateCollector::new();
 
         collector.register_init(math, &state, options);
@@ -113,7 +131,7 @@ impl Strategy {
             math,
             &state,
             Direction::Forward,
-            1.0,
+            step_size_factor,
             state.point().initial_energy(),
             1000.0,
             &mut collector,
@@ -138,7 +156,7 @@ impl Strategy {
                 math,
                 &state,
                 dir,
-                1.0,
+                step_size_factor,
                 state.point().initial_energy(),
                 1000.0,
                 &mut collector,
@@ -187,6 +205,16 @@ impl Strategy {
         Ok(())
     }
 
+    /// Multiply the current and future step sizes by `factor`, keeping the
+    /// state of the adaptation otherwise.
+    fn rescale(&mut self, factor: f64) {
+        match self.adaptation.as_mut() {
+            None => {}
+            Some(Either::Left(adapt)) => adapt.rescale(factor),
+            Some(Either::Right(adapt)) => adapt.rescale(factor),
+        }
+    }
+
     pub fn update(&mut self, collector: &AcceptanceRateCollector) {
         let mean_sym = collector.mean_sym.current();
         let mean = collector.mean.current();
@@ -194,7 +222,18 @@ impl Strategy {
         self.last_mean_tree_accept = mean;
         self.last_sym_mean_tree_accept = mean_sym;
         self.last_n_steps = n_steps;
+        self.last_n_gradients = collector.num_gradients;
         self.last_max_energy_error = collector.max_energy_error;
+        self.last_depth = collector.depth;
+    }
+
+    /// Adapt the WALNUTS `min_micro_steps` in `options` to the last
+    /// trajectory, if enabled, and rescale the step size to keep the micro
+    /// step size.
+    pub fn update_min_micro_steps(&mut self, options: &mut NutsOptions) {
+        if let Some(factor) = self.min_micro_steps.update(options, self.last_depth) {
+            self.rescale(factor);
+        }
     }
 
     pub fn update_estimator_early(&mut self) {
@@ -266,7 +305,12 @@ pub struct Stats {
     pub mean_tree_accept: f64,
     pub mean_tree_accept_sym: f64,
     pub n_steps: u64,
+    /// Number of gradient evaluations. With WALNUTS this includes rejected
+    /// attempts and reversibility checks, otherwise it equals `n_steps`.
+    pub n_gradients: u64,
     pub max_energy_error: f64,
+    #[storable(flatten)]
+    pub min_micro_steps: MinMicroStepsStats,
 }
 
 impl<M: Math> SamplerStats<M> for Strategy {
@@ -289,7 +333,9 @@ impl<M: Math> SamplerStats<M> for Strategy {
             mean_tree_accept: self.last_mean_tree_accept,
             mean_tree_accept_sym: self.last_sym_mean_tree_accept,
             n_steps: self.last_n_steps,
+            n_gradients: self.last_n_gradients,
             max_energy_error: self.last_max_energy_error,
+            min_micro_steps: self.min_micro_steps.stats(),
         }
     }
 }

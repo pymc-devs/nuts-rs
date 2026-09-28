@@ -43,6 +43,7 @@ use crate::{
         DiagAdaptStrategy, DiagMassMatrix, ExternalTransformation, LowRankMassMatrix,
         LowRankMassMatrixStrategy, LowRankSettings,
     },
+    walnuts::WalnutsOptions,
 };
 
 use crate::{
@@ -237,6 +238,42 @@ fn disabled_point_stats(
     names
 }
 
+/// The MCLMC stats the settings suppress. MCLMC shares the adaptation with
+/// NUTS, but has no WALNUTS.
+fn disabled_mclmc_stats(
+    store_gradient: bool,
+    store_unconstrained: bool,
+    store_transformed: bool,
+) -> Vec<&'static str> {
+    let mut names = disabled_point_stats(store_gradient, store_unconstrained, store_transformed);
+    names.push("macro_steps_mean");
+    names.push("min_micro_steps_unrounded");
+    names
+}
+
+/// The NUTS stats the settings suppress.
+fn disabled_nuts_stats<A: Debug + Copy + Default + Serialize>(
+    settings: &NutsSettings<A>,
+) -> Vec<&'static str> {
+    let mut names = disabled_point_stats(
+        settings.store_gradient,
+        settings.store_unconstrained,
+        settings.store_transformed,
+    );
+    if settings.walnuts.is_none() {
+        names.push("irreversible");
+        names.push("min_micro_steps");
+    }
+    if settings
+        .walnuts
+        .is_none_or(|walnuts| walnuts.target_macro_steps.is_none())
+    {
+        names.push("macro_steps_mean");
+        names.push("min_micro_steps_unrounded");
+    }
+    names
+}
+
 /// Settings for the NUTS sampler
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
@@ -281,6 +318,14 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     pub extra_doublings: u64,
     /// Soft clipping for gradients.
     pub gradient_clipping: Option<f64>,
+    /// Use WALNUTS (within-orbit adaptive step sizes) instead of plain NUTS.
+    ///
+    /// Each leapfrog step of the NUTS trajectory is split into smaller steps
+    /// if needed to keep the energy error below `max_error`. The step size
+    /// is then adapted to the energy error of the unsplit steps. Not
+    /// supported with [`KineticEnergyKind::Microcanonical`].
+    #[serde(default)]
+    pub walnuts: Option<WalnutsOptions>,
 }
 
 pub type DiagNutsSettings = NutsSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
@@ -411,6 +456,17 @@ fn validate_mclmc<A: Debug + Copy + Default + Serialize>(
 
 /// The microcanonical (ESH) dynamics normalize the momentum onto the unit sphere, which
 /// needs at least two dimensions.
+fn validate_nuts<A: Debug + Copy + Default + Serialize>(settings: &NutsSettings<A>) -> Result<()> {
+    validate_draw_counts(settings.num_tune, settings.num_draws)?;
+    if let Some(walnuts) = settings.walnuts {
+        walnuts.validate()?;
+        if matches!(settings.trajectory_kind, KineticEnergyKind::Microcanonical) {
+            bail!("WALNUTS does not support microcanonical dynamics");
+        }
+    }
+    Ok(())
+}
+
 fn check_microcanonical_dim(microcanonical: bool, dim: usize) -> Result<()> {
     if microcanonical && dim < 2 {
         bail!("Microcanonical dynamics need at least 2 dimensions, but the model has {dim}");
@@ -566,7 +622,7 @@ impl Settings for DiagMclmcSettings {
     }
 
     fn disabled_stats(&self) -> Vec<&'static str> {
-        disabled_point_stats(
+        disabled_mclmc_stats(
             self.store_gradient,
             self.store_unconstrained,
             self.store_transformed,
@@ -629,6 +685,7 @@ fn default_nuts_settings<A: Debug + Copy + Default + Serialize>(
         trajectory_kind: KineticEnergyKind::Euclidean,
         extra_doublings: 0,
         gradient_clipping: Some(1e10),
+        walnuts: None,
     }
 }
 
@@ -714,7 +771,7 @@ impl Settings for LowRankMclmcSettings {
     }
 
     fn disabled_stats(&self) -> Vec<&'static str> {
-        disabled_point_stats(
+        disabled_mclmc_stats(
             self.store_gradient,
             self.store_unconstrained,
             self.store_transformed,
@@ -786,6 +843,7 @@ fn nuts_options(settings: &NutsSettings<impl Debug + Copy + Default + Serialize>
         extra_doublings: settings.extra_doublings,
         max_energy_error: settings.max_energy_error,
         uturn_check_first_step: matches!(settings.trajectory_kind, KineticEnergyKind::ExactNormal),
+        walnuts: settings.walnuts,
     }
 }
 
@@ -830,7 +888,7 @@ impl Settings for LowRankNutsSettings {
     }
 
     fn validate(&self) -> Result<()> {
-        validate_draw_counts(self.num_tune, self.num_draws)?;
+        validate_nuts(self)?;
         self.adapt_options.validate()
     }
 
@@ -851,11 +909,7 @@ impl Settings for LowRankNutsSettings {
     }
 
     fn disabled_stats(&self) -> Vec<&'static str> {
-        disabled_point_stats(
-            self.store_gradient,
-            self.store_unconstrained,
-            self.store_transformed,
-        )
+        disabled_nuts_stats(self)
     }
 
     fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
@@ -934,7 +988,7 @@ impl Settings for DiagNutsSettings {
     }
 
     fn validate(&self) -> Result<()> {
-        validate_draw_counts(self.num_tune, self.num_draws)?;
+        validate_nuts(self)?;
         self.adapt_options.validate()
     }
 
@@ -955,11 +1009,7 @@ impl Settings for DiagNutsSettings {
     }
 
     fn disabled_stats(&self) -> Vec<&'static str> {
-        disabled_point_stats(
-            self.store_gradient,
-            self.store_unconstrained,
-            self.store_transformed,
-        )
+        disabled_nuts_stats(self)
     }
 
     fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
@@ -1039,7 +1089,7 @@ impl Settings for FlowNutsSettings {
     }
 
     fn validate(&self) -> Result<()> {
-        validate_draw_counts(self.num_tune, self.num_draws)?;
+        validate_nuts(self)?;
         self.adapt_options.validate()
     }
 
@@ -1060,11 +1110,7 @@ impl Settings for FlowNutsSettings {
     }
 
     fn disabled_stats(&self) -> Vec<&'static str> {
-        disabled_point_stats(
-            self.store_gradient,
-            self.store_unconstrained,
-            self.store_transformed,
-        )
+        disabled_nuts_stats(self)
     }
 
     fn stats_options<M: Math>(&self) -> <Self::Chain<M> as SamplerStats<M>>::StatsOptions {
@@ -1174,7 +1220,7 @@ impl Settings for FlowMclmcSettings {
     }
 
     fn disabled_stats(&self) -> Vec<&'static str> {
-        disabled_point_stats(
+        disabled_mclmc_stats(
             self.store_gradient,
             self.store_unconstrained,
             self.store_transformed,
@@ -2331,9 +2377,26 @@ mod tests {
     fn store_flags_disable_point_stats() {
         macro_rules! assert_disabled {
             ($($ty:ty),+ $(,)?) => {$({
+                // The walnuts stats are disabled independently of the store
+                // flags, see `walnuts_disables_irreversible_stat`.
+                let point_stats = |settings: &$ty| {
+                    settings
+                        .disabled_stats()
+                        .into_iter()
+                        .filter(|name| {
+                            ![
+                                "irreversible",
+                                "min_micro_steps",
+                                "macro_steps_mean",
+                                "min_micro_steps_unrounded",
+                            ]
+                            .contains(name)
+                        })
+                        .collect::<Vec<_>>()
+                };
                 let mut settings = <$ty>::default();
                 assert_eq!(
-                    settings.disabled_stats(),
+                    point_stats(&settings),
                     [
                         "gradient",
                         "unconstrained_draw",
@@ -2344,7 +2407,7 @@ mod tests {
                 settings.store_gradient = true;
                 settings.store_unconstrained = true;
                 settings.store_transformed = true;
-                assert!(settings.disabled_stats().is_empty());
+                assert!(point_stats(&settings).is_empty());
             })+};
         }
         assert_disabled!(
@@ -2355,6 +2418,28 @@ mod tests {
             LowRankMclmcSettings,
             FlowMclmcSettings,
         );
+    }
+
+    #[test]
+    fn walnuts_disables_irreversible_stat() {
+        macro_rules! assert_irreversible {
+            ($($ty:ty),+ $(,)?) => {$({
+                let mut settings = <$ty>::default();
+                assert!(settings.disabled_stats().contains(&"irreversible"));
+                assert!(settings.disabled_stats().contains(&"min_micro_steps"));
+                settings.walnuts = Some(crate::WalnutsOptions::default());
+                assert!(!settings.disabled_stats().contains(&"irreversible"));
+                assert!(!settings.disabled_stats().contains(&"min_micro_steps"));
+                assert!(settings.disabled_stats().contains(&"macro_steps_mean"));
+                settings.walnuts = Some(crate::WalnutsOptions {
+                    target_macro_steps: Some(15.0),
+                    ..Default::default()
+                });
+                assert!(!settings.disabled_stats().contains(&"macro_steps_mean"));
+                assert!(!settings.disabled_stats().contains(&"min_micro_steps_unrounded"));
+            })+};
+        }
+        assert_irreversible!(DiagNutsSettings, LowRankNutsSettings, FlowNutsSettings);
     }
 
     #[test]

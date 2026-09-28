@@ -223,6 +223,13 @@ where
 pub struct NutsStats<P: HasDims, H: Storable<P>, A: Storable<P>, D: Storable<P>> {
     pub depth: u64,
     pub maxdepth_reached: bool,
+    /// Whether the trajectory was stopped because a WALNUTS macro step was
+    /// not reversible. `None` without WALNUTS.
+    pub irreversible: Option<bool>,
+    /// The number of micro steps of the first attempt of each WALNUTS macro
+    /// step. Changes during tuning if `target_macro_steps` is set. `None`
+    /// without WALNUTS.
+    pub min_micro_steps: Option<u64>,
     pub chain: u64,
     pub draw: u64,
     #[storable(flatten)]
@@ -280,6 +287,8 @@ impl<M: Math, R: rand::Rng, A: AdaptStrategy<M>> SamplerStats<M> for NutsChain<M
         NutsStats {
             depth: info.depth,
             maxdepth_reached: info.reached_maxdepth,
+            irreversible: self.options.walnuts.map(|_| info.irreversible),
+            min_micro_steps: self.options.walnuts.map(|w| w.min_micro_steps),
             chain: self.chain,
             draw: self.draw_count,
             hamiltonian: hamiltonian_stats,

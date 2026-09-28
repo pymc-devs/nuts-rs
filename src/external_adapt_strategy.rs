@@ -110,6 +110,7 @@ impl<M: Math, P: Point<M>> Collector<M, P> for DrawCollector<M> {
         _start: &State<M, P>,
         end: &State<M, P>,
         divergence_info: Option<&crate::DivergenceInfo>,
+        _step: &crate::nuts::StepInfo,
     ) {
         if divergence_info.is_some() {
             return;
@@ -204,7 +205,7 @@ impl<M: Math> AdaptStrategy<M> for ExternalTransformAdaptation {
     fn adapt<R: rand::Rng + ?Sized>(
         &mut self,
         math: &mut M,
-        _options: &mut NutsOptions,
+        options: &mut NutsOptions,
         hamiltonian: &mut Self::Hamiltonian,
         draw: u64,
         collector: &Self::Collector,
@@ -221,6 +222,7 @@ impl<M: Math> AdaptStrategy<M> for ExternalTransformAdaptation {
         }
 
         if draw < self.final_window_size {
+            self.step_size.update_min_micro_steps(options);
             if draw < 100 {
                 if (draw > 0) && draw.is_multiple_of(10) {
                     hamiltonian.update_params(

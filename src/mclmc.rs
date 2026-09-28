@@ -378,6 +378,7 @@ where
                 depth: steps_taken,
                 divergence_info,
                 reached_maxdepth: false,
+                irreversible: false,
             };
             self.collector.register_draw(math, &current, &sample_info);
             return Ok((next_state, info));
@@ -390,6 +391,7 @@ where
             depth: steps_taken,
             divergence_info: None,
             reached_maxdepth: false,
+            irreversible: false,
         };
         self.collector.register_draw(math, &current, &sample_info);
 
