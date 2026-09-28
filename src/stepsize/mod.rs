@@ -3,6 +3,7 @@
 mod adam;
 mod adapt;
 mod dual_avg;
+mod min_micro_steps;
 
 pub use adam::AdamOptions;
 pub(crate) use adapt::Strategy;

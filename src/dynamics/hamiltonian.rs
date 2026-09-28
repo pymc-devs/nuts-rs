@@ -135,6 +135,15 @@ pub enum Direction {
     Backward,
 }
 
+impl Direction {
+    pub fn reverse(self) -> Self {
+        match self {
+            Direction::Forward => Direction::Backward,
+            Direction::Backward => Direction::Forward,
+        }
+    }
+}
+
 impl Distribution<Direction> for StandardUniform {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Direction {
         if rng.random::<bool>() {
@@ -155,6 +164,7 @@ pub trait Point<M: Math>: Sized + SamplerStats<M> + Debug {
     fn position(&self) -> &M::Vector;
     fn gradient(&self) -> &M::Vector;
     fn index_in_trajectory(&self) -> i64;
+    fn set_index_in_trajectory(&mut self, index: i64);
     fn energy(&self) -> f64;
     fn logp(&self) -> f64;
 

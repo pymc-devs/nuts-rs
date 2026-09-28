@@ -17,7 +17,7 @@ use crate::{
     NutsError,
     chain::AdaptStrategy,
     math::Math,
-    nuts::{Collector, NutsOptions},
+    nuts::{Collector, NutsOptions, StepInfo},
     sampler_stats::{SamplerStats, StatsDims},
 };
 
@@ -166,6 +166,8 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
 
         if draw < self.final_step_size_window {
             let is_early = draw < self.early_end;
+
+            self.step_size.update_min_micro_steps(options);
 
             // At the transition from early to main phase, seed current_window_size as the
             // maximum of the configured initial size and the background count already
@@ -353,11 +355,12 @@ where
         start: &State<M, P>,
         end: &State<M, P>,
         divergence_info: Option<&DivergenceInfo>,
+        step: &StepInfo,
     ) {
         self.collector1
-            .register_leapfrog(math, start, end, divergence_info);
+            .register_leapfrog(math, start, end, divergence_info, step);
         self.collector2
-            .register_leapfrog(math, start, end, divergence_info);
+            .register_leapfrog(math, start, end, divergence_info, step);
     }
 
     fn register_draw(&mut self, math: &mut M, state: &State<M, P>, info: &crate::nuts::SampleInfo) {
@@ -415,6 +418,7 @@ mod test {
             extra_doublings: 0,
             max_energy_error: 1000.0,
             uturn_check_first_step: false,
+            walnuts: None,
         };
 
         let rng = {

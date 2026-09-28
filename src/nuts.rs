@@ -8,6 +8,7 @@ use std::{fmt::Debug, marker::PhantomData};
 
 use crate::dynamics::{Direction, DivergenceInfo, Hamiltonian, LeapfrogResult, Point, State};
 use crate::math::{Math, logaddexp};
+use crate::walnuts::{MacroStep, WalnutsOptions, macro_step};
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
@@ -24,6 +25,39 @@ pub enum NutsError {
 
 pub type Result<T> = std::result::Result<T, NutsError>;
 
+/// Outcome of integrating a macro step at the base step size.
+///
+/// With WALNUTS this is the first attempt of the macro step, before any step
+/// size halving. It consists of `min_micro_steps` leapfrog steps of size
+/// `step_size / min_micro_steps`.
+#[derive(Debug, Clone, Copy)]
+pub enum BaseStepOutcome {
+    /// A plain leapfrog step without WALNUTS.
+    Plain,
+    /// Finished with this energy error. It may be outside of the WALNUTS
+    /// tolerance.
+    EnergyError(f64),
+    /// Diverged.
+    Diverged,
+}
+
+/// Information about how a step of the trajectory was computed.
+#[derive(Debug, Clone, Copy)]
+pub struct StepInfo {
+    /// Number of gradient evaluations the step needed, including rejected
+    /// WALNUTS attempts and reversibility checks.
+    pub num_gradients: u64,
+    pub base_step: BaseStepOutcome,
+}
+
+impl StepInfo {
+    /// A single plain leapfrog step.
+    pub const PLAIN: StepInfo = StepInfo {
+        num_gradients: 1,
+        base_step: BaseStepOutcome::Plain,
+    };
+}
+
 /// Callbacks for various events during a Nuts sampling step.
 ///
 /// Collectors can compute statistics like the mean acceptance rate
@@ -35,6 +69,7 @@ pub trait Collector<M: Math, P: Point<M>> {
         _start: &State<M, P>,
         _end: &State<M, P>,
         _divergence_info: Option<&DivergenceInfo>,
+        _step: &StepInfo,
     ) {
     }
     fn register_draw(&mut self, _math: &mut M, _state: &State<M, P>, _info: &SampleInfo) {}
@@ -54,6 +89,10 @@ pub struct SampleInfo {
     /// Whether the trajectory was terminated because it reached
     /// the maximum tree depth.
     pub reached_maxdepth: bool,
+
+    /// Whether the trajectory was terminated because a WALNUTS
+    /// macro step was not reversible.
+    pub irreversible: bool,
 }
 
 /// A part of the trajectory tree during NUTS sampling.
@@ -88,6 +127,16 @@ enum ExtendResult<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> {
     Turning(NutsTree<M, H, C>),
     /// A divergence happend during tree extension.
     Diverging(NutsTree<M, H, C>, DivergenceInfo),
+    /// A WALNUTS macro step was not reversible, the trajectory
+    /// has to stop.
+    Irreversible(NutsTree<M, H, C>),
+}
+
+/// The result of a single leaf of the tree.
+enum LeafResult<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> {
+    Ok(NutsTree<M, H, C>),
+    Diverging(DivergenceInfo),
+    Irreversible,
 }
 
 impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
@@ -119,8 +168,9 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         R: rand::Rng + ?Sized,
     {
         let mut other = match self.single_step(math, hamiltonian, direction, options, collector) {
-            Ok(Ok(tree)) => tree,
-            Ok(Err(info)) => return ExtendResult::Diverging(self, info),
+            Ok(LeafResult::Ok(tree)) => tree,
+            Ok(LeafResult::Diverging(info)) => return ExtendResult::Diverging(self, info),
+            Ok(LeafResult::Irreversible) => return ExtendResult::Irreversible(self),
             Err(err) => return ExtendResult::Err(err),
         };
 
@@ -133,6 +183,9 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
                 }
                 Diverging(_, info) => {
                     return Diverging(self, info);
+                }
+                Irreversible(_) => {
+                    return Irreversible(self);
                 }
                 Err(error) => {
                     return Err(error);
@@ -213,27 +266,37 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         direction: Direction,
         options: &NutsOptions,
         collector: &mut C,
-    ) -> Result<std::result::Result<NutsTree<M, H, C>, DivergenceInfo>> {
+    ) -> Result<LeafResult<M, H, C>> {
         let start = match direction {
             Direction::Forward => &self.right,
             Direction::Backward => &self.left,
         };
-        let end = match hamiltonian.leapfrog(
-            math,
-            start,
-            direction,
-            1.0,
-            start.point().initial_energy(),
-            options.max_energy_error,
-            collector,
-        ) {
-            LeapfrogResult::Divergence(info) => return Ok(Err(info)),
-            LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
-            LeapfrogResult::Ok(end) => end,
+        let end = match options.walnuts {
+            Some(ref walnuts) => {
+                match macro_step(math, hamiltonian, start, direction, walnuts, collector) {
+                    Ok(MacroStep::Ok(end)) => end,
+                    Ok(MacroStep::Divergence(info)) => return Ok(LeafResult::Diverging(info)),
+                    Ok(MacroStep::Irreversible) => return Ok(LeafResult::Irreversible),
+                    Err(err) => return Err(NutsError::LogpFailure(err.into())),
+                }
+            }
+            None => match hamiltonian.leapfrog(
+                math,
+                start,
+                direction,
+                1.0,
+                start.point().initial_energy(),
+                options.max_energy_error,
+                collector,
+            ) {
+                LeapfrogResult::Divergence(info) => return Ok(LeafResult::Diverging(info)),
+                LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
+                LeapfrogResult::Ok(end) => end,
+            },
         };
 
         let log_size = -end.point().energy_error();
-        Ok(Ok(NutsTree {
+        Ok(LeafResult::Ok(NutsTree {
             right: end.clone(),
             left: end.clone(),
             draw: end,
@@ -244,11 +307,17 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         }))
     }
 
-    fn info(&self, maxdepth: bool, divergence_info: Option<DivergenceInfo>) -> SampleInfo {
+    fn info(
+        &self,
+        maxdepth: bool,
+        divergence_info: Option<DivergenceInfo>,
+        irreversible: bool,
+    ) -> SampleInfo {
         SampleInfo {
             depth: self.depth,
             divergence_info,
             reached_maxdepth: maxdepth,
+            irreversible,
         }
     }
 }
@@ -263,6 +332,8 @@ pub struct NutsOptions {
     pub extra_doublings: u64,
     pub max_energy_error: f64,
     pub uturn_check_first_step: bool,
+    /// Use WALNUTS macro steps instead of single leapfrog steps.
+    pub walnuts: Option<WalnutsOptions>,
 }
 
 impl Default for NutsOptions {
@@ -276,6 +347,7 @@ impl Default for NutsOptions {
             extra_doublings: 0,
             max_energy_error: 1000.0,
             uturn_check_first_step: true,
+            walnuts: None,
         }
     }
 }
@@ -321,10 +393,19 @@ where
         (options.mindepth, options.maxdepth)
     };
 
+    let finish = |math: &mut M,
+                  collector: &mut C,
+                  tree: NutsTree<M, H, C>,
+                  maxdepth: bool,
+                  divergence_info: Option<DivergenceInfo>,
+                  irreversible: bool| {
+        let info = tree.info(maxdepth, divergence_info, irreversible);
+        collector.register_draw(math, &tree.draw, &info);
+        Ok((tree.draw, info))
+    };
+
     if math.dim() == 0 {
-        let info = tree.info(false, None);
-        collector.register_draw(math, init, &info);
-        return Ok((init.clone(), info));
+        return finish(math, collector, tree, false, None, false);
     }
 
     let options_no_check = NutsOptions {
@@ -360,33 +441,31 @@ where
                     ) {
                         ExtendResult::Ok(tree) => tree,
                         ExtendResult::Turning(tree) => tree,
+                        ExtendResult::Irreversible(tree) => {
+                            return finish(math, collector, tree, false, None, true);
+                        }
                         ExtendResult::Diverging(tree, info) => {
-                            let info = tree.info(false, Some(info));
-                            collector.register_draw(math, &tree.draw, &info);
-                            return Ok((tree.draw, info));
+                            return finish(math, collector, tree, false, Some(info), false);
                         }
                         ExtendResult::Err(error) => {
                             return Err(error);
                         }
                     }
                 }
-                let info = tree.info(false, None);
-                collector.register_draw(math, &tree.draw, &info);
-                return Ok((tree.draw, info));
+                return finish(math, collector, tree, false, None, false);
+            }
+            ExtendResult::Irreversible(tree) => {
+                return finish(math, collector, tree, false, None, true);
             }
             ExtendResult::Diverging(tree, info) => {
-                let info = tree.info(false, Some(info));
-                collector.register_draw(math, &tree.draw, &info);
-                return Ok((tree.draw, info));
+                return finish(math, collector, tree, false, Some(info), false);
             }
             ExtendResult::Err(error) => {
                 return Err(error);
             }
         };
     }
-    let info = tree.info(true, None);
-    collector.register_draw(math, &tree.draw, &info);
-    Ok((tree.draw, info))
+    finish(math, collector, tree, true, None, false)
 }
 
 #[cfg(test)]
