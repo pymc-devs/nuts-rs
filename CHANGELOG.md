@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.19.0] - 2026-09-25
+## [0.19.0] - 2026-10-02
 
 ### Bug Fixes
 
@@ -40,6 +40,8 @@ All notable changes to this project will be documented in this file.
 - [**breaking**] Expose chain_id in Model.init_position (Adrian Seyboldt)
 
 - [**breaking**] Resumable errors in model init (Adrian Seyboldt)
+
+- Implement walnuts (Adrian Seyboldt)
 
 
 ### Miscellaneous Tasks
