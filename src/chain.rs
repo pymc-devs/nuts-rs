@@ -124,6 +124,7 @@ pub trait AdaptStrategy<M: Math>: SamplerStats<M> {
     fn new_collector(&self, math: &mut M) -> Self::Collector;
     fn is_tuning(&self) -> bool;
     fn last_num_steps(&self) -> u64;
+    fn last_num_gradients(&self) -> u64;
 }
 
 impl<M, R, A> Chain<M> for NutsChain<M, R, A>
@@ -185,6 +186,8 @@ where
             tuning: self.strategy.is_tuning(),
             step_size: self.hamiltonian.step_size(),
             num_steps: self.strategy.last_num_steps(),
+            num_gradients: self.strategy.last_num_gradients(),
+            fisher_distance: state.point().fisher_distance(math),
         };
 
         self.draw_count += 1;

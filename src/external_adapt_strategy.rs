@@ -271,4 +271,8 @@ impl<M: Math> AdaptStrategy<M> for ExternalTransformAdaptation {
     fn last_num_steps(&self) -> u64 {
         self.step_size.last_n_steps
     }
+
+    fn last_num_gradients(&self) -> u64 {
+        self.step_size.last_n_gradients
+    }
 }

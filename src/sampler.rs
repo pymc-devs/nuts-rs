@@ -189,6 +189,8 @@ pub struct Progress {
     pub tuning: bool,
     pub step_size: f64,
     pub num_steps: u64,
+    pub num_gradients: u64,
+    pub fisher_distance: f64,
 }
 
 mod private {
@@ -1279,6 +1281,10 @@ pub struct ChainProgress {
     pub started: bool,
     pub latest_num_steps: usize,
     pub total_num_steps: usize,
+    pub latest_num_gradients: usize,
+    pub total_num_gradients: usize,
+    /// Fisher distance of the latest draw, see `Point::fisher_distance`.
+    pub fisher_distance: f64,
     pub step_size: f64,
     pub runtime: Duration,
     pub divergent_draws: Vec<usize>,
@@ -1295,6 +1301,9 @@ impl ChainProgress {
             latest_num_steps: 0,
             step_size: 0f64,
             total_num_steps: 0,
+            latest_num_gradients: 0,
+            total_num_gradients: 0,
+            fisher_distance: f64::NAN,
             runtime: Duration::ZERO,
             divergent_draws: Vec::new(),
         }
@@ -1310,6 +1319,9 @@ impl ChainProgress {
 
         self.latest_num_steps = stats.num_steps as usize;
         self.total_num_steps += stats.num_steps as usize;
+        self.latest_num_gradients = stats.num_gradients as usize;
+        self.total_num_gradients += stats.num_gradients as usize;
+        self.fisher_distance = stats.fisher_distance;
         self.step_size = stats.step_size;
         self.runtime += draw_duration;
     }

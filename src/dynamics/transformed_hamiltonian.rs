@@ -141,8 +141,7 @@ impl<M: Math> SamplerStats<M> for TransformedPoint<M> {
             transformed_position = Some(math.box_array(&self.transformed_position));
             transformed_gradient = Some(math.box_array(&self.transformed_gradient));
         }
-        let fisher_distance =
-            math.sq_norm_sum(&self.transformed_position, &self.transformed_gradient);
+        let fisher_distance = self.fisher_distance(math);
         PointStats {
             index_in_trajectory: self.index_in_trajectory,
             logp: self.logp,
@@ -369,6 +368,10 @@ impl<M: Math> Point<M> for TransformedPoint<M> {
 
     fn logp(&self) -> f64 {
         self.logp
+    }
+
+    fn fisher_distance(&self, math: &mut M) -> f64 {
+        math.sq_norm_sum(&self.transformed_position, &self.transformed_gradient)
     }
 
     fn new(math: &mut M) -> Self {
