@@ -174,6 +174,10 @@ pub trait Point<M: Math>: Sized + SamplerStats<M> + Debug {
 
     fn initial_energy(&self) -> f64;
 
+    /// `‖z + ∇z‖²` in the transformed space, a single-draw estimate of the
+    /// Fisher divergence between the target and the standard normal.
+    fn fisher_distance(&self, math: &mut M) -> f64;
+
     fn new(math: &mut M) -> Self;
     fn copy_into(&self, math: &mut M, other: &mut Self);
 }

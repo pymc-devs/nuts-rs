@@ -264,6 +264,10 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
     fn last_num_steps(&self) -> u64 {
         self.step_size.last_n_steps
     }
+
+    fn last_num_gradients(&self) -> u64 {
+        self.step_size.last_n_gradients
+    }
 }
 
 #[derive(Debug, Storable)]

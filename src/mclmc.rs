@@ -82,6 +82,9 @@ pub struct MclmcInfo {
     pub divergence_info: Option<DivergenceInfo>,
     /// Number of leapfrog steps actually taken.
     pub num_steps: u64,
+    /// Number of gradient evaluations, including diverging steps that were
+    /// retried with a smaller step size.
+    pub num_gradients: u64,
     pub average_step_size: f64,
 }
 
@@ -267,6 +270,7 @@ where
 
         let mut divergence_info: Option<DivergenceInfo> = None;
         let mut steps_taken = 0u64;
+        let mut num_gradients = 0u64;
 
         // `factor` is the current step size multiplier (always a power of 2).
         let mut factor = 1.0_f64;
@@ -296,6 +300,7 @@ where
             // max_energy_error threshold can exhaust all halvings because the
             // accumulated baseline already sits near the threshold.
             let step_baseline = current.point().energy();
+            num_gradients += 1;
             // We normalize the max energy error by the length of the step
             match self.hamiltonian.leapfrog(
                 math,
@@ -372,6 +377,7 @@ where
                 // TODO: This clone is annoing, get rid of it.
                 divergence_info: divergence_info.clone(),
                 num_steps: steps_taken,
+                num_gradients,
                 average_step_size: time / steps_taken.to_f64().unwrap(),
             };
             let sample_info = crate::nuts::SampleInfo {
@@ -404,6 +410,7 @@ where
             diverging: false,
             divergence_info: None,
             num_steps: steps_taken,
+            num_gradients,
             average_step_size: time / steps_taken.to_f64().unwrap(),
         };
 
@@ -513,12 +520,12 @@ where
 
         let (state, info) = self.mclmc_kernel(resample_velocity)?;
 
-        let position: Box<[f64]> = {
+        let (position, fisher_distance): (Box<[f64]>, f64) = {
             let mut math_ = self.math.borrow_mut();
             let math = math_.deref_mut();
             let mut pos = vec![0f64; math.dim()];
             state.write_position(math, &mut pos);
-            pos.into()
+            (pos.into(), state.point().fisher_distance(math))
         };
 
         let mut progress = Progress {
@@ -528,6 +535,8 @@ where
             tuning: true,
             step_size: self.hamiltonian.step_size(),
             num_steps: info.num_steps,
+            num_gradients: info.num_gradients,
+            fisher_distance,
         };
 
         // The collector was already fed during mclmc_kernel via register_leapfrog
