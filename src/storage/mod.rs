@@ -1,5 +1,6 @@
 //! Trace storage backends for recording per-draw statistics and samples to various output formats.
 
+mod any;
 #[cfg(feature = "arrow")]
 mod arrow;
 mod core;
@@ -15,6 +16,7 @@ pub use arrow::{ArrowConfig, ArrowTrace, ArrowTraceStorage};
 #[cfg(feature = "zarr")]
 pub use zarr::{ZarrAsyncConfig, ZarrAsyncTraceStorage, ZarrConfig, ZarrTraceStorage};
 
+pub use any::{AnyStorageConfig, AnyTrace};
 pub use csv::{CsvConfig, CsvTraceStorage};
 pub use hashmap::{HashMapConfig, HashMapResult, HashMapValue};
 #[cfg(feature = "ndarray")]
