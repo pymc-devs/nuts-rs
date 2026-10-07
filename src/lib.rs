@@ -144,6 +144,7 @@ pub use transform::LowRankSettings;
 #[cfg(feature = "zarr")]
 pub use storage::{ZarrAsyncConfig, ZarrAsyncTraceStorage, ZarrConfig, ZarrTraceStorage};
 
+pub use storage::{AnyStorageConfig, AnyTrace};
 pub use storage::{CsvConfig, CsvTraceStorage};
 pub use storage::{HashMapConfig, HashMapResult, HashMapValue};
 #[cfg(feature = "ndarray")]
