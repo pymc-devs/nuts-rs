@@ -828,7 +828,19 @@ impl Default for LowRankNutsSettings {
 
 impl Default for FlowNutsSettings {
     fn default() -> Self {
-        default_nuts_settings(FlowSettings::default(), 1500, 1, 20.0)
+        let mut adapt_options = FlowSettings::default();
+        adapt_options.transform_update_freq = 256;
+        // The flow makes the posterior close to a standard normal, where a
+        // step of pi under the exact normal dynamics is a half rotation that
+        // maps x to -x.
+        adapt_options
+            .step_size_settings
+            .adapt_options
+            .dual_average
+            .max_step_size = std::f64::consts::FRAC_PI_2;
+        let mut vals = default_nuts_settings(adapt_options, 3000, 1, 1000.0);
+        vals.trajectory_kind = KineticEnergyKind::ExactNormal;
+        vals
     }
 }
 
