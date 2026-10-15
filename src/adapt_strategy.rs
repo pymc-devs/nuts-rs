@@ -423,6 +423,7 @@ mod test {
             max_energy_error: 1000.0,
             uturn_check_first_step: false,
             walnuts: None,
+            max_leapfrog_steps: None,
         };
 
         let rng = {

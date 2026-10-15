@@ -284,7 +284,9 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     /// The number of draws after tuning
     pub num_draws: u64,
     /// The maximum tree depth during sampling. The number of leapfrog steps
-    /// is smaller than 2 ^ maxdepth.
+    /// is smaller than 2 ^ maxdepth. With WALNUTS this limits the number of
+    /// macro steps, independent of how often they are split. Use
+    /// `max_leapfrog_steps` to limit the cost.
     pub maxdepth: u64,
     /// The minimum tree depth during sampling. The number of leapfrog steps
     /// is larger than 2 ^ mindepth.
@@ -314,9 +316,13 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     pub trajectory_kind: KineticEnergyKind,
     pub num_chains: usize,
     pub seed: u64,
-    /// Number of extra doublings to perform after reaching maxdepth. This can
-    /// be used to increase the effective sample size at the cost of more
-    /// expensive sampling.
+    /// Number of extra doublings of the trajectory after the U-turn, without
+    /// further U-turn checks.
+    ///
+    /// Deprecated: only intended for experiments, for instance to check how
+    /// good the trajectory length chosen by NUTS is. The draws are biased if
+    /// this is not zero, because points in the extended trajectory would not
+    /// all have produced the same trajectory.
     pub extra_doublings: u64,
     /// Soft clipping for gradients.
     pub gradient_clipping: Option<f64>,
@@ -328,6 +334,18 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     /// supported with [`KineticEnergyKind::Microcanonical`].
     #[serde(default)]
     pub walnuts: Option<WalnutsOptions>,
+    /// Maximum number of leapfrog steps per draw.
+    ///
+    /// The trajectory stops before a doubling that cannot fit. If a doubling
+    /// turns out to need more leapfrog steps than expected because WALNUTS
+    /// split some steps, it is discarded, like after a U-turn in the new
+    /// half. Unlike `maxdepth`, this also limits the cost of the step
+    /// splitting and of `extra_doublings`. With WALNUTS this counts the micro
+    /// steps of the accepted attempts. Rejected attempts and reversibility
+    /// checks need additional gradient evaluations, up to about three times
+    /// as many in total.
+    #[serde(default)]
+    pub max_leapfrog_steps: Option<u64>,
 }
 
 pub type DiagNutsSettings = NutsSettings<EuclideanAdaptOptions<DiagAdaptExpSettings>>;
@@ -688,6 +706,7 @@ fn default_nuts_settings<A: Debug + Copy + Default + Serialize>(
         extra_doublings: 0,
         gradient_clipping: Some(1e10),
         walnuts: None,
+        max_leapfrog_steps: None,
     }
 }
 
@@ -858,6 +877,7 @@ fn nuts_options(settings: &NutsSettings<impl Debug + Copy + Default + Serialize>
         max_energy_error: settings.max_energy_error,
         uturn_check_first_step: matches!(settings.trajectory_kind, KineticEnergyKind::ExactNormal),
         walnuts: settings.walnuts,
+        max_leapfrog_steps: settings.max_leapfrog_steps,
     }
 }
 

@@ -226,6 +226,9 @@ where
 pub struct NutsStats<P: HasDims, H: Storable<P>, A: Storable<P>, D: Storable<P>> {
     pub depth: u64,
     pub maxdepth_reached: bool,
+    /// Whether the trajectory was stopped because extending it would have
+    /// needed more than `max_leapfrog_steps` leapfrog steps.
+    pub max_leapfrog_steps_reached: bool,
     /// Whether the trajectory was stopped because a WALNUTS macro step was
     /// not reversible. `None` without WALNUTS.
     pub irreversible: Option<bool>,
@@ -290,6 +293,7 @@ impl<M: Math, R: rand::Rng, A: AdaptStrategy<M>> SamplerStats<M> for NutsChain<M
         NutsStats {
             depth: info.depth,
             maxdepth_reached: info.reached_maxdepth,
+            max_leapfrog_steps_reached: info.reached_max_leapfrog_steps,
             irreversible: self.options.walnuts.map(|_| info.irreversible),
             min_micro_steps: self.options.walnuts.map(|w| w.min_micro_steps),
             chain: self.chain,

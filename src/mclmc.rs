@@ -385,6 +385,7 @@ where
                 divergence_info,
                 reached_maxdepth: false,
                 irreversible: false,
+                reached_max_leapfrog_steps: false,
             };
             self.collector.register_draw(math, &current, &sample_info);
             return Ok((next_state, info));
@@ -398,6 +399,7 @@ where
             divergence_info: None,
             reached_maxdepth: false,
             irreversible: false,
+            reached_max_leapfrog_steps: false,
         };
         self.collector.register_draw(math, &current, &sample_info);
 

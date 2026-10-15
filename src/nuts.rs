@@ -93,6 +93,10 @@ pub struct SampleInfo {
     /// Whether the trajectory was terminated because a WALNUTS
     /// macro step was not reversible.
     pub irreversible: bool,
+
+    /// Whether the trajectory was terminated because extending it
+    /// would have needed more than `max_leapfrog_steps` leapfrog steps.
+    pub reached_max_leapfrog_steps: bool,
 }
 
 /// A part of the trajectory tree during NUTS sampling.
@@ -109,6 +113,12 @@ struct NutsTree<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> {
     draw: State<M, H::Point>,
     log_size: f64,
     depth: u64,
+
+    /// The number of leapfrog steps between the points of the tree. For
+    /// WALNUTS these are the micro steps of the accepted attempts, which,
+    /// unlike the gradient evaluations, do not depend on the integration
+    /// direction.
+    num_steps: u64,
 
     /// A tree is the main tree if it contains the initial point
     /// of the trajectory.
@@ -130,11 +140,14 @@ enum ExtendResult<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> {
     /// A WALNUTS macro step was not reversible, the trajectory
     /// has to stop.
     Irreversible(NutsTree<M, H, C>),
+    /// The extension would have needed more leapfrog steps than allowed. The tree is returned without the extension.
+    MaxLeapfrogSteps(NutsTree<M, H, C>),
 }
 
 /// The result of a single leaf of the tree.
 enum LeafResult<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> {
-    Ok(NutsTree<M, H, C>),
+    /// The new leaf, and the number of leapfrog steps to it.
+    Ok(NutsTree<M, H, C>, u64),
     Diverging(DivergenceInfo),
     Irreversible,
 }
@@ -147,11 +160,19 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
             draw: state,
             depth: 0,
             log_size: 0.,
+            num_steps: 0,
             is_main: true,
             _phantom2: PhantomData,
         }
     }
 
+    /// Double the tree in `direction`.
+    ///
+    /// The extension may use at most `max_steps` leapfrog steps.
+    /// Otherwise it is discarded, like an extension that contains a U-turn.
+    /// This keeps the sampler reversible, because the decision only depends
+    /// on the tree and the direction, not on the starting point within the
+    /// tree.
     #[allow(clippy::too_many_arguments)]
     #[inline]
     fn extend<R>(
@@ -162,21 +183,35 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         direction: Direction,
         collector: &mut C,
         options: &NutsOptions,
+        max_steps: u64,
     ) -> ExtendResult<M, H, C>
     where
         H: Hamiltonian<M>,
         R: rand::Rng + ?Sized,
     {
-        let mut other = match self.single_step(math, hamiltonian, direction, options, collector) {
-            Ok(LeafResult::Ok(tree)) => tree,
-            Ok(LeafResult::Diverging(info)) => return ExtendResult::Diverging(self, info),
-            Ok(LeafResult::Irreversible) => return ExtendResult::Irreversible(self),
-            Err(err) => return ExtendResult::Err(err),
+        let (mut other, leaf_steps) =
+            match self.single_step(math, hamiltonian, direction, options, collector) {
+                Ok(LeafResult::Ok(tree, num_steps)) => (tree, num_steps),
+                Ok(LeafResult::Diverging(info)) => return ExtendResult::Diverging(self, info),
+                Ok(LeafResult::Irreversible) => return ExtendResult::Irreversible(self),
+                Err(err) => return ExtendResult::Err(err),
+            };
+        let Some(max_steps) = max_steps.checked_sub(leaf_steps) else {
+            return ExtendResult::MaxLeapfrogSteps(self);
         };
 
         while other.depth < self.depth {
             use ExtendResult::*;
-            other = match other.extend(math, rng, hamiltonian, direction, collector, options) {
+            let remaining = max_steps - other.num_steps;
+            other = match other.extend(
+                math,
+                rng,
+                hamiltonian,
+                direction,
+                collector,
+                options,
+                remaining,
+            ) {
                 Ok(tree) => tree,
                 Turning(_) => {
                     return Turning(self);
@@ -186,6 +221,9 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
                 }
                 Irreversible(_) => {
                     return Irreversible(self);
+                }
+                MaxLeapfrogSteps(_) => {
+                    return MaxLeapfrogSteps(self);
                 }
                 Err(error) => {
                     return Err(error);
@@ -213,6 +251,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
             false
         };
 
+        self.num_steps += leaf_steps + other.num_steps;
         self.merge_into(math, other, rng, direction);
 
         if turning {
@@ -271,10 +310,10 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
             Direction::Forward => &self.right,
             Direction::Backward => &self.left,
         };
-        let end = match options.walnuts {
+        let (end, num_steps) = match options.walnuts {
             Some(ref walnuts) => {
                 match macro_step(math, hamiltonian, start, direction, walnuts, collector) {
-                    Ok(MacroStep::Ok(end)) => end,
+                    Ok(MacroStep::Ok { end, num_steps }) => (end, num_steps),
                     Ok(MacroStep::Divergence(info)) => return Ok(LeafResult::Diverging(info)),
                     Ok(MacroStep::Irreversible) => return Ok(LeafResult::Irreversible),
                     Err(err) => return Err(NutsError::LogpFailure(err.into())),
@@ -291,20 +330,24 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
             ) {
                 LeapfrogResult::Divergence(info) => return Ok(LeafResult::Diverging(info)),
                 LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
-                LeapfrogResult::Ok(end) => end,
+                LeapfrogResult::Ok(end) => (end, 1),
             },
         };
 
         let log_size = -end.point().energy_error();
-        Ok(LeafResult::Ok(NutsTree {
-            right: end.clone(),
-            left: end.clone(),
-            draw: end,
-            depth: 0,
-            log_size,
-            is_main: false,
-            _phantom2: PhantomData,
-        }))
+        Ok(LeafResult::Ok(
+            NutsTree {
+                right: end.clone(),
+                left: end.clone(),
+                draw: end,
+                depth: 0,
+                log_size,
+                num_steps: 0,
+                is_main: false,
+                _phantom2: PhantomData,
+            },
+            num_steps,
+        ))
     }
 
     fn info(
@@ -312,12 +355,14 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         maxdepth: bool,
         divergence_info: Option<DivergenceInfo>,
         irreversible: bool,
+        max_leapfrog_steps: bool,
     ) -> SampleInfo {
         SampleInfo {
             depth: self.depth,
             divergence_info,
             reached_maxdepth: maxdepth,
             irreversible,
+            reached_max_leapfrog_steps: max_leapfrog_steps,
         }
     }
 }
@@ -334,6 +379,9 @@ pub struct NutsOptions {
     pub uturn_check_first_step: bool,
     /// Use WALNUTS macro steps instead of single leapfrog steps.
     pub walnuts: Option<WalnutsOptions>,
+    /// Stop the trajectory before it needs more leapfrog steps than this.
+    /// See `NutsSettings::max_leapfrog_steps`.
+    pub max_leapfrog_steps: Option<u64>,
 }
 
 impl Default for NutsOptions {
@@ -348,6 +396,7 @@ impl Default for NutsOptions {
             max_energy_error: 1000.0,
             uturn_check_first_step: true,
             walnuts: None,
+            max_leapfrog_steps: None,
         }
     }
 }
@@ -398,14 +447,15 @@ where
                   tree: NutsTree<M, H, C>,
                   maxdepth: bool,
                   divergence_info: Option<DivergenceInfo>,
-                  irreversible: bool| {
-        let info = tree.info(maxdepth, divergence_info, irreversible);
+                  irreversible: bool,
+                  max_leapfrog_steps: bool| {
+        let info = tree.info(maxdepth, divergence_info, irreversible, max_leapfrog_steps);
         collector.register_draw(math, &tree.draw, &info);
         Ok((tree.draw, info))
     };
 
     if math.dim() == 0 {
-        return finish(math, collector, tree, false, None, false);
+        return finish(math, collector, tree, false, None, false, false);
     }
 
     let options_no_check = NutsOptions {
@@ -413,13 +463,39 @@ where
         ..*options
     };
 
-    while tree.depth < maxdepth {
+    let remaining_steps = |tree: &NutsTree<M, H, C>| {
+        options
+            .max_leapfrog_steps
+            .map_or(u64::MAX, |max| max.saturating_sub(tree.num_steps))
+    };
+
+    // Each step of the trajectory needs at least this many leapfrog steps.
+    let min_steps_per_step = options.walnuts.map_or(1, |walnuts| walnuts.min_micro_steps);
+
+    // Whether doubling the tree could stay within `max_leapfrog_steps`. If
+    // not, we stop before computing anything. The decision only depends on
+    // the tree, so it keeps the sampler reversible.
+    let can_double = |tree: &NutsTree<M, H, C>| {
+        let min_new_steps = 1u64
+            .checked_shl(tree.depth as u32)
+            .map_or(u64::MAX, |size| size.saturating_mul(min_steps_per_step));
+        min_new_steps <= remaining_steps(tree)
+    };
+
+    loop {
+        if tree.depth >= maxdepth {
+            return finish(math, collector, tree, true, None, false, false);
+        }
+        if !can_double(&tree) {
+            return finish(math, collector, tree, false, None, false, true);
+        }
         let direction: Direction = rng.random();
         let current_options = if tree.depth < mindepth {
             &options_no_check
         } else {
             options
         };
+        let max_steps = remaining_steps(&tree);
         tree = match tree.extend(
             math,
             rng,
@@ -427,10 +503,16 @@ where
             direction,
             collector,
             current_options,
+            max_steps,
         ) {
             ExtendResult::Ok(tree) => tree,
             ExtendResult::Turning(mut tree) => {
+                // Extra doublings are not limited by `maxdepth`.
                 for _ in 0..options.extra_doublings {
+                    if !can_double(&tree) {
+                        return finish(math, collector, tree, false, None, false, true);
+                    }
+                    let max_steps = remaining_steps(&tree);
                     tree = match tree.extend(
                         math,
                         rng,
@@ -438,34 +520,40 @@ where
                         direction,
                         collector,
                         &options_no_check,
+                        max_steps,
                     ) {
                         ExtendResult::Ok(tree) => tree,
                         ExtendResult::Turning(tree) => tree,
                         ExtendResult::Irreversible(tree) => {
-                            return finish(math, collector, tree, false, None, true);
+                            return finish(math, collector, tree, false, None, true, false);
                         }
                         ExtendResult::Diverging(tree, info) => {
-                            return finish(math, collector, tree, false, Some(info), false);
+                            return finish(math, collector, tree, false, Some(info), false, false);
+                        }
+                        ExtendResult::MaxLeapfrogSteps(tree) => {
+                            return finish(math, collector, tree, false, None, false, true);
                         }
                         ExtendResult::Err(error) => {
                             return Err(error);
                         }
                     }
                 }
-                return finish(math, collector, tree, false, None, false);
+                return finish(math, collector, tree, false, None, false, false);
             }
             ExtendResult::Irreversible(tree) => {
-                return finish(math, collector, tree, false, None, true);
+                return finish(math, collector, tree, false, None, true, false);
             }
             ExtendResult::Diverging(tree, info) => {
-                return finish(math, collector, tree, false, Some(info), false);
+                return finish(math, collector, tree, false, Some(info), false, false);
+            }
+            ExtendResult::MaxLeapfrogSteps(tree) => {
+                return finish(math, collector, tree, false, None, false, true);
             }
             ExtendResult::Err(error) => {
                 return Err(error);
             }
         };
     }
-    finish(math, collector, tree, true, None, false)
 }
 
 #[cfg(test)]

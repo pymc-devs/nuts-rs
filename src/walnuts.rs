@@ -68,7 +68,7 @@ fn default_max_min_micro_steps() -> u64 {
 impl Default for WalnutsOptions {
     fn default() -> Self {
         WalnutsOptions {
-            max_step_halvings: 5,
+            max_step_halvings: 8,
             max_error: 0.5,
             min_micro_steps: 1,
             energy_criterion: WalnutsEnergyCriterion::MaxMin,
@@ -123,7 +123,12 @@ impl WalnutsOptions {
 }
 
 pub(crate) enum MacroStep<M: Math, P: Point<M>> {
-    Ok(State<M, P>),
+    Ok {
+        end: State<M, P>,
+        /// The number of micro steps of the accepted attempt. Unlike the
+        /// number of gradient evaluations it is the same in both directions.
+        num_steps: u64,
+    },
     Divergence(DivergenceInfo),
     Irreversible,
 }
@@ -324,7 +329,7 @@ where
                 };
                 collector.register_leapfrog(math, start, &end, None, &step);
                 if reversible {
-                    return Ok(MacroStep::Ok(end));
+                    return Ok(MacroStep::Ok { end, num_steps });
                 } else {
                     return Ok(MacroStep::Irreversible);
                 }
@@ -657,6 +662,84 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Without WALNUTS and U-turns, `max_leapfrog_steps = 2^d - 1` stops the
+    /// trajectory at depth `d`, without computing any part of the next
+    /// doubling.
+    #[test]
+    fn max_leapfrog_steps_without_walnuts() {
+        let mut settings = fixed_step_settings(0.1, KineticEnergyKind::Euclidean, None);
+        settings.check_turning = false;
+        settings.max_leapfrog_steps = Some(63);
+        let mut rng = ChaCha8Rng::seed_from_u64(1);
+        let mut chain = settings
+            .new_chain(0, CpuMath::new(NormalLogp::new(10, 3.0)), &mut rng)
+            .unwrap();
+        chain.set_position(&[0.1; 10]).unwrap();
+        let options = settings.stats_options();
+        for _ in 0..20 {
+            chain.draw().unwrap();
+            let stats = chain.extract_stats(&mut chain.math().clone(), options);
+            assert_eq!(stats.depth, 6);
+            assert!(stats.max_leapfrog_steps_reached);
+            assert!(!stats.maxdepth_reached);
+            assert_eq!(stats.adapt.step_size.n_gradients, 63);
+        }
+    }
+
+    /// Without WALNUTS, `max_leapfrog_steps = 2^d - 1` gives exactly the same
+    /// draws as `maxdepth = d`.
+    #[test]
+    fn max_leapfrog_steps_same_as_maxdepth() {
+        let logp = NormalLogp::new(10, 3.0);
+        let mut by_depth = fixed_step_settings(0.1, KineticEnergyKind::Euclidean, None);
+        by_depth.maxdepth = 4;
+        let mut by_steps = by_depth;
+        by_steps.maxdepth = 10;
+        by_steps.max_leapfrog_steps = Some(15);
+        let (depth_draws, depth_grads, _, _) = run(by_depth, logp.clone(), 100, 42);
+        let (steps_draws, steps_grads, _, _) = run(by_steps, logp, 100, 42);
+        assert_eq!(depth_draws, steps_draws);
+        assert_eq!(depth_grads, steps_grads);
+        assert_eq!(depth_grads, 100 * 15);
+    }
+
+    /// Discarding extensions with too many leapfrog steps must not bias the
+    /// draws, also when the macro steps are split.
+    #[test]
+    fn moments_with_max_leapfrog_steps() {
+        let dim = 10;
+        let mu = 3.0;
+        let num_draws = 20000;
+        let walnuts = WalnutsOptions::default();
+        let mut settings = fixed_step_settings(1.5, KineticEnergyKind::Euclidean, Some(walnuts));
+        settings.max_leapfrog_steps = Some(12);
+        let mut rng = ChaCha8Rng::seed_from_u64(7);
+        let mut chain = settings
+            .new_chain(0, CpuMath::new(NormalLogp::new(dim, mu)), &mut rng)
+            .unwrap();
+        chain.set_position(&vec![mu + 0.1; dim]).unwrap();
+        let options = settings.stats_options();
+
+        let mut num_reached = 0;
+        let mut draws = vec![];
+        for _ in 0..num_draws {
+            let (draw, _) = chain.draw().unwrap();
+            let stats = chain.extract_stats(&mut chain.math().clone(), options);
+            if stats.max_leapfrog_steps_reached {
+                num_reached += 1;
+            }
+            draws.push(draw);
+        }
+        assert!(num_reached > num_draws / 10, "reached {num_reached} times");
+
+        for i in 0..dim {
+            let mean = draws.iter().map(|d| d[i]).sum::<f64>() / num_draws as f64;
+            let var = draws.iter().map(|d| (d[i] - mean).powi(2)).sum::<f64>() / num_draws as f64;
+            assert!((mean - mu).abs() < 0.1, "mean {mean} in dim {i}");
+            assert!((var - 1.0).abs() < 0.15, "variance {var} in dim {i}");
         }
     }
 
