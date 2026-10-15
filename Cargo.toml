@@ -1,6 +1,6 @@
 [package]
 name = "nuts-rs"
-version = "0.19.0"
+version = "0.19.1"
 authors = [
   "Adrian Seyboldt <adrian.seyboldt@gmail.com>",
   "PyMC Developers <pymc.devs@gmail.com>",
@@ -20,7 +20,7 @@ codegen-units = 1
 [dependencies]
 rand = { version = "0.10.0", features = ["chacha"] }
 rand_distr = "0.6.0"
-itertools = "0.14.0"
+itertools = "0.15.0"
 thiserror = "2.0.3"
 anyhow = "1.0.72"
 faer = { version = "0.24.0", default-features = false, features = ["linalg"] }

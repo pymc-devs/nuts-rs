@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.19.0] - 2026-10-02
+## [0.19.1] - 2026-10-15
 
 ### Bug Fixes
 
@@ -42,6 +42,14 @@ All notable changes to this project will be documented in this file.
 - [**breaking**] Resumable errors in model init (Adrian Seyboldt)
 
 - Implement walnuts (Adrian Seyboldt)
+
+- Expose fisher distance and num_grads in progress (Adrian Seyboldt)
+
+- Add AnyTrace for generic sampler output (Adrian Seyboldt)
+
+- Update flow adaptation defaults (Adrian Seyboldt)
+
+- Limit number of walnuts steps (Adrian Seyboldt)
 
 
 ### Miscellaneous Tasks
