@@ -132,6 +132,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         position: &[f64],
         rng: &mut R,
     ) -> Result<(), NutsError> {
+        options.early_window = self.early_end > 0;
         let state = hamiltonian.init_state_untransformed(math, position)?;
         self.mass_matrix_adapt.init(
             math,
@@ -156,6 +157,8 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         rng: &mut R,
     ) -> Result<(), NutsError> {
         self.step_size.update(&collector.collector1);
+        // For the next draw.
+        options.early_window = draw + 1 < self.early_end;
 
         if draw >= self.num_tune {
             // Needed for step size jitter
@@ -423,6 +426,7 @@ mod test {
             max_energy_error: 1000.0,
             uturn_check_first_step: false,
             walnuts: None,
+            early_window: false,
             max_leapfrog_steps: None,
         };
 

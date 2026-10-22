@@ -877,6 +877,7 @@ fn nuts_options(settings: &NutsSettings<impl Debug + Copy + Default + Serialize>
         max_energy_error: settings.max_energy_error,
         uturn_check_first_step: matches!(settings.trajectory_kind, KineticEnergyKind::ExactNormal),
         walnuts: settings.walnuts,
+        early_window: false,
         max_leapfrog_steps: settings.max_leapfrog_steps,
     }
 }

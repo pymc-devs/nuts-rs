@@ -59,6 +59,14 @@ pub struct WalnutsOptions {
     /// Upper bound for the adapted `min_micro_steps`.
     #[serde(default = "default_max_min_micro_steps")]
     pub max_min_micro_steps: u64,
+    /// If set, used instead of `max_error` during the early window of the
+    /// mass matrix adaptation. Far from the typical set the first draws act
+    /// more like an optimizer, and a tight tolerance only makes the micro
+    /// steps tiny. Can be infinite, which gives plain NUTS steps without a
+    /// divergence check. Has no effect with flow adaptation, which has no
+    /// early window.
+    #[serde(default)]
+    pub early_max_energy_error: Option<f64>,
 }
 
 fn default_max_min_micro_steps() -> u64 {
@@ -74,6 +82,7 @@ impl Default for WalnutsOptions {
             energy_criterion: WalnutsEnergyCriterion::MaxMin,
             target_macro_steps: None,
             max_min_micro_steps: default_max_min_micro_steps(),
+            early_max_energy_error: Some(f64::INFINITY),
         }
     }
 }
@@ -85,6 +94,11 @@ impl WalnutsOptions {
                 "walnuts max_error must be positive and finite, got {}",
                 self.max_error
             );
+        }
+        if let Some(early) = self.early_max_energy_error
+            && (early.is_nan() || early <= 0.0)
+        {
+            anyhow::bail!("walnuts early_max_energy_error must be positive, got {early}");
         }
         if self.min_micro_steps == 0 {
             anyhow::bail!("walnuts min_micro_steps must be positive");
@@ -119,6 +133,15 @@ impl WalnutsOptions {
             );
         }
         Ok(())
+    }
+
+    /// The options to use for one macro step, with `max_error` replaced by
+    /// `early_max_energy_error` in the early window.
+    pub(crate) fn for_window(&self, early_window: bool) -> Self {
+        match self.early_max_energy_error {
+            Some(max_error) if early_window => Self { max_error, ..*self },
+            _ => *self,
+        }
     }
 }
 
@@ -442,6 +465,13 @@ mod tests {
     #[test]
     fn validate_options() {
         assert!(WalnutsOptions::default().validate().is_ok());
+        for early in [0.0, -1.0, f64::NAN] {
+            let bad = WalnutsOptions {
+                early_max_energy_error: Some(early),
+                ..Default::default()
+            };
+            assert!(bad.validate().is_err());
+        }
         let bad = WalnutsOptions {
             min_micro_steps: 0,
             ..Default::default()
@@ -600,6 +630,99 @@ mod tests {
             Some(WalnutsOptions::default()),
         );
         assert!(settings.validate().is_err());
+    }
+
+    /// A macro step where no attempt is within tolerance is a rejection for
+    /// step size adaptation, even if the first attempt went down in energy.
+    #[test]
+    fn rejected_macro_step_has_zero_acceptance() {
+        use crate::{
+            dynamics::TransformedHamiltonian, nuts::NutsOptions, stepsize::AcceptanceRateCollector,
+            transform::DiagMassMatrix,
+        };
+
+        let options = WalnutsOptions {
+            max_error: 1e-12,
+            max_step_halvings: 0,
+            energy_criterion: WalnutsEnergyCriterion::Endpoint,
+            ..Default::default()
+        };
+        let nuts_options = NutsOptions {
+            walnuts: Some(options),
+            ..Default::default()
+        };
+        let mut math = CpuMath::new(NormalLogp::new(10, 3.0));
+        let mut mass_matrix = DiagMassMatrix::new(&mut math, true);
+        let mut stds = math.new_array();
+        let mut mean = math.new_array();
+        math.fill_array(&mut stds, 1.0);
+        math.fill_array(&mut mean, 0.0);
+        mass_matrix.set_transform(&mut math, &stds, &mean);
+        let mut hamiltonian =
+            TransformedHamiltonian::new(&mut math, mass_matrix, KineticEnergyKind::Euclidean, None);
+        *hamiltonian.step_size_mut() = 1.5;
+
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let mut num_downhill = 0;
+        for _ in 0..20 {
+            let mut start = hamiltonian.init_state(&mut math, &[10.0; 10]).unwrap();
+            hamiltonian
+                .initialize_trajectory(&mut math, &mut start, true, &mut rng)
+                .unwrap();
+            let mut collector = AcceptanceRateCollector::new();
+            collector.register_init(&mut math, &start, &nuts_options);
+
+            let step = macro_step(
+                &mut math,
+                &mut hamiltonian,
+                &start,
+                Direction::Forward,
+                &options,
+                &mut collector,
+            )
+            .unwrap();
+            let MacroStep::Divergence(info) = step else {
+                panic!("macro step should be rejected");
+            };
+            if info.energy_error.unwrap() < 0.0 {
+                num_downhill += 1;
+            }
+            assert_eq!(collector.mean.current(), 0.0);
+        }
+        assert!(num_downhill > 0);
+    }
+
+    /// In the early window, `early_max_energy_error` replaces `max_error`.
+    #[test]
+    fn early_max_energy_error() {
+        let walnuts = WalnutsOptions {
+            max_error: 1e-3,
+            early_max_energy_error: Some(f64::INFINITY),
+            ..Default::default()
+        };
+        assert!(walnuts.validate().is_ok());
+        let mut settings = fixed_step_settings(0.5, KineticEnergyKind::Euclidean, Some(walnuts));
+        settings.num_tune = 100;
+        settings.adapt_options.early_window = 0.3;
+
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let logp = NormalLogp::new(10, 3.0);
+        let mut chain = settings.new_chain(0, CpuMath::new(logp), &mut rng).unwrap();
+        chain.set_position(&[0.1; 10]).unwrap();
+        let options = settings.stats_options();
+        let mut split_after_early = false;
+        for draw in 0..60 {
+            chain.draw().unwrap();
+            let stats = chain.extract_stats(&mut chain.math().clone(), options);
+            let split = stats.adapt.step_size.n_gradients > stats.adapt.step_size.n_steps;
+            if draw < 30 {
+                assert!(!split, "draw {draw} in the early window was split");
+                assert_eq!(stats.irreversible, Some(false));
+            } else {
+                split_after_early |= split;
+            }
+        }
+        assert!(split_after_early);
     }
 
     /// If no step is ever split, WALNUTS takes exactly the same steps and

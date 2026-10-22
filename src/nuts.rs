@@ -312,7 +312,8 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         };
         let (end, num_steps) = match options.walnuts {
             Some(ref walnuts) => {
-                match macro_step(math, hamiltonian, start, direction, walnuts, collector) {
+                let walnuts = walnuts.for_window(options.early_window);
+                match macro_step(math, hamiltonian, start, direction, &walnuts, collector) {
                     Ok(MacroStep::Ok { end, num_steps }) => (end, num_steps),
                     Ok(MacroStep::Divergence(info)) => return Ok(LeafResult::Diverging(info)),
                     Ok(MacroStep::Irreversible) => return Ok(LeafResult::Irreversible),
@@ -379,6 +380,9 @@ pub struct NutsOptions {
     pub uturn_check_first_step: bool,
     /// Use WALNUTS macro steps instead of single leapfrog steps.
     pub walnuts: Option<WalnutsOptions>,
+    /// Whether the adaptation is in its early window. Set by the adapt
+    /// strategy, used for `WalnutsOptions::early_max_energy_error`.
+    pub early_window: bool,
     /// Stop the trajectory before it needs more leapfrog steps than this.
     /// See `NutsSettings::max_leapfrog_steps`.
     pub max_leapfrog_steps: Option<u64>,
@@ -396,6 +400,7 @@ impl Default for NutsOptions {
             max_energy_error: 1000.0,
             uturn_check_first_step: true,
             walnuts: None,
+            early_window: false,
             max_leapfrog_steps: None,
         }
     }
