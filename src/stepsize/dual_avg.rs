@@ -188,6 +188,10 @@ impl<M: Math, P: Point<M>> Collector<M, P> for AcceptanceRateCollector {
         };
 
         match step.base_step {
+            // A divergence always counts as a rejection. With WALNUTS this
+            // includes macro steps where no attempt was within tolerance, even
+            // if the first attempt had a large negative energy error.
+            _ if divergence_info.is_some() => self.add_accept(None),
             // Plain NUTS: acceptance relative to the start of the trajectory.
             BaseStepOutcome::Plain => self.add_accept(diff),
             // WALNUTS: the accepted macro steps are within tolerance by
