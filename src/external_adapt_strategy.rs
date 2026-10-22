@@ -12,12 +12,20 @@ use crate::sampler_stats::{SamplerStats, StatsDims};
 use crate::stepsize::AcceptanceRateCollector;
 use crate::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
 use crate::transform::ExternalTransformation;
+use crate::warmup::{WarmupPhase, WarmupSchedule};
 use crate::{Math, NutsError};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct FlowSettings {
+    /// Fraction of the tuning draws that belong to the early warmup phase,
+    /// see [`WarmupPhase::Early`].
+    #[serde(default = "default_flow_early_window")]
+    pub early_window: f64,
     pub step_size_window: f64,
     pub transform_update_freq: u64,
+    /// Number of draws between transformation updates in the early phase.
+    #[serde(default = "default_early_transform_update_freq")]
+    pub early_transform_update_freq: u64,
     pub use_orbit_for_training: bool,
     pub step_size_settings: StepSizeSettings,
     pub transform_train_max_energy_error: f64,
@@ -27,9 +35,28 @@ pub struct FlowSettings {
 #[deprecated(since = "0.0.0", note = "Use FlowSettings instead")]
 pub type TransformedSettings = FlowSettings;
 
+/// With the default 3000 tuning draws of the flow NUTS settings, the early
+/// phase ends at draw 99.
+fn default_flow_early_window() -> f64 {
+    0.033
+}
+
+fn default_early_transform_update_freq() -> u64 {
+    10
+}
+
 impl FlowSettings {
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
         self.step_size_settings.validate()?;
+        if !(0.0..1.0).contains(&self.early_window) {
+            anyhow::bail!(
+                "early_window must be at least 0 and smaller than 1, got {}",
+                self.early_window
+            );
+        }
+        if self.early_transform_update_freq == 0 {
+            anyhow::bail!("early_transform_update_freq must be positive");
+        }
         if !(0.0..=1.0).contains(&self.step_size_window) {
             anyhow::bail!(
                 "step_size_window must be between 0 and 1, got {}",
@@ -43,8 +70,10 @@ impl FlowSettings {
 impl Default for FlowSettings {
     fn default() -> Self {
         Self {
+            early_window: default_flow_early_window(),
             step_size_window: 0.07f64,
             transform_update_freq: 128,
+            early_transform_update_freq: default_early_transform_update_freq(),
             use_orbit_for_training: false,
             transform_train_max_energy_error: 20f64,
             step_size_settings: Default::default(),
@@ -55,8 +84,7 @@ impl Default for FlowSettings {
 pub struct ExternalTransformAdaptation {
     step_size: StepSizeStrategy,
     options: FlowSettings,
-    num_tune: u64,
-    final_window_size: u64,
+    schedule: WarmupSchedule,
     tuning: bool,
     chain: u64,
 }
@@ -178,11 +206,15 @@ impl<M: Math> AdaptStrategy<M> for ExternalTransformAdaptation {
         let step_size = StepSizeStrategy::new(options.step_size_settings);
         let final_window_size =
             ((num_tune as f64) * (1f64 - options.step_size_window)).floor() as u64;
+        let early_end = ((num_tune as f64) * options.early_window) as u64;
         Self {
             step_size,
             options,
-            num_tune,
-            final_window_size,
+            schedule: WarmupSchedule {
+                early_end,
+                final_start: final_window_size,
+                num_tune,
+            },
             tuning: true,
             chain,
         }
@@ -214,17 +246,16 @@ impl<M: Math> AdaptStrategy<M> for ExternalTransformAdaptation {
     ) -> Result<(), NutsError> {
         self.step_size.update(&collector.collector1);
 
-        if draw >= self.num_tune {
-            // Needed for step size jitter
-            self.step_size.update_stepsize(rng, hamiltonian, true);
-            self.tuning = false;
-            return Ok(());
-        }
-
-        if draw < self.final_window_size {
-            self.step_size.update_min_micro_steps(options);
-            if draw < 100 {
-                if (draw > 0) && draw.is_multiple_of(10) {
+        let phase = self.schedule.phase(draw);
+        match phase {
+            WarmupPhase::Early | WarmupPhase::Main => {
+                self.step_size.update_min_micro_steps(options);
+                let update_freq = if phase == WarmupPhase::Early {
+                    self.options.early_transform_update_freq
+                } else {
+                    self.options.transform_update_freq
+                };
+                if (draw > 0) && draw.is_multiple_of(update_freq) {
                     hamiltonian.update_params(
                         math,
                         rng,
@@ -233,23 +264,22 @@ impl<M: Math> AdaptStrategy<M> for ExternalTransformAdaptation {
                         collector.collector2.logps.iter(),
                     )?;
                 }
-            } else if (draw > 0) && draw.is_multiple_of(self.options.transform_update_freq) {
-                hamiltonian.update_params(
-                    math,
-                    rng,
-                    collector.collector2.draws.iter(),
-                    collector.collector2.grads.iter(),
-                    collector.collector2.logps.iter(),
-                )?;
+                self.step_size.update_estimator_early();
+                // Only the last tuning draw if there is no final step size window.
+                let is_last = self.schedule.is_last_tuning_draw(draw);
+                self.step_size.update_stepsize(rng, hamiltonian, is_last);
             }
-            self.step_size.update_estimator_early();
-            self.step_size.update_stepsize(rng, hamiltonian, false);
-            return Ok(());
+            WarmupPhase::FinalStepSize => {
+                self.step_size.update_estimator_late();
+                let is_last = self.schedule.is_last_tuning_draw(draw);
+                self.step_size.update_stepsize(rng, hamiltonian, is_last);
+            }
+            WarmupPhase::Sampling => {
+                // Needed for step size jitter
+                self.step_size.update_stepsize(rng, hamiltonian, true);
+                self.tuning = false;
+            }
         }
-
-        self.step_size.update_estimator_late();
-        let is_last = draw == self.num_tune - 1;
-        self.step_size.update_stepsize(rng, hamiltonian, is_last);
         Ok(())
     }
 
@@ -266,6 +296,10 @@ impl<M: Math> AdaptStrategy<M> for ExternalTransformAdaptation {
 
     fn is_tuning(&self) -> bool {
         self.tuning
+    }
+
+    fn phase(&self, draw: u64) -> WarmupPhase {
+        self.schedule.phase(draw)
     }
 
     fn last_num_steps(&self) -> u64 {

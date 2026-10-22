@@ -10,7 +10,7 @@ use rand::{
 
 use crate::{
     Math, NutsError,
-    dynamics::{State, StatePool},
+    dynamics::{KineticEnergyKind, State, StatePool},
     nuts::Collector,
     sampler_stats::SamplerStats,
 };
@@ -247,6 +247,15 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
 
     fn step_size(&self) -> f64;
     fn step_size_mut(&mut self) -> &mut f64;
+
+    fn kinetic_energy_kind(&self) -> KineticEnergyKind;
+
+    /// Change the kinetic-energy kind (and thus the leapfrog integrator and
+    /// momentum distribution).
+    ///
+    /// When switching to or from [`KineticEnergyKind::Microcanonical`] the
+    /// caller is responsible for resampling the momentum.
+    fn set_kinetic_energy_kind(&mut self, kind: KineticEnergyKind);
 
     /// Return updated hamiltonian stats options to use on the next draw.
     ///

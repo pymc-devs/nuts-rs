@@ -44,6 +44,7 @@ use crate::{
         LowRankMassMatrixStrategy, LowRankSettings,
     },
     walnuts::WalnutsOptions,
+    warmup::WarmupPhase,
 };
 
 use crate::{
@@ -314,6 +315,12 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     /// - [`KineticEnergyKind::Microcanonical`]: isokinetic ESH-dynamics leapfrog (microcanonical
     ///   HMC); momentum is constrained to the unit sphere.
     pub trajectory_kind: KineticEnergyKind,
+    /// If set, used instead of `trajectory_kind` in the early warmup phase
+    /// (see [`WarmupPhase::Early`]). For instance, ExactNormal dynamics
+    /// assume that the transformed posterior is close to a standard normal,
+    /// which is not the case before the first mass matrix updates.
+    #[serde(default)]
+    pub early_trajectory_kind: Option<KineticEnergyKind>,
     pub num_chains: usize,
     pub seed: u64,
     /// Number of extra doublings of the trajectory after the U-turn, without
@@ -420,11 +427,6 @@ pub struct MclmcSettings<A: Debug + Copy + Default + Serialize> {
     /// to use.  See [`MclmcTrajectoryKind`] for the available options.
     /// Default: [`MclmcTrajectoryKind::Microcanonical`] (original MCLMC).
     pub trajectory_kind: MclmcTrajectoryKind,
-    /// Fraction of `num_tune` draws at which the trajectory is switched from
-    /// Euclidean to Microcanonical when
-    /// `trajectory_kind == MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical`.
-    /// Ignored for other trajectory kinds.  Default: `0.3`.
-    pub trajectory_switch_fraction: f64,
     /// Soft clipping for gradients.
     pub gradient_clipping: Option<f64>,
 }
@@ -480,11 +482,18 @@ fn validate_nuts<A: Debug + Copy + Default + Serialize>(settings: &NutsSettings<
     validate_draw_counts(settings.num_tune, settings.num_draws)?;
     if let Some(walnuts) = settings.walnuts {
         walnuts.validate()?;
-        if matches!(settings.trajectory_kind, KineticEnergyKind::Microcanonical) {
+        if uses_microcanonical(settings) {
             bail!("WALNUTS does not support microcanonical dynamics");
         }
     }
     Ok(())
+}
+
+/// Whether the NUTS settings use microcanonical dynamics in any warmup phase.
+fn uses_microcanonical<A: Debug + Copy + Default + Serialize>(settings: &NutsSettings<A>) -> bool {
+    std::iter::once(settings.trajectory_kind)
+        .chain(settings.early_trajectory_kind)
+        .any(|kind| kind == KineticEnergyKind::Microcanonical)
 }
 
 fn check_microcanonical_dim(microcanonical: bool, dim: usize) -> Result<()> {
@@ -516,7 +525,6 @@ fn default_mclmc_settings<A: Debug + Copy + Default + Serialize>(
         subsample_frequency: 1.0,
         dynamic_step_size: true,
         trajectory_kind: MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical,
-        trajectory_switch_fraction: 0.3,
         gradient_clipping: Some(1e10),
     }
 }
@@ -602,7 +610,6 @@ impl Settings for DiagMclmcSettings {
             self.gradient_clipping,
         );
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
-        let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
         Ok(MclmcChain::new(
@@ -614,7 +621,6 @@ impl Settings for DiagMclmcSettings {
             self.subsample_frequency,
             self.dynamic_step_size,
             self.trajectory_kind,
-            switch_draw,
             self.max_energy_error,
             stats_options,
         ))
@@ -703,6 +709,7 @@ fn default_nuts_settings<A: Debug + Copy + Default + Serialize>(
         num_chains,
         target_integration_time: None,
         trajectory_kind: KineticEnergyKind::Euclidean,
+        early_trajectory_kind: None,
         extra_doublings: 0,
         gradient_clipping: Some(1e10),
         walnuts: None,
@@ -752,7 +759,6 @@ impl Settings for LowRankMclmcSettings {
             self.gradient_clipping,
         );
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
-        let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
         Ok(MclmcChain::new(
@@ -764,7 +770,6 @@ impl Settings for LowRankMclmcSettings {
             self.subsample_frequency,
             self.dynamic_step_size,
             self.trajectory_kind,
-            switch_draw,
             self.max_energy_error,
             stats_options,
         ))
@@ -875,10 +880,11 @@ fn nuts_options(settings: &NutsSettings<impl Debug + Copy + Default + Serialize>
         target_integration_time: settings.target_integration_time,
         extra_doublings: settings.extra_doublings,
         max_energy_error: settings.max_energy_error,
-        uturn_check_first_step: matches!(settings.trajectory_kind, KineticEnergyKind::ExactNormal),
         walnuts: settings.walnuts,
-        early_window: false,
         max_leapfrog_steps: settings.max_leapfrog_steps,
+        trajectory_kind: settings.trajectory_kind,
+        early_trajectory_kind: settings.early_trajectory_kind,
+        phase: WarmupPhase::Sampling,
     }
 }
 
@@ -892,10 +898,7 @@ impl Settings for LowRankNutsSettings {
         mut rng: &mut R,
     ) -> Result<Self::Chain<M>> {
         self.validate()?;
-        check_microcanonical_dim(
-            matches!(self.trajectory_kind, KineticEnergyKind::Microcanonical),
-            math.dim(),
-        )?;
+        check_microcanonical_dim(uses_microcanonical(self), math.dim())?;
 
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
@@ -989,10 +992,7 @@ impl Settings for DiagNutsSettings {
         mut rng: &mut R,
     ) -> Result<Self::Chain<M>> {
         self.validate()?;
-        check_microcanonical_dim(
-            matches!(self.trajectory_kind, KineticEnergyKind::Microcanonical),
-            math.dim(),
-        )?;
+        check_microcanonical_dim(uses_microcanonical(self), math.dim())?;
 
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
@@ -1089,10 +1089,7 @@ impl Settings for FlowNutsSettings {
         mut rng: &mut R,
     ) -> Result<Self::Chain<M>> {
         self.validate()?;
-        check_microcanonical_dim(
-            matches!(self.trajectory_kind, KineticEnergyKind::Microcanonical),
-            math.dim(),
-        )?;
+        check_microcanonical_dim(uses_microcanonical(self), math.dim())?;
 
         let num_tune = self.num_tune;
 
@@ -1215,7 +1212,6 @@ impl Settings for FlowMclmcSettings {
         let mut hamiltonian =
             TransformedHamiltonian::new(&mut math, transform, initial_kind, self.gradient_clipping);
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
-        let switch_draw = (self.trajectory_switch_fraction * self.num_tune as f64) as u64;
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
         Ok(MclmcChain::new(
@@ -1227,7 +1223,6 @@ impl Settings for FlowMclmcSettings {
             self.subsample_frequency,
             self.dynamic_step_size,
             self.trajectory_kind,
-            switch_draw,
             self.max_energy_error,
             stats_options,
         ))

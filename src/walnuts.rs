@@ -22,6 +22,7 @@ use crate::{
     Math,
     dynamics::{Direction, DivergenceInfo, Hamiltonian, LeapfrogResult, Point, State},
     nuts::{BaseStepOutcome, Collector, StepInfo},
+    warmup::WarmupPhase,
 };
 
 /// How the energy error of a macro step is compared against `max_error`.
@@ -59,12 +60,11 @@ pub struct WalnutsOptions {
     /// Upper bound for the adapted `min_micro_steps`.
     #[serde(default = "default_max_min_micro_steps")]
     pub max_min_micro_steps: u64,
-    /// If set, used instead of `max_error` during the early window of the
-    /// mass matrix adaptation. Far from the typical set the first draws act
+    /// If set, used instead of `max_error` in the early warmup phase (see
+    /// [`WarmupPhase::Early`]). Far from the typical set the first draws act
     /// more like an optimizer, and a tight tolerance only makes the micro
     /// steps tiny. Can be infinite, which gives plain NUTS steps without a
-    /// divergence check. Has no effect with flow adaptation, which has no
-    /// early window.
+    /// divergence check.
     #[serde(default)]
     pub early_max_energy_error: Option<f64>,
 }
@@ -136,10 +136,10 @@ impl WalnutsOptions {
     }
 
     /// The options to use for one macro step, with `max_error` replaced by
-    /// `early_max_energy_error` in the early window.
-    pub(crate) fn for_window(&self, early_window: bool) -> Self {
+    /// `early_max_energy_error` in the early warmup phase.
+    pub(crate) fn for_phase(&self, phase: WarmupPhase) -> Self {
         match self.early_max_energy_error {
-            Some(max_error) if early_window => Self { max_error, ..*self },
+            Some(max_error) if phase == WarmupPhase::Early => Self { max_error, ..*self },
             _ => *self,
         }
     }

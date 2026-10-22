@@ -35,6 +35,7 @@ use crate::{
     sampler::Progress,
     sampler_stats::{SamplerStats, StatsDims},
     transform::Transformation,
+    warmup::WarmupPhase,
 };
 
 // ── Trajectory kind ───────────────────────────────────────────────────────────
@@ -59,10 +60,10 @@ pub enum MclmcTrajectoryKind {
     /// `α = exp(−ε/(2L))`.
     Euclidean,
 
-    /// Use the Euclidean trajectory during the early tuning window (the first
-    /// `trajectory_switch_fraction · num_tune` draws), then switch permanently
-    /// to the Microcanonical trajectory for the remainder of warmup and all
-    /// post-warmup draws.
+    /// Use the Euclidean trajectory during the early warmup phase (see
+    /// [`WarmupPhase::Early`](crate::WarmupPhase::Early)), then switch
+    /// permanently to the Microcanonical trajectory for the remainder of
+    /// warmup and all post-warmup draws.
     ///
     /// This can ease mass-matrix estimation in the early phase while still
     /// benefiting from the efficiency of the microcanonical trajectory later.
@@ -108,6 +109,8 @@ pub struct MclmcStats<P: HasDims, H: Storable<P>, A: Storable<P>, Pt: Storable<P
     /// See Robnik & Seljak (2023), arXiv:2212.08549.
     pub log_weight: f64,
     pub tuning: bool,
+    /// The warmup phase of the draw, see [`WarmupPhase::as_str`].
+    pub warmup_phase: String,
     #[storable(flatten)]
     pub hamiltonian: H,
     #[storable(flatten)]
@@ -154,10 +157,6 @@ where
     dynamic_step_size: bool,
     /// Which trajectory kind is currently requested.
     trajectory_kind: MclmcTrajectoryKind,
-    /// For [`MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical`]: the
-    /// draw index at which to permanently switch from Euclidean to
-    /// Microcanonical.  Ignored for other trajectory kinds.
-    switch_draw: u64,
     max_energy_error: f64,
     /// NutsOptions kept only to satisfy `AdaptStrategy::adapt`'s signature;
     /// MCLMC does not use tree-related options.
@@ -184,7 +183,6 @@ where
         subsample_frequency: f64,
         dynamic_step_size: bool,
         trajectory_kind: MclmcTrajectoryKind,
-        switch_draw: u64,
         max_energy_error: f64,
         stats_options: StatOptions<M, A>,
     ) -> Self {
@@ -202,7 +200,6 @@ where
             subsample_frequency,
             dynamic_step_size,
             trajectory_kind,
-            switch_draw,
             nuts_options: NutsOptions::default(),
             math: math.into(),
             stats_options,
@@ -452,6 +449,12 @@ where
             energy_change: info.energy_change,
             log_weight: info.energy_change,
             tuning: self.adapt.is_tuning(),
+            // `draw_count` was already incremented after the draw.
+            warmup_phase: self
+                .adapt
+                .phase(self.draw_count.saturating_sub(1))
+                .as_str()
+                .to_string(),
             hamiltonian: hamiltonian_stats,
             adapt: adapt_stats,
             point: point_stats,
@@ -510,7 +513,7 @@ where
         // the Euclidean-Gaussian momentum by projecting it.
         let resample_velocity = if self.trajectory_kind
             == MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical
-            && self.draw_count == self.switch_draw
+            && self.adapt.phase(self.draw_count) != WarmupPhase::Early
             && self.hamiltonian.kinetic_energy_kind != KineticEnergyKind::Microcanonical
         {
             self.hamiltonian
@@ -683,7 +686,6 @@ mod tests {
             num_tune: 200,
             num_draws: 500,
             trajectory_kind: MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical,
-            trajectory_switch_fraction: 0.3,
             ..MclmcSettings::default()
         };
 

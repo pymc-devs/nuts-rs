@@ -16,6 +16,7 @@ use crate::{
     nuts::{Collector, NutsOptions, SampleInfo, draw},
     sampler::Progress,
     sampler_stats::{SamplerStats, StatsDims},
+    warmup::WarmupPhase,
 };
 
 use anyhow::Result;
@@ -123,6 +124,8 @@ pub trait AdaptStrategy<M: Math>: SamplerStats<M> {
 
     fn new_collector(&self, math: &mut M) -> Self::Collector;
     fn is_tuning(&self) -> bool;
+    /// The warmup phase of the draw with index `draw`.
+    fn phase(&self, draw: u64) -> WarmupPhase;
     fn last_num_steps(&self) -> u64;
     fn last_num_gradients(&self) -> u64;
 }
@@ -145,6 +148,10 @@ where
         }
         let mut math_ = self.math.borrow_mut();
         let math = math_.deref_mut();
+        // The initial step size search should already use the settings of
+        // the first draw.
+        let phase = self.strategy.phase(self.draw_count);
+        self.options.set_phase(&mut self.hamiltonian, phase);
         self.strategy.init(
             math,
             &mut self.options,
@@ -159,6 +166,8 @@ where
     fn draw(&mut self) -> Result<(Box<[f64]>, Progress)> {
         let mut math_ = self.math.borrow_mut();
         let math = math_.deref_mut();
+        let phase = self.strategy.phase(self.draw_count);
+        self.options.set_phase(&mut self.hamiltonian, phase);
         let (state, info) = draw(
             math,
             &mut self.state,
@@ -238,6 +247,8 @@ pub struct NutsStats<P: HasDims, H: Storable<P>, A: Storable<P>, D: Storable<P>>
     pub min_micro_steps: Option<u64>,
     pub chain: u64,
     pub draw: u64,
+    /// The warmup phase of the draw, see [`WarmupPhase::as_str`].
+    pub warmup_phase: String,
     #[storable(flatten)]
     pub hamiltonian: H,
     #[storable(flatten)]
@@ -298,6 +309,7 @@ impl<M: Math, R: rand::Rng, A: AdaptStrategy<M>> SamplerStats<M> for NutsChain<M
             min_micro_steps: self.options.walnuts.map(|w| w.min_micro_steps),
             chain: self.chain,
             draw: self.draw_count,
+            warmup_phase: self.options.phase.as_str().to_string(),
             hamiltonian: hamiltonian_stats,
             adapt: adapt_stats,
             point: point_stats,

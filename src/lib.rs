@@ -112,6 +112,7 @@ mod stepsize;
 mod storage;
 mod transform;
 mod walnuts;
+mod warmup;
 
 pub use nuts_derive::Storable;
 pub use nuts_storable::{DateTimeUnit, HasDims, ItemType, Storable, Value};
@@ -125,6 +126,7 @@ pub use mclmc::{MclmcChain, MclmcInfo, MclmcStats, MclmcTrajectoryKind};
 pub use model::{InitPositionError, Model};
 pub use nuts::NutsError;
 pub use walnuts::{WalnutsEnergyCriterion, WalnutsOptions};
+pub use warmup::WarmupPhase;
 
 #[allow(deprecated)]
 pub use sampler::{

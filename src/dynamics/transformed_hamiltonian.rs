@@ -470,16 +470,6 @@ impl<M: Math, T: Transformation<M>> TransformedHamiltonian<M, T> {
     pub fn set_momentum_decoherence_length(&mut self, l: Option<f64>) {
         self.momentum_decoherence_length = l;
     }
-
-    /// Change the kinetic-energy kind (and thus the leapfrog integrator and
-    /// momentum distribution) used by this Hamiltonian.
-    ///
-    /// When switching from [`KineticEnergyKind::Euclidean`] to
-    /// [`KineticEnergyKind::Microcanonical`] the caller is responsible for
-    /// reinitializing the state.
-    pub fn set_kinetic_energy_kind(&mut self, kind: KineticEnergyKind) {
-        self.kinetic_energy_kind = kind;
-    }
 }
 
 impl<M: Math> TransformedHamiltonian<M, ExternalTransformation<M>> {
@@ -804,6 +794,14 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
 
     fn step_size_mut(&mut self) -> &mut f64 {
         &mut self.step_size
+    }
+
+    fn kinetic_energy_kind(&self) -> KineticEnergyKind {
+        self.kinetic_energy_kind
+    }
+
+    fn set_kinetic_energy_kind(&mut self, kind: KineticEnergyKind) {
+        self.kinetic_energy_kind = kind;
     }
 
     fn momentum_decoherence_length(&self) -> Option<f64> {
