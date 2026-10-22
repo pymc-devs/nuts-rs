@@ -19,18 +19,14 @@ use crate::{
     math::Math,
     nuts::{Collector, NutsOptions, StepInfo},
     sampler_stats::{SamplerStats, StatsDims},
+    warmup::{WarmupPhase, WarmupSchedule},
 };
 
 pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
     step_size: StepSizeStrategy,
     mass_matrix_adapt: A,
     options: EuclideanAdaptOptions<A::Options>,
-    num_tune: u64,
-    // The number of draws in the early window
-    early_end: u64,
-
-    // The first draw number for the final step size adaptation window
-    final_step_size_window: u64,
+    schedule: WarmupSchedule,
     tuning: bool,
     has_initial_mass_matrix: bool,
     last_update: u64,
@@ -93,6 +89,101 @@ impl<S: Debug + Default> Default for EuclideanAdaptOptions<S> {
     }
 }
 
+impl<M: Math, A: MassMatrixAdaptStrategy<M>> GlobalStrategy<M, A> {
+    /// Adaptation in the early and main phases.
+    #[allow(clippy::too_many_arguments)]
+    fn adapt_mass_matrix<R: Rng + ?Sized>(
+        &mut self,
+        math: &mut M,
+        options: &mut NutsOptions,
+        hamiltonian: &mut TransformedHamiltonian<M, A::Transformation>,
+        draw: u64,
+        collector: &<Self as AdaptStrategy<M>>::Collector,
+        state: &State<M, TransformedPoint<M>>,
+        rng: &mut R,
+    ) -> Result<(), NutsError> {
+        let phase = self.schedule.phase(draw);
+        let is_early = phase == WarmupPhase::Early;
+
+        self.step_size.update_min_micro_steps(options);
+
+        // At the transition from early to main phase, seed current_window_size as the
+        // maximum of the configured initial size and the background count already
+        // accumulated, so we never shrink the window.
+        if phase == WarmupPhase::Main && self.schedule.is_phase_start(draw) {
+            self.current_window_size = self
+                .current_window_size
+                .max(self.mass_matrix_adapt.background_count());
+        }
+
+        let switch_freq = if is_early {
+            self.options.early_mass_matrix_switch_freq
+        } else {
+            self.current_window_size
+        };
+
+        self.mass_matrix_adapt
+            .update_estimators(math, &collector.collector2);
+        // We only switch if we have switch_freq draws in the background estimate,
+        // and if the number of remaining mass matrix steps is larger than
+        // the switch frequency.
+        let could_switch = self.mass_matrix_adapt.background_count() >= switch_freq;
+        // For the main phase: after switching, the *next* window will be larger, so
+        // we must look ahead using that next size to decide whether there is
+        // still room for another full window before the step-size window.
+        let next_window_size = if is_early {
+            self.options.early_mass_matrix_switch_freq
+        } else {
+            (self.current_window_size + 1).max(
+                (self.current_window_size as f64 * self.options.mass_matrix_window_growth).round()
+                    as u64,
+            )
+        };
+        let no_room_for_window = next_window_size + draw > self.schedule.final_start;
+
+        let mut force_update = false;
+        if could_switch && !no_room_for_window {
+            self.mass_matrix_adapt.switch(math);
+            force_update = true;
+            // Grow the window for the next main-phase switch.
+            if !is_early {
+                self.current_window_size = next_window_size;
+            }
+        }
+
+        let did_change =
+            if force_update | (draw - self.last_update >= self.options.mass_matrix_update_freq) {
+                self.mass_matrix_adapt
+                    .adapt(math, hamiltonian.transformation_mut())
+            } else {
+                false
+            };
+
+        if did_change {
+            self.last_update = draw;
+        }
+
+        if no_room_for_window {
+            self.step_size.update_estimator_late();
+        } else {
+            self.step_size.update_estimator_early();
+        }
+
+        // First time we change the mass matrix
+        if did_change & self.has_initial_mass_matrix {
+            self.has_initial_mass_matrix = false;
+            let position = math.box_array(state.point().position());
+            self.step_size
+                .init(math, options, hamiltonian, &position, rng)?;
+        } else {
+            // Only the last tuning draw if there is no final step size window.
+            let is_last = self.schedule.is_last_tuning_draw(draw);
+            self.step_size.update_stepsize(rng, hamiltonian, is_last)
+        }
+        Ok(())
+    }
+}
+
 impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy<M, A> {
     type Hamiltonian = TransformedHamiltonian<M, A::Transformation>;
     type Collector =
@@ -114,9 +205,11 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
             step_size: StepSizeStrategy::new(options.step_size_settings),
             mass_matrix_adapt: A::new(math, options.mass_matrix_options, num_tune, chain),
             options,
-            num_tune,
-            early_end,
-            final_step_size_window: final_second_step_size,
+            schedule: WarmupSchedule {
+                early_end,
+                final_start: final_second_step_size,
+                num_tune,
+            },
             tuning: true,
             has_initial_mass_matrix: true,
             last_update: 0,
@@ -132,7 +225,6 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         position: &[f64],
         rng: &mut R,
     ) -> Result<(), NutsError> {
-        options.early_window = self.early_end > 0;
         let state = hamiltonian.init_state_untransformed(math, position)?;
         self.mass_matrix_adapt.init(
             math,
@@ -157,99 +249,22 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         rng: &mut R,
     ) -> Result<(), NutsError> {
         self.step_size.update(&collector.collector1);
-        // For the next draw.
-        options.early_window = draw + 1 < self.early_end;
 
-        if draw >= self.num_tune {
-            // Needed for step size jitter
-            self.step_size.update_stepsize(rng, hamiltonian, true);
-            self.tuning = false;
-            return Ok(());
-        }
-
-        if draw < self.final_step_size_window {
-            let is_early = draw < self.early_end;
-
-            self.step_size.update_min_micro_steps(options);
-
-            // At the transition from early to main phase, seed current_window_size as the
-            // maximum of the configured initial size and the background count already
-            // accumulated, so we never shrink the window.
-            if !is_early && draw == self.early_end {
-                self.current_window_size = self
-                    .current_window_size
-                    .max(self.mass_matrix_adapt.background_count());
+        match self.schedule.phase(draw) {
+            WarmupPhase::Early | WarmupPhase::Main => {
+                self.adapt_mass_matrix(math, options, hamiltonian, draw, collector, state, rng)?;
             }
-
-            let switch_freq = if is_early {
-                self.options.early_mass_matrix_switch_freq
-            } else {
-                self.current_window_size
-            };
-
-            self.mass_matrix_adapt
-                .update_estimators(math, &collector.collector2);
-            // We only switch if we have switch_freq draws in the background estimate,
-            // and if the number of remaining mass matrix steps is larger than
-            // the switch frequency.
-            let could_switch = self.mass_matrix_adapt.background_count() >= switch_freq;
-            // For the main phase: after switching, the *next* window will be larger, so
-            // is_late must look ahead using that next size to decide whether there is
-            // still room for another full window before the step-size window.
-            let next_window_size = if is_early {
-                self.options.early_mass_matrix_switch_freq
-            } else {
-                (self.current_window_size + 1).max(
-                    (self.current_window_size as f64 * self.options.mass_matrix_window_growth)
-                        .round() as u64,
-                )
-            };
-            let is_late = next_window_size + draw > self.final_step_size_window;
-
-            let mut force_update = false;
-            if could_switch && (!is_late) {
-                self.mass_matrix_adapt.switch(math);
-                force_update = true;
-                // Grow the window for the next main-phase switch.
-                if !is_early {
-                    self.current_window_size = next_window_size;
-                }
-            }
-
-            let did_change = if force_update
-                | (draw - self.last_update >= self.options.mass_matrix_update_freq)
-            {
-                self.mass_matrix_adapt
-                    .adapt(math, hamiltonian.transformation_mut())
-            } else {
-                false
-            };
-
-            if did_change {
-                self.last_update = draw;
-            }
-
-            if is_late {
+            WarmupPhase::FinalStepSize => {
                 self.step_size.update_estimator_late();
-            } else {
-                self.step_size.update_estimator_early();
+                let is_last = self.schedule.is_last_tuning_draw(draw);
+                self.step_size.update_stepsize(rng, hamiltonian, is_last);
             }
-
-            // First time we change the mass matrix
-            if did_change & self.has_initial_mass_matrix {
-                self.has_initial_mass_matrix = false;
-                let position = math.box_array(state.point().position());
-                self.step_size
-                    .init(math, options, hamiltonian, &position, rng)?;
-            } else {
-                self.step_size.update_stepsize(rng, hamiltonian, false)
+            WarmupPhase::Sampling => {
+                // Needed for step size jitter
+                self.step_size.update_stepsize(rng, hamiltonian, true);
+                self.tuning = false;
             }
-            return Ok(());
         }
-
-        self.step_size.update_estimator_late();
-        let is_last = draw == self.num_tune - 1;
-        self.step_size.update_stepsize(rng, hamiltonian, is_last);
         Ok(())
     }
 
@@ -262,6 +277,10 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
 
     fn is_tuning(&self) -> bool {
         self.tuning
+    }
+
+    fn phase(&self, draw: u64) -> WarmupPhase {
+        self.schedule.phase(draw)
     }
 
     fn last_num_steps(&self) -> u64 {
@@ -424,10 +443,11 @@ mod test {
             target_integration_time: None,
             extra_doublings: 0,
             max_energy_error: 1000.0,
-            uturn_check_first_step: false,
             walnuts: None,
-            early_window: false,
             max_leapfrog_steps: None,
+            trajectory_kind: KineticEnergyKind::Euclidean,
+            early_trajectory_kind: None,
+            phase: WarmupPhase::Sampling,
         };
 
         let rng = {

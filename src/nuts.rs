@@ -6,9 +6,12 @@ use thiserror::Error;
 
 use std::{fmt::Debug, marker::PhantomData};
 
-use crate::dynamics::{Direction, DivergenceInfo, Hamiltonian, LeapfrogResult, Point, State};
+use crate::dynamics::{
+    Direction, DivergenceInfo, Hamiltonian, KineticEnergyKind, LeapfrogResult, Point, State,
+};
 use crate::math::{Math, logaddexp};
 use crate::walnuts::{MacroStep, WalnutsOptions, macro_step};
+use crate::warmup::WarmupPhase;
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
@@ -238,7 +241,9 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
 
         let turning = if options.check_turning {
             let mut turning = hamiltonian.is_turning(math, first, last);
-            if options.uturn_check_first_step || (self.depth > 0) {
+            let uturn_check_first_step =
+                hamiltonian.kinetic_energy_kind() == KineticEnergyKind::ExactNormal;
+            if uturn_check_first_step || (self.depth > 0) {
                 if !turning {
                     turning = hamiltonian.is_turning(math, &self.right, &other.right);
                 }
@@ -312,7 +317,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         };
         let (end, num_steps) = match options.walnuts {
             Some(ref walnuts) => {
-                let walnuts = walnuts.for_window(options.early_window);
+                let walnuts = walnuts.for_phase(options.phase);
                 match macro_step(math, hamiltonian, start, direction, &walnuts, collector) {
                     Ok(MacroStep::Ok { end, num_steps }) => (end, num_steps),
                     Ok(MacroStep::Divergence(info)) => return Ok(LeafResult::Diverging(info)),
@@ -377,15 +382,32 @@ pub struct NutsOptions {
     pub target_integration_time: Option<f64>,
     pub extra_doublings: u64,
     pub max_energy_error: f64,
-    pub uturn_check_first_step: bool,
     /// Use WALNUTS macro steps instead of single leapfrog steps.
     pub walnuts: Option<WalnutsOptions>,
-    /// Whether the adaptation is in its early window. Set by the adapt
-    /// strategy, used for `WalnutsOptions::early_max_energy_error`.
-    pub early_window: bool,
     /// Stop the trajectory before it needs more leapfrog steps than this.
     /// See `NutsSettings::max_leapfrog_steps`.
     pub max_leapfrog_steps: Option<u64>,
+    pub trajectory_kind: KineticEnergyKind,
+    /// Used instead of `trajectory_kind` in the early warmup phase.
+    pub early_trajectory_kind: Option<KineticEnergyKind>,
+    /// The warmup phase of the current draw, see [`NutsOptions::set_phase`].
+    pub phase: WarmupPhase,
+}
+
+impl NutsOptions {
+    /// Apply the settings that depend on the warmup phase for the next draw.
+    pub(crate) fn set_phase<M: Math, H: Hamiltonian<M>>(
+        &mut self,
+        hamiltonian: &mut H,
+        phase: WarmupPhase,
+    ) {
+        self.phase = phase;
+        let kind = match self.early_trajectory_kind {
+            Some(kind) if phase == WarmupPhase::Early => kind,
+            _ => self.trajectory_kind,
+        };
+        hamiltonian.set_kinetic_energy_kind(kind);
+    }
 }
 
 impl Default for NutsOptions {
@@ -398,10 +420,11 @@ impl Default for NutsOptions {
             target_integration_time: None,
             extra_doublings: 0,
             max_energy_error: 1000.0,
-            uturn_check_first_step: true,
             walnuts: None,
-            early_window: false,
             max_leapfrog_steps: None,
+            trajectory_kind: KineticEnergyKind::Euclidean,
+            early_trajectory_kind: None,
+            phase: WarmupPhase::Sampling,
         }
     }
 }
