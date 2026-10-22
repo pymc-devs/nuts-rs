@@ -42,6 +42,13 @@ pub trait Chain<M: Math>: SamplerStats<M> {
     fn math(&self) -> Ref<'_, M>;
 }
 
+/// The last draw of a chain, used for the sampler stats.
+pub(crate) struct LastDraw<I> {
+    /// 0-based index of the draw.
+    pub(crate) draw: u64,
+    pub(crate) info: I,
+}
+
 pub struct NutsChain<M, R, A>
 where
     M: Math,
@@ -53,8 +60,9 @@ where
     options: NutsOptions,
     rng: R,
     state: State<M, <A::Hamiltonian as Hamiltonian<M>>::Point>,
-    last_info: Option<SampleInfo>,
+    last_draw: Option<LastDraw<SampleInfo>>,
     chain: u64,
+    /// Index of the next draw.
     draw_count: u64,
     strategy: A,
     math: RefCell<M>,
@@ -84,7 +92,7 @@ where
             options,
             rng,
             state: init,
-            last_info: None,
+            last_draw: None,
             chain,
             draw_count: 0,
             strategy,
@@ -199,10 +207,13 @@ where
             fisher_distance: state.point().fisher_distance(math),
         };
 
+        self.last_draw = Some(LastDraw {
+            draw: self.draw_count,
+            info,
+        });
         self.draw_count += 1;
 
         self.state = state;
-        self.last_info = Some(info);
         Ok((position, progress))
     }
 
@@ -298,7 +309,8 @@ impl<M: Math, R: rand::Rng, A: AdaptStrategy<M>> SamplerStats<M> for NutsChain<M
         let hamiltonian_stats = self.hamiltonian.extract_stats(math, options.hamiltonian);
         let adapt_stats = self.strategy.extract_stats(math, options.adapt);
         let point_stats = self.state.point().extract_stats(math, options.point);
-        let info = self.last_info.as_ref().expect("Sampler has not started");
+        let last = self.last_draw.as_ref().expect("Sampler has not started");
+        let info = &last.info;
         let div_info = info.divergence_info.as_ref();
 
         NutsStats {
@@ -308,13 +320,69 @@ impl<M: Math, R: rand::Rng, A: AdaptStrategy<M>> SamplerStats<M> for NutsChain<M
             irreversible: self.options.walnuts.map(|_| info.irreversible),
             min_micro_steps: self.options.walnuts.map(|w| w.min_micro_steps),
             chain: self.chain,
-            draw: self.draw_count,
+            draw: last.draw,
             warmup_phase: self.options.phase.as_str().to_string(),
             hamiltonian: hamiltonian_stats,
             adapt: adapt_stats,
             point: point_stats,
-            divergence: (div_info, options.divergence, self.draw_count).into(),
+            divergence: (div_info, options.divergence, last.draw).into(),
             _phantom: PhantomData,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::{SeedableRng, rngs::ChaCha8Rng};
+
+    use crate::{
+        Chain, DiagMclmcSettings, DiagNutsSettings, Settings, StepSizeAdaptMethod, math::CpuMath,
+        math::test_logps::NormalLogp,
+    };
+
+    /// The stats of a draw contain its 0-based index, like the progress.
+    #[test]
+    fn draw_index_in_stats() {
+        let mut nuts = DiagNutsSettings {
+            num_tune: 20,
+            ..Default::default()
+        };
+        // A huge step size, so that the draws diverge.
+        nuts.adapt_options.step_size_settings.adapt_options.method =
+            StepSizeAdaptMethod::Fixed(100.0);
+        nuts.adapt_options.step_size_settings.jitter = None;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let mut chain = nuts
+            .new_chain(0, CpuMath::new(NormalLogp::new(10, 3.0)), &mut rng)
+            .unwrap();
+        chain.set_position(&[0.1; 10]).unwrap();
+        let mut num_divergences = 0;
+        for draw in 0..30 {
+            let (_, _, stats, progress) = chain.expanded_draw().unwrap();
+            assert_eq!(progress.draw, draw);
+            assert_eq!(stats.draw, draw);
+            if stats.divergence.diverging {
+                num_divergences += 1;
+                assert_eq!(stats.divergence.divergence_draw, Some(draw));
+            }
+        }
+        assert!(num_divergences > 0);
+
+        let mclmc = DiagMclmcSettings {
+            num_tune: 20,
+            ..Default::default()
+        };
+        let mut chain = mclmc
+            .new_chain(0, CpuMath::new(NormalLogp::new(10, 3.0)), &mut rng)
+            .unwrap();
+        chain.set_position(&[0.1; 10]).unwrap();
+        for draw in 0..30 {
+            let (_, _, stats, progress) = chain.expanded_draw().unwrap();
+            assert_eq!(progress.draw, draw);
+            assert_eq!(stats.draw, draw);
+            if stats.divergence.diverging {
+                assert_eq!(stats.divergence.divergence_draw, Some(draw));
+            }
         }
     }
 }
