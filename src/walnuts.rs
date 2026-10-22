@@ -70,7 +70,7 @@ pub struct WalnutsOptions {
 }
 
 fn default_max_min_micro_steps() -> u64 {
-    1024
+    1024 * 4
 }
 
 impl Default for WalnutsOptions {
