@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Math, NutsError,
-    chain::{AdaptStrategy, Chain, StatOptions},
+    chain::{AdaptStrategy, Chain, LastDraw, StatOptions},
     dynamics::{
         Direction, DivergenceInfo, DivergenceStats, Hamiltonian, KineticEnergyKind, Point, State,
         TransformedHamiltonian, TransformedPoint,
@@ -140,6 +140,7 @@ where
     state: State<M, TransformedPoint<M>>,
     rng: R,
     chain: u64,
+    /// Index of the next draw.
     draw_count: u64,
     /// Number of leapfrog steps per draw, expressed as a fraction of `L / ε`.
     ///
@@ -163,7 +164,7 @@ where
     nuts_options: NutsOptions,
     math: RefCell<M>,
     stats_options: StatOptions<M, A>,
-    last_info: Option<MclmcInfo>,
+    last_draw: Option<LastDraw<MclmcInfo>>,
     tmp_velocity: M::Vector,
 }
 
@@ -203,7 +204,7 @@ where
             nuts_options: NutsOptions::default(),
             math: math.into(),
             stats_options,
-            last_info: None,
+            last_draw: None,
             tmp_velocity,
             max_energy_error,
         }
@@ -435,36 +436,27 @@ where
     type StatsOptions = StatOptions<M, A>;
 
     fn extract_stats(&self, math: &mut M, options: Self::StatsOptions) -> Self::Stats {
-        let info = self
-            .last_info
+        let last = self
+            .last_draw
             .as_ref()
             .expect("Sampler has not started yet");
+        let info = &last.info;
         let hamiltonian_stats = self.hamiltonian.extract_stats(math, options.hamiltonian);
         let adapt_stats = self.adapt.extract_stats(math, options.adapt);
         let point_stats = self.state.point().extract_stats(math, options.point);
         MclmcStats {
             chain: self.chain,
-            draw: self.draw_count,
+            draw: last.draw,
             num_steps: info.num_steps,
             energy_change: info.energy_change,
             log_weight: info.energy_change,
             tuning: self.adapt.is_tuning(),
-            // `draw_count` was already incremented after the draw.
-            warmup_phase: self
-                .adapt
-                .phase(self.draw_count.saturating_sub(1))
-                .as_str()
-                .to_string(),
+            warmup_phase: self.adapt.phase(last.draw).as_str().to_string(),
             hamiltonian: hamiltonian_stats,
             adapt: adapt_stats,
             point: point_stats,
             average_step_size: info.average_step_size,
-            divergence: (
-                info.divergence_info.as_ref(),
-                options.divergence,
-                self.draw_count,
-            )
-                .into(),
+            divergence: (info.divergence_info.as_ref(), options.divergence, last.draw).into(),
             _phantom: PhantomData,
         }
     }
@@ -564,9 +556,12 @@ where
         // Read after `adapt`, which ends tuning at draw `num_tune`, as in `NutsChain::draw`.
         progress.tuning = self.adapt.is_tuning();
 
+        self.last_draw = Some(LastDraw {
+            draw: self.draw_count,
+            info,
+        });
         self.draw_count += 1;
         self.state = state;
-        self.last_info = Some(info);
         Ok((position, progress))
     }
 
