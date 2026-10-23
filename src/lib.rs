@@ -125,7 +125,7 @@ pub use math::{CpuLogpFunc, CpuMath, CpuMathError, LogpError, Math};
 pub use mclmc::{MclmcChain, MclmcInfo, MclmcStats, MclmcTrajectoryKind};
 pub use model::{InitPositionError, Model};
 pub use nuts::NutsError;
-pub use walnuts::{WalnutsEnergyCriterion, WalnutsOptions};
+pub use walnuts::{ReversibilityCheck, WalnutsEnergyCriterion, WalnutsOptions};
 pub use warmup::WarmupPhase;
 
 #[allow(deprecated)]

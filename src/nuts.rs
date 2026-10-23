@@ -10,8 +10,7 @@ use crate::dynamics::{
     Direction, DivergenceInfo, Hamiltonian, KineticEnergyKind, LeapfrogResult, Point, State,
 };
 use crate::math::{Math, logaddexp};
-use crate::walnuts::{MacroStep, WalnutsOptions, macro_step};
-use crate::warmup::WarmupPhase;
+use crate::walnuts::{MacroStep, MacroStepOptions, macro_step};
 
 #[non_exhaustive]
 #[derive(Error, Debug)]
@@ -317,8 +316,7 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
         };
         let (end, num_steps) = match options.walnuts {
             Some(ref walnuts) => {
-                let walnuts = walnuts.for_phase(options.phase);
-                match macro_step(math, hamiltonian, start, direction, &walnuts, collector) {
+                match macro_step(math, hamiltonian, start, direction, walnuts, collector) {
                     Ok(MacroStep::Ok { end, num_steps }) => (end, num_steps),
                     Ok(MacroStep::Divergence(info)) => return Ok(LeafResult::Diverging(info)),
                     Ok(MacroStep::Irreversible) => return Ok(LeafResult::Irreversible),
@@ -373,41 +371,22 @@ impl<M: Math, H: Hamiltonian<M>, C: Collector<M, H::Point>> NutsTree<M, H, C> {
     }
 }
 
+/// What the NUTS tree needs for one trajectory. Built from the
+/// `NutsSettings`, the adaptation changes the WALNUTS macro step options
+/// during warmup.
 #[derive(Debug, Clone)]
 pub struct NutsOptions {
     pub maxdepth: u64,
     pub mindepth: u64,
     pub check_turning: bool,
-    pub store_divergences: bool,
     pub target_integration_time: Option<f64>,
     pub extra_doublings: u64,
     pub max_energy_error: f64,
-    /// Use WALNUTS macro steps instead of single leapfrog steps.
-    pub walnuts: Option<WalnutsOptions>,
     /// Stop the trajectory before it needs more leapfrog steps than this.
     /// See `NutsSettings::max_leapfrog_steps`.
     pub max_leapfrog_steps: Option<u64>,
-    pub trajectory_kind: KineticEnergyKind,
-    /// Used instead of `trajectory_kind` in the early warmup phase.
-    pub early_trajectory_kind: Option<KineticEnergyKind>,
-    /// The warmup phase of the current draw, see [`NutsOptions::set_phase`].
-    pub phase: WarmupPhase,
-}
-
-impl NutsOptions {
-    /// Apply the settings that depend on the warmup phase for the next draw.
-    pub(crate) fn set_phase<M: Math, H: Hamiltonian<M>>(
-        &mut self,
-        hamiltonian: &mut H,
-        phase: WarmupPhase,
-    ) {
-        self.phase = phase;
-        let kind = match self.early_trajectory_kind {
-            Some(kind) if phase == WarmupPhase::Early => kind,
-            _ => self.trajectory_kind,
-        };
-        hamiltonian.set_kinetic_energy_kind(kind);
-    }
+    /// Use WALNUTS macro steps instead of single leapfrog steps.
+    pub(crate) walnuts: Option<MacroStepOptions>,
 }
 
 impl Default for NutsOptions {
@@ -416,15 +395,11 @@ impl Default for NutsOptions {
             maxdepth: 10,
             mindepth: 0,
             check_turning: true,
-            store_divergences: false,
             target_integration_time: None,
             extra_doublings: 0,
             max_energy_error: 1000.0,
-            walnuts: None,
             max_leapfrog_steps: None,
-            trajectory_kind: KineticEnergyKind::Euclidean,
-            early_trajectory_kind: None,
-            phase: WarmupPhase::Sampling,
+            walnuts: None,
         }
     }
 }

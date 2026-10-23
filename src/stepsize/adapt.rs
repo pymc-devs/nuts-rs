@@ -14,6 +14,7 @@ use crate::{
     dynamics::{Direction, Hamiltonian, LeapfrogResult, Point},
     nuts::{Collector, NutsOptions},
     sampler_stats::SamplerStats,
+    walnuts::WalnutsOptions,
 };
 use std::f64;
 use std::fmt::Debug;
@@ -230,8 +231,15 @@ impl Strategy {
     /// Adapt the WALNUTS `min_micro_steps` in `options` to the last
     /// trajectory, if enabled, and rescale the step size to keep the micro
     /// step size.
-    pub fn update_min_micro_steps(&mut self, options: &mut NutsOptions) {
-        if let Some(factor) = self.min_micro_steps.update(options, self.last_depth) {
+    pub fn update_min_micro_steps(
+        &mut self,
+        walnuts: Option<&WalnutsOptions>,
+        options: &mut NutsOptions,
+    ) {
+        if let Some(factor) = self
+            .min_micro_steps
+            .update(walnuts, options, self.last_depth)
+        {
             self.rescale(factor);
         }
     }

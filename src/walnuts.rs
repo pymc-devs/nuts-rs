@@ -3,7 +3,7 @@
 //! Each leaf of the NUTS tree ("macro step") is integrated with
 //! `min_micro_steps * 2^k` leapfrog steps ("micro steps") of size
 //! `step_size / (min_micro_steps * 2^k)`, where `k` is the smallest value for
-//! which the Hamiltonian stays within `max_error`. To keep the transition
+//! which the Hamiltonian stays within `max_energy_error`. To keep the transition
 //! reversible, a macro step that needed `k > 0` is only accepted if none of
 //! the coarser step counts would have been chosen when integrating backwards
 //! from its end point. Otherwise the trajectory is stopped, just like after a
@@ -25,7 +25,7 @@ use crate::{
     warmup::WarmupPhase,
 };
 
-/// How the energy error of a macro step is compared against `max_error`.
+/// How the energy error of a macro step is compared against `max_energy_error`.
 ///
 /// Both criteria are symmetric under time reversal, so both give a valid
 /// sampler.
@@ -39,15 +39,44 @@ pub enum WalnutsEnergyCriterion {
     Endpoint,
 }
 
+/// When WALNUTS checks that a halved macro step is reversible, i.e. that
+/// integrating backwards from its end point would not have chosen a coarser
+/// step count.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReversibilityCheck {
+    /// In all phases. Needed for unbiased draws.
+    #[default]
+    Always,
+    /// Not in the early and main warmup phases, only in the final step size
+    /// window and during sampling.
+    AfterMain,
+    /// Never. The draws are biased.
+    Never,
+}
+
+impl ReversibilityCheck {
+    /// Whether to check in `phase`.
+    pub(crate) fn enabled(self, phase: WarmupPhase) -> bool {
+        match self {
+            ReversibilityCheck::Always => true,
+            ReversibilityCheck::AfterMain => {
+                !matches!(phase, WarmupPhase::Early | WarmupPhase::Main)
+            }
+            ReversibilityCheck::Never => false,
+        }
+    }
+}
+
 /// Settings for WALNUTS.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
 pub struct WalnutsOptions {
     /// Maximum number of times the micro step size is halved after the first
     /// attempt. If the macro step is still not within tolerance after that,
     /// it is treated as a divergence.
     pub max_step_halvings: u64,
     /// Maximum error of the Hamiltonian within a macro step.
-    pub max_error: f64,
+    pub max_energy_error: f64,
     /// Number of micro steps of the first attempt of each macro step.
     pub min_micro_steps: u64,
     /// How the energy error of a macro step is measured.
@@ -55,44 +84,41 @@ pub struct WalnutsOptions {
     /// If set, `min_micro_steps` is adapted during tuning as in walnutpie,
     /// see `MinMicroStepsAdaptation`. `min_micro_steps` is then the lower
     /// bound. walnutpie uses 15.
-    #[serde(default)]
     pub target_macro_steps: Option<f64>,
     /// Upper bound for the adapted `min_micro_steps`.
-    #[serde(default = "default_max_min_micro_steps")]
     pub max_min_micro_steps: u64,
-    /// If set, used instead of `max_error` in the early warmup phase (see
-    /// [`WarmupPhase::Early`]). Far from the typical set the first draws act
-    /// more like an optimizer, and a tight tolerance only makes the micro
-    /// steps tiny. Can be infinite, which gives plain NUTS steps without a
-    /// divergence check.
-    #[serde(default)]
+    /// If set, used instead of `max_energy_error` in the early warmup phase
+    /// (see [`WarmupPhase::Early`](crate::WarmupPhase::Early)). Far from the
+    /// typical set the first draws act more like an optimizer, and a tight
+    /// tolerance only makes the micro steps tiny. Can be infinite, which gives
+    /// plain NUTS steps without a divergence check.
     pub early_max_energy_error: Option<f64>,
-}
-
-fn default_max_min_micro_steps() -> u64 {
-    1024 * 4
+    /// In which warmup phases halved macro steps are checked for
+    /// reversibility. Skipping the check saves the backward integrations.
+    pub reversibility_check: ReversibilityCheck,
 }
 
 impl Default for WalnutsOptions {
     fn default() -> Self {
         WalnutsOptions {
             max_step_halvings: 8,
-            max_error: 0.5,
+            max_energy_error: 0.5,
             min_micro_steps: 1,
             energy_criterion: WalnutsEnergyCriterion::MaxMin,
             target_macro_steps: None,
-            max_min_micro_steps: default_max_min_micro_steps(),
+            max_min_micro_steps: 1024 * 4,
             early_max_energy_error: Some(f64::INFINITY),
+            reversibility_check: ReversibilityCheck::default(),
         }
     }
 }
 
 impl WalnutsOptions {
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
-        if !(self.max_error.is_finite() && self.max_error > 0.0) {
+        if !(self.max_energy_error.is_finite() && self.max_energy_error > 0.0) {
             anyhow::bail!(
-                "walnuts max_error must be positive and finite, got {}",
-                self.max_error
+                "walnuts max_energy_error must be positive and finite, got {}",
+                self.max_energy_error
             );
         }
         if let Some(early) = self.early_max_energy_error
@@ -135,14 +161,43 @@ impl WalnutsOptions {
         Ok(())
     }
 
-    /// The options to use for one macro step, with `max_error` replaced by
-    /// `early_max_energy_error` in the early warmup phase.
-    pub(crate) fn for_phase(&self, phase: WarmupPhase) -> Self {
-        match self.early_max_energy_error {
-            Some(max_error) if phase == WarmupPhase::Early => Self { max_error, ..*self },
-            _ => *self,
+    /// The macro step options for sampling. During warmup, the adaptation
+    /// sets the values of each phase.
+    pub(crate) fn macro_step_options(&self) -> MacroStepOptions {
+        MacroStepOptions {
+            max_step_halvings: self.max_step_halvings,
+            max_energy_error: self.max_energy_error(WarmupPhase::Sampling),
+            min_micro_steps: self.min_micro_steps,
+            energy_criterion: self.energy_criterion,
+            check_reversibility: self.reversibility_check.enabled(WarmupPhase::Sampling),
         }
     }
+
+    /// The tolerance for a draw in `phase`.
+    pub(crate) fn max_energy_error(&self, phase: WarmupPhase) -> f64 {
+        match self.early_max_energy_error {
+            Some(early) if phase == WarmupPhase::Early => early,
+            _ => self.max_energy_error,
+        }
+    }
+}
+
+/// What a single macro step needs. Derived from [`WalnutsOptions`] by the
+/// adaptation, which changes `max_energy_error` and `min_micro_steps` during
+/// warmup.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MacroStepOptions {
+    /// See [`WalnutsOptions::max_step_halvings`].
+    pub(crate) max_step_halvings: u64,
+    /// The tolerance for the current warmup phase.
+    pub(crate) max_energy_error: f64,
+    /// The current, possibly adapted, number of micro steps of the first
+    /// attempt.
+    pub(crate) min_micro_steps: u64,
+    pub(crate) energy_criterion: WalnutsEnergyCriterion,
+    /// Whether to check halved macro steps for reversibility in the current
+    /// warmup phase.
+    pub(crate) check_reversibility: bool,
 }
 
 pub(crate) enum MacroStep<M: Math, P: Point<M>> {
@@ -185,7 +240,7 @@ fn micro_integrate<M: Math, H: Hamiltonian<M>>(
     start: &State<M, H::Point>,
     dir: Direction,
     num_steps: u64,
-    options: &WalnutsOptions,
+    options: &MacroStepOptions,
     stop_early: bool,
     num_gradients: &mut u64,
 ) -> Result<MicroResult<M, H::Point>, M::LogpErr> {
@@ -223,7 +278,7 @@ fn micro_integrate<M: Math, H: Hamiltonian<M>>(
         min_energy = min_energy.min(energy);
         max_energy = max_energy.max(energy);
         if options.energy_criterion == WalnutsEnergyCriterion::MaxMin
-            && max_energy - min_energy > options.max_error
+            && max_energy - min_energy > options.max_energy_error
         {
             exceeded = true;
             if stop_early {
@@ -233,7 +288,7 @@ fn micro_integrate<M: Math, H: Hamiltonian<M>>(
     }
 
     let energy_error = current.energy() - start_energy;
-    if exceeded || energy_error.abs() > options.max_error {
+    if exceeded || energy_error.abs() > options.max_energy_error {
         Ok(MicroResult::Rejected {
             last: current,
             energy_error,
@@ -255,7 +310,7 @@ fn is_reversible<M: Math, H: Hamiltonian<M>>(
     end: &State<M, H::Point>,
     dir: Direction,
     mut num_steps: u64,
-    options: &WalnutsOptions,
+    options: &MacroStepOptions,
     num_gradients: &mut u64,
 ) -> Result<bool, M::LogpErr> {
     let back = dir.reverse();
@@ -291,7 +346,7 @@ pub(crate) fn macro_step<M, H, C>(
     hamiltonian: &mut H,
     start: &State<M, H::Point>,
     dir: Direction,
-    options: &WalnutsOptions,
+    options: &MacroStepOptions,
     collector: &mut C,
 ) -> Result<MacroStep<M, H::Point>, M::LogpErr>
 where
@@ -323,8 +378,10 @@ where
                 mut end,
                 energy_error,
             } => {
-                let reversible = if first {
+                if first {
                     base_step = BaseStepOutcome::EnergyError(energy_error);
+                }
+                let reversible = if first || !options.check_reversibility {
                     true
                 } else {
                     is_reversible(
@@ -409,9 +466,9 @@ mod tests {
     ) -> DiagNutsSettings {
         DiagNutsSettings {
             num_tune: 0,
-            trajectory_kind: kind,
-            walnuts,
             adapt_options: EuclideanAdaptOptions {
+                trajectory_kind: kind,
+                walnuts,
                 step_size_settings: StepSizeSettings {
                     jitter: None,
                     adapt_options: StepSizeAdaptOptions {
@@ -452,11 +509,9 @@ mod tests {
             if stats.irreversible == Some(true) {
                 num_irreversible += 1;
             }
-            assert_eq!(stats.irreversible.is_some(), settings.walnuts.is_some());
-            assert_eq!(
-                stats.min_micro_steps,
-                settings.walnuts.map(|w| w.min_micro_steps)
-            );
+            let walnuts = settings.adapt_options.walnuts;
+            assert_eq!(stats.irreversible.is_some(), walnuts.is_some());
+            assert_eq!(stats.min_micro_steps, walnuts.map(|w| w.min_micro_steps));
             draws.push(draw);
         }
         (draws, num_gradients, num_steps, num_irreversible)
@@ -465,20 +520,13 @@ mod tests {
     #[test]
     fn validate_options() {
         assert!(WalnutsOptions::default().validate().is_ok());
-        for early in [0.0, -1.0, f64::NAN] {
-            let bad = WalnutsOptions {
-                early_max_energy_error: Some(early),
-                ..Default::default()
-            };
-            assert!(bad.validate().is_err());
-        }
         let bad = WalnutsOptions {
             min_micro_steps: 0,
             ..Default::default()
         };
         assert!(bad.validate().is_err());
         let bad = WalnutsOptions {
-            max_error: f64::NAN,
+            max_energy_error: f64::NAN,
             ..Default::default()
         };
         assert!(bad.validate().is_err());
@@ -528,7 +576,7 @@ mod tests {
 
     /// Run tuning plus `num_draws` draws with `min_micro_steps` adaptation.
     fn run_adapted(settings: DiagNutsSettings, num_draws: usize) -> Adapted {
-        let walnuts = settings.walnuts.unwrap();
+        let walnuts = settings.adapt_options.walnuts.unwrap();
         let target = walnuts.target_macro_steps.unwrap();
         let mut rng = ChaCha8Rng::seed_from_u64(5);
         let mut chain = settings
@@ -584,36 +632,30 @@ mod tests {
             target_macro_steps: Some(1.0),
             ..Default::default()
         };
-        let settings = DiagNutsSettings {
+        let mut settings = DiagNutsSettings {
             num_tune: 1000,
-            walnuts: Some(walnuts),
             ..Default::default()
         };
+        settings.adapt_options.walnuts = Some(walnuts);
         let adapted = run_adapted(settings, 500);
         assert!(adapted.min_micro_steps > 1);
         // As in walnutpie, the trajectories end up longer than the target.
         assert!(adapted.sampling_macro_steps > 1.5);
 
         // The configured value is a lower bound.
-        let settings = DiagNutsSettings {
-            walnuts: Some(WalnutsOptions {
-                target_macro_steps: Some(1000.0),
-                min_micro_steps: 2,
-                ..walnuts
-            }),
-            ..settings
-        };
+        settings.adapt_options.walnuts = Some(WalnutsOptions {
+            target_macro_steps: Some(1000.0),
+            min_micro_steps: 2,
+            ..walnuts
+        });
         assert_eq!(run_adapted(settings, 10).min_micro_steps, 2);
 
         // And `max_min_micro_steps` the upper bound.
-        let settings = DiagNutsSettings {
-            walnuts: Some(WalnutsOptions {
-                target_macro_steps: Some(0.1),
-                max_min_micro_steps: 4,
-                ..walnuts
-            }),
-            ..settings
-        };
+        settings.adapt_options.walnuts = Some(WalnutsOptions {
+            target_macro_steps: Some(0.1),
+            max_min_micro_steps: 4,
+            ..walnuts
+        });
         assert_eq!(run_adapted(settings, 10).min_micro_steps, 4);
 
         // Also adapted with a fixed step size.
@@ -642,11 +684,12 @@ mod tests {
         };
 
         let options = WalnutsOptions {
-            max_error: 1e-12,
+            max_energy_error: 1e-12,
             max_step_halvings: 0,
             energy_criterion: WalnutsEnergyCriterion::Endpoint,
             ..Default::default()
-        };
+        }
+        .macro_step_options();
         let nuts_options = NutsOptions {
             walnuts: Some(options),
             ..Default::default()
@@ -692,15 +735,22 @@ mod tests {
         assert!(num_downhill > 0);
     }
 
-    /// In the early window, `early_max_energy_error` replaces `max_error`.
+    /// In the early phase, `early_max_energy_error` replaces `max_energy_error`.
     #[test]
     fn early_max_energy_error() {
         let walnuts = WalnutsOptions {
-            max_error: 1e-3,
+            max_energy_error: 1e-3,
             early_max_energy_error: Some(f64::INFINITY),
             ..Default::default()
         };
         assert!(walnuts.validate().is_ok());
+        for bad in [0.0, -1.0, f64::NAN] {
+            let bad = WalnutsOptions {
+                early_max_energy_error: Some(bad),
+                ..walnuts
+            };
+            assert!(bad.validate().is_err());
+        }
         let mut settings = fixed_step_settings(0.5, KineticEnergyKind::Euclidean, Some(walnuts));
         settings.num_tune = 100;
         settings.adapt_options.early_window = 0.3;
@@ -725,13 +775,97 @@ mod tests {
         assert!(split_after_early);
     }
 
+    /// Missing fields of the settings get their `Default` values.
+    #[test]
+    fn deserialize_partial_settings() {
+        let walnuts: WalnutsOptions = serde_json::from_str(r#"{"max_step_halvings": 3}"#).unwrap();
+        assert_eq!(walnuts.max_step_halvings, 3);
+        assert_eq!(walnuts.max_min_micro_steps, 1024 * 4);
+        assert_eq!(walnuts.early_max_energy_error, Some(f64::INFINITY));
+
+        let adapt: EuclideanAdaptOptions<crate::DiagAdaptExpSettings> =
+            serde_json::from_str(r#"{"early_window": 0.2, "walnuts": {}}"#).unwrap();
+        assert_eq!(adapt.early_window, 0.2);
+        assert_eq!(adapt.step_size_window, 0.15);
+        assert_eq!(adapt.gradient_clipping, None);
+        assert_eq!(adapt.early_gradient_clipping, Some(1e6));
+        assert_eq!(adapt.walnuts.unwrap().max_step_halvings, 8);
+
+        let flow: crate::FlowSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(flow.early_window, 0.033);
+        assert_eq!(flow.early_transform_update_freq, 10);
+    }
+
+    #[test]
+    fn reversibility_check_phases() {
+        use WarmupPhase::*;
+        let phases = [Early, Main, FinalStepSize, Sampling];
+        let enabled = |check: ReversibilityCheck| phases.map(|phase| check.enabled(phase));
+        assert_eq!(enabled(ReversibilityCheck::Always), [true; 4]);
+        assert_eq!(
+            enabled(ReversibilityCheck::AfterMain),
+            [false, false, true, true]
+        );
+        assert_eq!(enabled(ReversibilityCheck::Never), [false; 4]);
+    }
+
+    /// Without the reversibility check there are no irreversible stops, and
+    /// no gradients are spent on backward integrations.
+    #[test]
+    fn never_check_reversibility() {
+        let logp = NormalLogp::new(10, 3.0);
+        let always = WalnutsOptions::default();
+        let never = WalnutsOptions {
+            reversibility_check: ReversibilityCheck::Never,
+            ..always
+        };
+        let settings =
+            |walnuts| fixed_step_settings(1.5, KineticEnergyKind::Euclidean, Some(walnuts));
+        let (_, always_grads, always_steps, always_irreversible) =
+            run(settings(always), logp.clone(), 500, 7);
+        let (_, never_grads, never_steps, never_irreversible) = run(settings(never), logp, 500, 7);
+        assert!(always_irreversible > 0);
+        assert_eq!(never_irreversible, 0);
+        assert!(
+            (never_grads as f64 / never_steps as f64) < (always_grads as f64 / always_steps as f64)
+        );
+    }
+
+    /// `NotInEarlyAndMain` only checks from the final step size window on,
+    /// which starts at draw 85 of 100 tuning draws.
+    #[test]
+    fn check_reversibility_after_main() {
+        let walnuts = WalnutsOptions {
+            early_max_energy_error: None,
+            reversibility_check: ReversibilityCheck::AfterMain,
+            ..Default::default()
+        };
+        let mut settings = fixed_step_settings(1.5, KineticEnergyKind::Euclidean, Some(walnuts));
+        settings.num_tune = 100;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let logp = NormalLogp::new(10, 3.0);
+        let mut chain = settings.new_chain(0, CpuMath::new(logp), &mut rng).unwrap();
+        chain.set_position(&[0.1; 10]).unwrap();
+        let mut irreversible_later = 0;
+        for draw in 0..600 {
+            let (_, _, stats, _) = chain.expanded_draw().unwrap();
+            let irreversible = stats.irreversible == Some(true);
+            if draw < 85 {
+                assert!(!irreversible, "draw {draw} was checked");
+            } else if irreversible {
+                irreversible_later += 1;
+            }
+        }
+        assert!(irreversible_later > 0);
+    }
+
     /// If no step is ever split, WALNUTS takes exactly the same steps and
     /// uses the same random numbers as NUTS.
     #[test]
     fn same_as_nuts_without_splitting() {
         for kind in [KineticEnergyKind::Euclidean, KineticEnergyKind::ExactNormal] {
             let walnuts = WalnutsOptions {
-                max_error: 1e10,
+                max_energy_error: 1e10,
                 ..Default::default()
             };
             let logp = NormalLogp::new(10, 3.0);
@@ -870,11 +1004,11 @@ mod tests {
     /// step size must not run away even though split steps always succeed.
     #[test]
     fn step_size_adaptation_stays_bounded() {
-        let settings = DiagNutsSettings {
+        let mut settings = DiagNutsSettings {
             num_tune: 500,
-            walnuts: Some(WalnutsOptions::default()),
             ..Default::default()
         };
+        settings.adapt_options.walnuts = Some(WalnutsOptions::default());
         let mut rng = ChaCha8Rng::seed_from_u64(3);
         let mut chain = settings
             .new_chain(0, CpuMath::new(NormalLogp::new(10, 3.0)), &mut rng)

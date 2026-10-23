@@ -1,12 +1,18 @@
 //! Phases of the warmup schedule, shared by the adaptation strategies and
 //! the settings that change during warmup.
 
+use crate::{
+    Math,
+    dynamics::{Hamiltonian, KineticEnergyKind},
+    nuts::NutsOptions,
+    walnuts::WalnutsOptions,
+};
+
 /// The phase of the warmup schedule that a draw belongs to.
 ///
-/// Adaptation strategies use it to decide what to adapt, and the chain uses
-/// it for settings that depend on the phase, like
-/// `WalnutsOptions::early_max_energy_error` and
-/// `NutsSettings::early_trajectory_kind`.
+/// Adaptation strategies use it to decide what to adapt, and to set the
+/// settings that change between phases, like the `early_*` settings of the
+/// adaptation options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WarmupPhase {
     /// The first draws of warmup, far from the typical set. The mass matrix
@@ -30,6 +36,69 @@ impl WarmupPhase {
             WarmupPhase::FinalStepSize => "final_step_size",
             WarmupPhase::Sampling => "sampling",
         }
+    }
+}
+
+/// The settings of the dynamics that can change between warmup phases.
+///
+/// They are part of the adaptation options, because the adaptation sets
+/// them for each phase, see [`set_phase_settings`].
+pub(crate) trait DynamicsOptions {
+    fn trajectory_kind(&self) -> KineticEnergyKind;
+    fn early_trajectory_kind(&self) -> Option<KineticEnergyKind>;
+    fn gradient_clipping(&self) -> Option<f64>;
+    fn early_gradient_clipping(&self) -> Option<f64>;
+    fn walnuts(&self) -> Option<WalnutsOptions>;
+
+    /// Whether the dynamics are microcanonical in any warmup phase.
+    fn uses_microcanonical(&self) -> bool {
+        std::iter::once(self.trajectory_kind())
+            .chain(self.early_trajectory_kind())
+            .any(|kind| kind == KineticEnergyKind::Microcanonical)
+    }
+
+    fn validate_dynamics(&self) -> anyhow::Result<()> {
+        if let Some(clip) = self.early_gradient_clipping()
+            && (clip.is_nan() || clip <= 0.0)
+        {
+            anyhow::bail!("early_gradient_clipping must be positive, got {clip}");
+        }
+        if let Some(walnuts) = self.walnuts() {
+            walnuts.validate()?;
+            if self.uses_microcanonical() {
+                anyhow::bail!("WALNUTS does not support microcanonical dynamics");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Set the settings that change between warmup phases to their values in
+/// `phase`. Adaptation strategies call this when a new phase starts.
+///
+/// The trajectory kind is only set if there is an `early_trajectory_kind`,
+/// because MCLMC switches its trajectory kind itself.
+pub(crate) fn set_phase_settings<M: Math, H: Hamiltonian<M>>(
+    phase: WarmupPhase,
+    dynamics: &impl DynamicsOptions,
+    options: &mut NutsOptions,
+    hamiltonian: &mut H,
+) {
+    let early = phase == WarmupPhase::Early;
+    if let Some(early_kind) = dynamics.early_trajectory_kind() {
+        hamiltonian.set_kinetic_energy_kind(if early {
+            early_kind
+        } else {
+            dynamics.trajectory_kind()
+        });
+    }
+    hamiltonian.set_gradient_clipping(match dynamics.early_gradient_clipping() {
+        Some(clip) if early => Some(clip),
+        _ => dynamics.gradient_clipping(),
+    });
+    if let (Some(step), Some(walnuts)) = (options.walnuts.as_mut(), dynamics.walnuts()) {
+        step.max_energy_error = walnuts.max_energy_error(phase);
+        step.check_reversibility = walnuts.reversibility_check.enabled(phase);
     }
 }
 
@@ -89,12 +158,12 @@ mod tests {
         trajectory_kind: KineticEnergyKind,
         early_trajectory_kind: Option<KineticEnergyKind>,
     ) -> Vec<Box<[f64]>> {
-        let settings = DiagNutsSettings {
+        let mut settings = DiagNutsSettings {
             num_tune: 100,
-            trajectory_kind,
-            early_trajectory_kind,
             ..Default::default()
         };
+        settings.adapt_options.trajectory_kind = trajectory_kind;
+        settings.adapt_options.early_trajectory_kind = early_trajectory_kind;
         let mut rng = ChaCha8Rng::seed_from_u64(42);
         let logp = NormalLogp::new(10, 3.0);
         let mut chain = settings.new_chain(0, CpuMath::new(logp), &mut rng).unwrap();
@@ -115,6 +184,18 @@ mod tests {
         assert_ne!(euclidean[..30], exact[..30]);
         assert_eq!(euclidean[..30], switched[..30]);
         assert_ne!(euclidean[30..], switched[30..]);
+
+        // MCLMC switches the trajectory kind itself, and has no WALNUTS.
+        assert!(DiagMclmcSettings::default().validate().is_ok());
+        let mut mclmc = DiagMclmcSettings::default();
+        mclmc.adapt_options.early_trajectory_kind = Some(KineticEnergyKind::Euclidean);
+        assert!(mclmc.validate().is_err());
+        let mut mclmc = DiagMclmcSettings::default();
+        mclmc.adapt_options.trajectory_kind = KineticEnergyKind::ExactNormal;
+        assert!(mclmc.validate().is_err());
+        let mut mclmc = DiagMclmcSettings::default();
+        mclmc.adapt_options.walnuts = Some(crate::WalnutsOptions::default());
+        assert!(mclmc.validate().is_err());
     }
 
     /// Without a final step size window, the last tuning draw still sets the

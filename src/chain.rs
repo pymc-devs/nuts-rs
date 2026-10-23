@@ -156,10 +156,6 @@ where
         }
         let mut math_ = self.math.borrow_mut();
         let math = math_.deref_mut();
-        // The initial step size search should already use the settings of
-        // the first draw.
-        let phase = self.strategy.phase(self.draw_count);
-        self.options.set_phase(&mut self.hamiltonian, phase);
         self.strategy.init(
             math,
             &mut self.options,
@@ -174,8 +170,6 @@ where
     fn draw(&mut self) -> Result<(Box<[f64]>, Progress)> {
         let mut math_ = self.math.borrow_mut();
         let math = math_.deref_mut();
-        let phase = self.strategy.phase(self.draw_count);
-        self.options.set_phase(&mut self.hamiltonian, phase);
         let (state, info) = draw(
             math,
             &mut self.state,
@@ -321,7 +315,7 @@ impl<M: Math, R: rand::Rng, A: AdaptStrategy<M>> SamplerStats<M> for NutsChain<M
             min_micro_steps: self.options.walnuts.map(|w| w.min_micro_steps),
             chain: self.chain,
             draw: last.draw,
-            warmup_phase: self.options.phase.as_str().to_string(),
+            warmup_phase: self.strategy.phase(last.draw).as_str().to_string(),
             hamiltonian: hamiltonian_stats,
             adapt: adapt_stats,
             point: point_stats,
@@ -339,6 +333,49 @@ mod tests {
         Chain, DiagMclmcSettings, DiagNutsSettings, Settings, StepSizeAdaptMethod, math::CpuMath,
         math::test_logps::NormalLogp,
     };
+
+    /// `early_gradient_clipping` is used in the early phase, and the
+    /// gradient of the current point is recomputed when the phase ends.
+    #[test]
+    fn early_gradient_clipping() {
+        let mut settings = DiagNutsSettings {
+            num_tune: 100,
+            store_gradient: true,
+            ..Default::default()
+        };
+        settings.adapt_options.gradient_clipping = None;
+        settings.adapt_options.early_gradient_clipping = Some(1.0);
+        // With a huge step size every trajectory diverges in the first
+        // step, so each draw is its starting point. Without recomputing,
+        // the first draw after the early phase would keep the clipped
+        // gradient.
+        settings
+            .adapt_options
+            .step_size_settings
+            .adapt_options
+            .method = StepSizeAdaptMethod::Fixed(100.0);
+        settings.adapt_options.step_size_settings.jitter = None;
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let mut chain = settings
+            .new_chain(0, CpuMath::new(NormalLogp::new(10, 3.0)), &mut rng)
+            .unwrap();
+        chain.set_position(&[20.0; 10]).unwrap();
+        for draw in 0..40 {
+            let (position, _, stats, _) = chain.expanded_draw().unwrap();
+            assert!(stats.divergence.diverging);
+            let gradient = stats.point.gradient.unwrap();
+            let exact: Vec<_> = position.iter().map(|x| 3.0 - x).collect();
+            // The early phase is the first 30 draws.
+            if draw < 30 {
+                assert!(gradient.iter().zip(&exact).all(|(g, e)| g.abs() < e.abs()));
+            } else {
+                assert_eq!(gradient, exact, "draw {draw}");
+            }
+        }
+
+        settings.adapt_options.early_gradient_clipping = Some(0.0);
+        assert!(settings.validate().is_err());
+    }
 
     /// The stats of a draw contain its 0-based index, like the progress.
     #[test]
