@@ -2,7 +2,7 @@
 
 use nuts_derive::Storable;
 
-use crate::nuts::NutsOptions;
+use crate::{nuts::NutsOptions, walnuts::WalnutsOptions};
 
 /// Adapts the WALNUTS `min_micro_steps` during tuning, as in walnutpie.
 ///
@@ -24,7 +24,6 @@ use crate::nuts::NutsOptions;
 /// size stays the same.
 #[derive(Debug)]
 pub(crate) struct MinMicroStepsAdaptation {
-    lower_bound: Option<u64>,
     sum: f64,
     count: f64,
     last_unrounded: Option<f64>,
@@ -33,7 +32,6 @@ pub(crate) struct MinMicroStepsAdaptation {
 impl Default for MinMicroStepsAdaptation {
     fn default() -> Self {
         Self {
-            lower_bound: None,
             sum: 2.0,
             count: 1.0,
             last_unrounded: None,
@@ -57,21 +55,27 @@ impl MinMicroStepsAdaptation {
     /// Observe the depth of the last trajectory and update `min_micro_steps`
     /// in `options`. Returns the factor by which it changed, if it did.
     /// Does nothing if the adaptation is disabled.
-    pub(crate) fn update(&mut self, options: &mut NutsOptions, depth: u64) -> Option<f64> {
-        let walnuts = options.walnuts.as_mut()?;
+    pub(crate) fn update(
+        &mut self,
+        walnuts: Option<&WalnutsOptions>,
+        options: &mut NutsOptions,
+        depth: u64,
+    ) -> Option<f64> {
+        let walnuts = walnuts?;
         let target = walnuts.target_macro_steps?;
-        let current = walnuts.min_micro_steps;
-        let lower_bound = *self.lower_bound.get_or_insert(current);
+        let step = options.walnuts.as_mut()?;
+        let current = step.min_micro_steps;
 
         self.sum += 2f64.powi(depth as i32);
         self.count += 1.0;
         let unrounded = self.sum / self.count / target;
         self.last_unrounded = Some(unrounded);
-        let new = (unrounded.round() as u64).clamp(lower_bound, walnuts.max_min_micro_steps);
+        let new =
+            (unrounded.round() as u64).clamp(walnuts.min_micro_steps, walnuts.max_min_micro_steps);
         if new == current {
             return None;
         }
-        walnuts.min_micro_steps = new;
+        step.min_micro_steps = new;
         Some(new as f64 / current as f64)
     }
 

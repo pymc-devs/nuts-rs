@@ -257,6 +257,13 @@ pub trait Hamiltonian<M: Math>: SamplerStats<M> + Sized {
     /// caller is responsible for resampling the momentum.
     fn set_kinetic_energy_kind(&mut self, kind: KineticEnergyKind);
 
+    /// Soft clipping applied to the gradients of new points.
+    fn gradient_clipping(&self) -> Option<f64>;
+
+    /// Change the gradient clipping. States whose gradient was computed with
+    /// a different clipping are re-evaluated in `initialize_trajectory`.
+    fn set_gradient_clipping(&mut self, clip: Option<f64>);
+
     /// Return updated hamiltonian stats options to use on the next draw.
     ///
     /// Called in `expanded_draw` after stats extraction.  For hamiltonians

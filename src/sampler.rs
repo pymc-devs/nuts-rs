@@ -43,8 +43,7 @@ use crate::{
         DiagAdaptStrategy, DiagMassMatrix, ExternalTransformation, LowRankMassMatrix,
         LowRankMassMatrixStrategy, LowRankSettings,
     },
-    walnuts::WalnutsOptions,
-    warmup::WarmupPhase,
+    warmup::DynamicsOptions,
 };
 
 use crate::{
@@ -255,7 +254,7 @@ fn disabled_mclmc_stats(
 }
 
 /// The NUTS stats the settings suppress.
-fn disabled_nuts_stats<A: Debug + Copy + Default + Serialize>(
+fn disabled_nuts_stats<A: Debug + Copy + Default + Serialize + DynamicsOptions>(
     settings: &NutsSettings<A>,
 ) -> Vec<&'static str> {
     let mut names = disabled_point_stats(
@@ -263,14 +262,12 @@ fn disabled_nuts_stats<A: Debug + Copy + Default + Serialize>(
         settings.store_unconstrained,
         settings.store_transformed,
     );
-    if settings.walnuts.is_none() {
+    let walnuts = settings.adapt_options.walnuts();
+    if walnuts.is_none() {
         names.push("irreversible");
         names.push("min_micro_steps");
     }
-    if settings
-        .walnuts
-        .is_none_or(|walnuts| walnuts.target_macro_steps.is_none())
-    {
+    if walnuts.is_none_or(|walnuts| walnuts.target_macro_steps.is_none()) {
         names.push("macro_steps_mean");
         names.push("min_micro_steps_unrounded");
     }
@@ -307,20 +304,6 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     pub adapt_options: A,
     pub check_turning: bool,
     pub target_integration_time: Option<f64>,
-    /// Selects the kinetic-energy form and the corresponding integrator.
-    ///
-    /// - [`KineticEnergyKind::Euclidean`]: standard leapfrog (default for most settings).
-    /// - [`KineticEnergyKind::ExactNormal`]: geodesic leapfrog exact for a standard-normal
-    ///   potential.
-    /// - [`KineticEnergyKind::Microcanonical`]: isokinetic ESH-dynamics leapfrog (microcanonical
-    ///   HMC); momentum is constrained to the unit sphere.
-    pub trajectory_kind: KineticEnergyKind,
-    /// If set, used instead of `trajectory_kind` in the early warmup phase
-    /// (see [`WarmupPhase::Early`]). For instance, ExactNormal dynamics
-    /// assume that the transformed posterior is close to a standard normal,
-    /// which is not the case before the first mass matrix updates.
-    #[serde(default)]
-    pub early_trajectory_kind: Option<KineticEnergyKind>,
     pub num_chains: usize,
     pub seed: u64,
     /// Number of extra doublings of the trajectory after the U-turn, without
@@ -331,16 +314,6 @@ pub struct NutsSettings<A: Debug + Copy + Default + Serialize> {
     /// this is not zero, because points in the extended trajectory would not
     /// all have produced the same trajectory.
     pub extra_doublings: u64,
-    /// Soft clipping for gradients.
-    pub gradient_clipping: Option<f64>,
-    /// Use WALNUTS (within-orbit adaptive step sizes) instead of plain NUTS.
-    ///
-    /// Each leapfrog step of the NUTS trajectory is split into smaller steps
-    /// if needed to keep the energy error below `max_error`. The step size
-    /// is then adapted to the energy error of the unsplit steps. Not
-    /// supported with [`KineticEnergyKind::Microcanonical`].
-    #[serde(default)]
-    pub walnuts: Option<WalnutsOptions>,
     /// Maximum number of leapfrog steps per draw.
     ///
     /// The trajectory stops before a doubling that cannot fit. If a doubling
@@ -427,8 +400,6 @@ pub struct MclmcSettings<A: Debug + Copy + Default + Serialize> {
     /// to use.  See [`MclmcTrajectoryKind`] for the available options.
     /// Default: [`MclmcTrajectoryKind::Microcanonical`] (original MCLMC).
     pub trajectory_kind: MclmcTrajectoryKind,
-    /// Soft clipping for gradients.
-    pub gradient_clipping: Option<f64>,
 }
 
 /// MCLMC settings with a diagonal mass matrix adaptation.
@@ -463,10 +434,21 @@ fn validate_draw_counts(num_tune: u64, num_draws: u64) -> Result<()> {
     Ok(())
 }
 
-fn validate_mclmc<A: Debug + Copy + Default + Serialize>(
+/// MCLMC switches its trajectory kind itself, see [`MclmcTrajectoryKind`],
+/// and has no WALNUTS steps.
+fn validate_mclmc<A: Debug + Copy + Default + Serialize + DynamicsOptions>(
     settings: &MclmcSettings<A>,
 ) -> Result<()> {
     validate_draw_counts(settings.num_tune, settings.num_draws)?;
+    let adapt = &settings.adapt_options;
+    if adapt.trajectory_kind() != KineticEnergyKind::default()
+        || adapt.early_trajectory_kind().is_some()
+    {
+        bail!("MCLMC uses its own trajectory_kind, not the one of the adaptation options");
+    }
+    if adapt.walnuts().is_some() {
+        bail!("WALNUTS is not supported with MCLMC");
+    }
     if !(settings.step_size.is_finite() && settings.step_size > 0.0) {
         bail!(
             "step_size must be positive and finite, got {}",
@@ -476,26 +458,12 @@ fn validate_mclmc<A: Debug + Copy + Default + Serialize>(
     Ok(())
 }
 
+fn validate_nuts<A: Debug + Copy + Default + Serialize>(settings: &NutsSettings<A>) -> Result<()> {
+    validate_draw_counts(settings.num_tune, settings.num_draws)
+}
+
 /// The microcanonical (ESH) dynamics normalize the momentum onto the unit sphere, which
 /// needs at least two dimensions.
-fn validate_nuts<A: Debug + Copy + Default + Serialize>(settings: &NutsSettings<A>) -> Result<()> {
-    validate_draw_counts(settings.num_tune, settings.num_draws)?;
-    if let Some(walnuts) = settings.walnuts {
-        walnuts.validate()?;
-        if uses_microcanonical(settings) {
-            bail!("WALNUTS does not support microcanonical dynamics");
-        }
-    }
-    Ok(())
-}
-
-/// Whether the NUTS settings use microcanonical dynamics in any warmup phase.
-fn uses_microcanonical<A: Debug + Copy + Default + Serialize>(settings: &NutsSettings<A>) -> bool {
-    std::iter::once(settings.trajectory_kind)
-        .chain(settings.early_trajectory_kind)
-        .any(|kind| kind == KineticEnergyKind::Microcanonical)
-}
-
 fn check_microcanonical_dim(microcanonical: bool, dim: usize) -> Result<()> {
     if microcanonical && dim < 2 {
         bail!("Microcanonical dynamics need at least 2 dimensions, but the model has {dim}");
@@ -525,7 +493,6 @@ fn default_mclmc_settings<A: Debug + Copy + Default + Serialize>(
         subsample_frequency: 1.0,
         dynamic_step_size: true,
         trajectory_kind: MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical,
-        gradient_clipping: Some(1e10),
     }
 }
 
@@ -607,7 +574,7 @@ impl Settings for DiagMclmcSettings {
             &mut math,
             mass_matrix,
             initial_kind,
-            self.gradient_clipping,
+            self.adapt_options.gradient_clipping,
         );
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
@@ -708,11 +675,7 @@ fn default_nuts_settings<A: Debug + Copy + Default + Serialize>(
         seed: 0,
         num_chains,
         target_integration_time: None,
-        trajectory_kind: KineticEnergyKind::Euclidean,
-        early_trajectory_kind: None,
         extra_doublings: 0,
-        gradient_clipping: Some(1e10),
-        walnuts: None,
         max_leapfrog_steps: None,
     }
 }
@@ -756,7 +719,7 @@ impl Settings for LowRankMclmcSettings {
             &mut math,
             mass_matrix,
             initial_kind,
-            self.gradient_clipping,
+            self.adapt_options.gradient_clipping,
         );
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
@@ -862,29 +825,29 @@ impl Default for FlowNutsSettings {
             .adapt_options
             .dual_average
             .max_step_size = std::f64::consts::FRAC_PI_2;
-        let mut vals = default_nuts_settings(adapt_options, 3000, 1, 1000.0);
-        vals.trajectory_kind = KineticEnergyKind::ExactNormal;
-        vals
+        adapt_options.trajectory_kind = KineticEnergyKind::ExactNormal;
+        default_nuts_settings(adapt_options, 3000, 1, 1000.0)
     }
 }
 
 type DiagNutsChain<M> = NutsChain<M, ChaCha8Rng, GlobalStrategy<M, DiagAdaptStrategy<M>>>;
 type LowRankNutsChain<M> = NutsChain<M, ChaCha8Rng, GlobalStrategy<M, LowRankMassMatrixStrategy>>;
 
-fn nuts_options(settings: &NutsSettings<impl Debug + Copy + Default + Serialize>) -> NutsOptions {
+fn nuts_options(
+    settings: &NutsSettings<impl Debug + Copy + Default + Serialize + DynamicsOptions>,
+) -> NutsOptions {
     NutsOptions {
         maxdepth: settings.maxdepth,
         mindepth: settings.mindepth,
-        store_divergences: settings.store_divergences,
         check_turning: settings.check_turning,
         target_integration_time: settings.target_integration_time,
         extra_doublings: settings.extra_doublings,
         max_energy_error: settings.max_energy_error,
-        walnuts: settings.walnuts,
         max_leapfrog_steps: settings.max_leapfrog_steps,
-        trajectory_kind: settings.trajectory_kind,
-        early_trajectory_kind: settings.early_trajectory_kind,
-        phase: WarmupPhase::Sampling,
+        walnuts: settings
+            .adapt_options
+            .walnuts()
+            .map(|walnuts| walnuts.macro_step_options()),
     }
 }
 
@@ -898,7 +861,7 @@ impl Settings for LowRankNutsSettings {
         mut rng: &mut R,
     ) -> Result<Self::Chain<M>> {
         self.validate()?;
-        check_microcanonical_dim(uses_microcanonical(self), math.dim())?;
+        check_microcanonical_dim(self.adapt_options.uses_microcanonical(), math.dim())?;
 
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
@@ -906,8 +869,8 @@ impl Settings for LowRankNutsSettings {
         let hamiltonian = TransformedHamiltonian::new(
             &mut math,
             mass_matrix,
-            self.trajectory_kind,
-            self.gradient_clipping,
+            self.adapt_options.trajectory_kind,
+            self.adapt_options.gradient_clipping,
         );
 
         let options = nuts_options(self);
@@ -992,7 +955,7 @@ impl Settings for DiagNutsSettings {
         mut rng: &mut R,
     ) -> Result<Self::Chain<M>> {
         self.validate()?;
-        check_microcanonical_dim(uses_microcanonical(self), math.dim())?;
+        check_microcanonical_dim(self.adapt_options.uses_microcanonical(), math.dim())?;
 
         let num_tune = self.num_tune;
         let strategy = GlobalStrategy::new(&mut math, self.adapt_options, num_tune, chain);
@@ -1003,8 +966,8 @@ impl Settings for DiagNutsSettings {
         let potential = TransformedHamiltonian::new(
             &mut math,
             mass_matrix,
-            self.trajectory_kind,
-            self.gradient_clipping,
+            self.adapt_options.trajectory_kind,
+            self.adapt_options.gradient_clipping,
         );
 
         let options = nuts_options(self);
@@ -1089,7 +1052,7 @@ impl Settings for FlowNutsSettings {
         mut rng: &mut R,
     ) -> Result<Self::Chain<M>> {
         self.validate()?;
-        check_microcanonical_dim(uses_microcanonical(self), math.dim())?;
+        check_microcanonical_dim(self.adapt_options.uses_microcanonical(), math.dim())?;
 
         let num_tune = self.num_tune;
 
@@ -1102,8 +1065,8 @@ impl Settings for FlowNutsSettings {
         let hamiltonian = TransformedHamiltonian::new(
             &mut math,
             transform,
-            self.trajectory_kind,
-            self.gradient_clipping,
+            self.adapt_options.trajectory_kind,
+            self.adapt_options.gradient_clipping,
         );
 
         let options = nuts_options(self);
@@ -1209,8 +1172,12 @@ impl Settings for FlowMclmcSettings {
             MclmcTrajectoryKind::Euclidean
             | MclmcTrajectoryKind::EuclideanEarlyThenMicrocanonical => KineticEnergyKind::Euclidean,
         };
-        let mut hamiltonian =
-            TransformedHamiltonian::new(&mut math, transform, initial_kind, self.gradient_clipping);
+        let mut hamiltonian = TransformedHamiltonian::new(
+            &mut math,
+            transform,
+            initial_kind,
+            self.adapt_options.gradient_clipping,
+        );
         hamiltonian.set_momentum_decoherence_length(Some(self.momentum_decoherence_length));
         let rng = ChaCha8Rng::try_from_rng(rng).expect("Could not seed rng");
         let stats_options = self.stats_options::<M>();
@@ -2467,11 +2434,11 @@ mod tests {
                 let mut settings = <$ty>::default();
                 assert!(settings.disabled_stats().contains(&"irreversible"));
                 assert!(settings.disabled_stats().contains(&"min_micro_steps"));
-                settings.walnuts = Some(crate::WalnutsOptions::default());
+                settings.adapt_options.walnuts = Some(crate::WalnutsOptions::default());
                 assert!(!settings.disabled_stats().contains(&"irreversible"));
                 assert!(!settings.disabled_stats().contains(&"min_micro_steps"));
                 assert!(settings.disabled_stats().contains(&"macro_steps_mean"));
-                settings.walnuts = Some(crate::WalnutsOptions {
+                settings.adapt_options.walnuts = Some(crate::WalnutsOptions {
                     target_macro_steps: Some(15.0),
                     ..Default::default()
                 });
@@ -2804,10 +2771,8 @@ mod tests {
 
         #[test]
         fn microcanonical_needs_two_dims() {
-            let settings = DiagNutsSettings {
-                trajectory_kind: KineticEnergyKind::Microcanonical,
-                ..Default::default()
-            };
+            let mut settings = DiagNutsSettings::default();
+            settings.adapt_options.trajectory_kind = KineticEnergyKind::Microcanonical;
             assert!(new_chain_error(settings, 1).contains("2 dimensions"));
 
             let settings = DiagMclmcSettings {

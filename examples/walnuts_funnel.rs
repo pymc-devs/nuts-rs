@@ -192,10 +192,8 @@ fn main() -> Result<()> {
         seed: 42,
         ..Default::default()
     };
-    let walnuts_settings = DiagNutsSettings {
-        walnuts: Some(WalnutsOptions::default()),
-        ..nuts_settings
-    };
+    let mut walnuts_settings = nuts_settings;
+    walnuts_settings.adapt_options.walnuts = Some(WalnutsOptions::default());
 
     println!("Neal's funnel in {DIM} dimensions, 4 chains with 2000 draws each\n");
     println!(

@@ -6,44 +6,46 @@ use serde::{Deserialize, Serialize};
 
 use crate::adapt_strategy::CombinedCollector;
 use crate::chain::AdaptStrategy;
-use crate::dynamics::{Hamiltonian, Point, State, TransformedHamiltonian, TransformedPoint};
+use crate::dynamics::{
+    Hamiltonian, KineticEnergyKind, Point, State, TransformedHamiltonian, TransformedPoint,
+};
 use crate::nuts::{Collector, NutsOptions, SampleInfo};
 use crate::sampler_stats::{SamplerStats, StatsDims};
 use crate::stepsize::AcceptanceRateCollector;
 use crate::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
 use crate::transform::ExternalTransformation;
-use crate::warmup::{WarmupPhase, WarmupSchedule};
+use crate::walnuts::WalnutsOptions;
+use crate::warmup::{DynamicsOptions, WarmupPhase, WarmupSchedule, set_phase_settings};
 use crate::{Math, NutsError};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FlowSettings {
     /// Fraction of the tuning draws that belong to the early warmup phase,
     /// see [`WarmupPhase::Early`].
-    #[serde(default = "default_flow_early_window")]
     pub early_window: f64,
     pub step_size_window: f64,
     pub transform_update_freq: u64,
     /// Number of draws between transformation updates in the early phase.
-    #[serde(default = "default_early_transform_update_freq")]
     pub early_transform_update_freq: u64,
     pub use_orbit_for_training: bool,
     pub step_size_settings: StepSizeSettings,
     pub transform_train_max_energy_error: f64,
+    /// See `EuclideanAdaptOptions::trajectory_kind`.
+    pub trajectory_kind: KineticEnergyKind,
+    /// See `EuclideanAdaptOptions::early_trajectory_kind`.
+    pub early_trajectory_kind: Option<KineticEnergyKind>,
+    /// See `EuclideanAdaptOptions::gradient_clipping`.
+    pub gradient_clipping: Option<f64>,
+    /// See `EuclideanAdaptOptions::early_gradient_clipping`.
+    pub early_gradient_clipping: Option<f64>,
+    /// See `EuclideanAdaptOptions::walnuts`.
+    pub walnuts: Option<WalnutsOptions>,
 }
 
 /// Backwards-compatible alias for [`FlowSettings`].
 #[deprecated(since = "0.0.0", note = "Use FlowSettings instead")]
 pub type TransformedSettings = FlowSettings;
-
-/// With the default 3000 tuning draws of the flow NUTS settings, the early
-/// phase ends at draw 99.
-fn default_flow_early_window() -> f64 {
-    0.033
-}
-
-fn default_early_transform_update_freq() -> u64 {
-    10
-}
 
 impl FlowSettings {
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
@@ -54,6 +56,7 @@ impl FlowSettings {
                 self.early_window
             );
         }
+        self.validate_dynamics()?;
         if self.early_transform_update_freq == 0 {
             anyhow::bail!("early_transform_update_freq must be positive");
         }
@@ -70,14 +73,43 @@ impl FlowSettings {
 impl Default for FlowSettings {
     fn default() -> Self {
         Self {
-            early_window: default_flow_early_window(),
+            // With the default 3000 tuning draws of the flow NUTS settings,
+            // the early phase ends at draw 99.
+            early_window: 0.033,
             step_size_window: 0.07f64,
             transform_update_freq: 128,
-            early_transform_update_freq: default_early_transform_update_freq(),
+            early_transform_update_freq: 10,
             use_orbit_for_training: false,
             transform_train_max_energy_error: 20f64,
             step_size_settings: Default::default(),
+            trajectory_kind: KineticEnergyKind::default(),
+            early_trajectory_kind: None,
+            gradient_clipping: None,
+            early_gradient_clipping: Some(1e6),
+            walnuts: None,
         }
+    }
+}
+
+impl DynamicsOptions for FlowSettings {
+    fn trajectory_kind(&self) -> KineticEnergyKind {
+        self.trajectory_kind
+    }
+
+    fn early_trajectory_kind(&self) -> Option<KineticEnergyKind> {
+        self.early_trajectory_kind
+    }
+
+    fn gradient_clipping(&self) -> Option<f64> {
+        self.gradient_clipping
+    }
+
+    fn early_gradient_clipping(&self) -> Option<f64> {
+        self.early_gradient_clipping
+    }
+
+    fn walnuts(&self) -> Option<WalnutsOptions> {
+        self.walnuts
     }
 }
 
@@ -228,6 +260,9 @@ impl<M: Math> AdaptStrategy<M> for ExternalTransformAdaptation {
         position: &[f64],
         rng: &mut R,
     ) -> Result<(), NutsError> {
+        // The initial step size search should already use the settings of
+        // the first draw.
+        set_phase_settings(self.schedule.phase(0), &self.options, options, hamiltonian);
         hamiltonian.init_transformation(rng, math, position, self.chain)?;
         self.step_size
             .init(math, options, hamiltonian, position, rng)?;
@@ -249,7 +284,8 @@ impl<M: Math> AdaptStrategy<M> for ExternalTransformAdaptation {
         let phase = self.schedule.phase(draw);
         match phase {
             WarmupPhase::Early | WarmupPhase::Main => {
-                self.step_size.update_min_micro_steps(options);
+                self.step_size
+                    .update_min_micro_steps(self.options.walnuts.as_ref(), options);
                 let update_freq = if phase == WarmupPhase::Early {
                     self.options.early_transform_update_freq
                 } else {
@@ -279,6 +315,14 @@ impl<M: Math> AdaptStrategy<M> for ExternalTransformAdaptation {
                 self.step_size.update_stepsize(rng, hamiltonian, true);
                 self.tuning = false;
             }
+        }
+        if self.schedule.is_phase_end(draw) {
+            set_phase_settings(
+                self.schedule.phase(draw + 1),
+                &self.options,
+                options,
+                hamiltonian,
+            );
         }
         Ok(())
     }

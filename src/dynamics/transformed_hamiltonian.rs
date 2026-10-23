@@ -70,6 +70,8 @@ pub struct TransformedPoint<M: Math> {
     kinetic_energy: f64,
     initial_energy: f64,
     transform_id: i64,
+    /// The gradient clipping that `untransformed_gradient` was computed with.
+    clip: Option<f64>,
     /// The step size factor used by the leapfrog step that produced this point.
     /// For NUTS and static MCLMC this is always `1.0`; for MCLMC with dynamic
     /// step size reduction it may be `< 1.0`.  Used to compute importance
@@ -90,6 +92,7 @@ impl<M: Math> Debug for TransformedPoint<M> {
             .field("logdet", &self.logdet)
             .field("kinetic_energy", &self.kinetic_energy)
             .field("transform_id", &self.transform_id)
+            .field("clip", &self.clip)
             .finish()
     }
 }
@@ -282,6 +285,7 @@ impl<M: Math> TransformedPoint<M> {
         self.logp = logp;
         self.logdet = logdet;
         self.transform_id = transformation.transformation_id(math);
+        self.clip = clip;
         Ok(())
     }
 
@@ -302,6 +306,7 @@ impl<M: Math> TransformedPoint<M> {
         self.logp = logp;
         self.logdet = logdet;
         self.transform_id = transformation.transformation_id(math);
+        self.clip = clip;
         Ok(())
     }
 
@@ -386,6 +391,7 @@ impl<M: Math> Point<M> for TransformedPoint<M> {
             logdet: 0f64,
             kinetic_energy: 0f64,
             transform_id: -1,
+            clip: None,
             initial_energy: 0f64,
             step_size_factor: 1.0,
         }
@@ -403,6 +409,7 @@ impl<M: Math> Point<M> for TransformedPoint<M> {
             logdet,
             kinetic_energy,
             transform_id,
+            clip,
             initial_energy,
             step_size_factor,
         } = self;
@@ -412,6 +419,7 @@ impl<M: Math> Point<M> for TransformedPoint<M> {
         other.logdet = *logdet;
         other.kinetic_energy = *kinetic_energy;
         other.transform_id = *transform_id;
+        other.clip = *clip;
         other.initial_energy = *initial_energy;
         other.step_size_factor = *step_size_factor;
         math.copy_into(untransformed_position, &mut other.untransformed_position);
@@ -703,6 +711,7 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
             self.clip,
         )
         .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
+        point.clip = self.clip;
         // Force recomputation of transformed coordinates on first leapfrog step
         point.transform_id = -1;
         if !point.check_untransformed(math) {
@@ -734,7 +743,12 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         }
 
         let current_transform_id = self.transformation().transformation_id(math);
-        if current_transform_id != point.transform_id {
+        if point.clip != self.clip {
+            // The gradient clipping changed since the gradient was computed.
+            point
+                .init_from_untransformed_position(self.transformation(), math, self.clip)
+                .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
+        } else if current_transform_id != point.transform_id {
             let logdet = self
                 .transformation()
                 .inv_transform_normalize(
@@ -802,6 +816,14 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
 
     fn set_kinetic_energy_kind(&mut self, kind: KineticEnergyKind) {
         self.kinetic_energy_kind = kind;
+    }
+
+    fn gradient_clipping(&self) -> Option<f64> {
+        self.clip
+    }
+
+    fn set_gradient_clipping(&mut self, clip: Option<f64>) {
+        self.clip = clip;
     }
 
     fn momentum_decoherence_length(&self) -> Option<f64> {

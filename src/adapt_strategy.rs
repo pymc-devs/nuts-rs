@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use super::stepsize::AcceptanceRateCollector;
 use super::stepsize::{StepSizeSettings, Strategy as StepSizeStrategy};
 use crate::dynamics::{
-    DivergenceInfo, Hamiltonian, Point, State, TransformedHamiltonian, TransformedPoint,
+    DivergenceInfo, Hamiltonian, KineticEnergyKind, Point, State, TransformedHamiltonian,
+    TransformedPoint,
 };
 use crate::transform::MassMatrixAdaptStrategy;
 use crate::{
@@ -19,7 +20,8 @@ use crate::{
     math::Math,
     nuts::{Collector, NutsOptions, StepInfo},
     sampler_stats::{SamplerStats, StatsDims},
-    warmup::{WarmupPhase, WarmupSchedule},
+    walnuts::WalnutsOptions,
+    warmup::{DynamicsOptions, WarmupPhase, WarmupSchedule, set_phase_settings},
 };
 
 pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
@@ -35,6 +37,7 @@ pub struct GlobalStrategy<M: Math, A: MassMatrixAdaptStrategy<M>> {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EuclideanAdaptOptions<S: Debug + Default> {
     pub step_size_settings: StepSizeSettings,
     pub mass_matrix_options: S,
@@ -47,6 +50,35 @@ pub struct EuclideanAdaptOptions<S: Debug + Default> {
     /// Multiplicative growth factor applied to the window size after each switch in the
     /// main phase. 1.0 means constant windows (old behaviour). Must be >= 1.0.
     pub mass_matrix_window_growth: f64,
+    /// Selects the kinetic-energy form and the corresponding integrator.
+    ///
+    /// - [`KineticEnergyKind::Euclidean`]: standard leapfrog (default for most settings).
+    /// - [`KineticEnergyKind::ExactNormal`]: geodesic leapfrog exact for a standard-normal
+    ///   potential.
+    /// - [`KineticEnergyKind::Microcanonical`]: isokinetic ESH-dynamics leapfrog (microcanonical
+    ///   HMC); momentum is constrained to the unit sphere.
+    ///
+    /// MCLMC uses its own `trajectory_kind`, and requires the default here.
+    pub trajectory_kind: KineticEnergyKind,
+    /// If set, used instead of `trajectory_kind` in the early warmup phase
+    /// (see [`WarmupPhase::Early`]). For instance, ExactNormal dynamics
+    /// assume that the transformed posterior is close to a standard normal,
+    /// which is not the case before the first mass matrix updates. Not
+    /// supported with MCLMC.
+    pub early_trajectory_kind: Option<KineticEnergyKind>,
+    /// Soft clipping for gradients. None by default.
+    pub gradient_clipping: Option<f64>,
+    /// If set, used instead of `gradient_clipping` in the early warmup phase.
+    /// Far from the typical set, gradients can be huge, and clipping keeps
+    /// the first steps from shooting off. `1e6` by default.
+    pub early_gradient_clipping: Option<f64>,
+    /// Use WALNUTS (within-orbit adaptive step sizes) instead of plain NUTS.
+    ///
+    /// Each leapfrog step of the NUTS trajectory is split into smaller steps if
+    /// needed to keep the energy error below `max_energy_error`. The step size
+    /// is then adapted to the energy error of the unsplit steps. Not supported
+    /// with [`KineticEnergyKind::Microcanonical`] or MCLMC.
+    pub walnuts: Option<WalnutsOptions>,
 }
 
 impl<S: Debug + Default> EuclideanAdaptOptions<S> {
@@ -64,6 +96,7 @@ impl<S: Debug + Default> EuclideanAdaptOptions<S> {
                 self.step_size_window
             );
         }
+        self.validate_dynamics()?;
         if !(self.mass_matrix_window_growth.is_finite() && self.mass_matrix_window_growth >= 1.0) {
             anyhow::bail!(
                 "mass_matrix_window_growth must be at least 1, got {}",
@@ -85,7 +118,34 @@ impl<S: Debug + Default> Default for EuclideanAdaptOptions<S> {
             early_mass_matrix_switch_freq: 10,
             mass_matrix_update_freq: 1,
             mass_matrix_window_growth: 1.5,
+            trajectory_kind: KineticEnergyKind::default(),
+            early_trajectory_kind: None,
+            gradient_clipping: None,
+            early_gradient_clipping: Some(1e6),
+            walnuts: None,
         }
+    }
+}
+
+impl<S: Debug + Default> DynamicsOptions for EuclideanAdaptOptions<S> {
+    fn trajectory_kind(&self) -> KineticEnergyKind {
+        self.trajectory_kind
+    }
+
+    fn early_trajectory_kind(&self) -> Option<KineticEnergyKind> {
+        self.early_trajectory_kind
+    }
+
+    fn gradient_clipping(&self) -> Option<f64> {
+        self.gradient_clipping
+    }
+
+    fn early_gradient_clipping(&self) -> Option<f64> {
+        self.early_gradient_clipping
+    }
+
+    fn walnuts(&self) -> Option<WalnutsOptions> {
+        self.walnuts
     }
 }
 
@@ -105,7 +165,8 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> GlobalStrategy<M, A> {
         let phase = self.schedule.phase(draw);
         let is_early = phase == WarmupPhase::Early;
 
-        self.step_size.update_min_micro_steps(options);
+        self.step_size
+            .update_min_micro_steps(self.options.walnuts.as_ref(), options);
 
         // At the transition from early to main phase, seed current_window_size as the
         // maximum of the configured initial size and the background count already
@@ -225,6 +286,9 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         position: &[f64],
         rng: &mut R,
     ) -> Result<(), NutsError> {
+        // The initial step size search should already use the settings of
+        // the first draw.
+        set_phase_settings(self.schedule.phase(0), &self.options, options, hamiltonian);
         let state = hamiltonian.init_state_untransformed(math, position)?;
         self.mass_matrix_adapt.init(
             math,
@@ -264,6 +328,14 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
                 self.step_size.update_stepsize(rng, hamiltonian, true);
                 self.tuning = false;
             }
+        }
+        if self.schedule.is_phase_end(draw) {
+            set_phase_settings(
+                self.schedule.phase(draw + 1),
+                &self.options,
+                options,
+                hamiltonian,
+            );
         }
         Ok(())
     }
@@ -439,15 +511,11 @@ mod test {
             maxdepth: 10u64,
             mindepth: 0,
             check_turning: true,
-            store_divergences: false,
             target_integration_time: None,
             extra_doublings: 0,
             max_energy_error: 1000.0,
-            walnuts: None,
             max_leapfrog_steps: None,
-            trajectory_kind: KineticEnergyKind::Euclidean,
-            early_trajectory_kind: None,
-            phase: WarmupPhase::Sampling,
+            walnuts: None,
         };
 
         let rng = {
