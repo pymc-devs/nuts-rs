@@ -70,10 +70,16 @@ pub struct Strategy {
     last_depth: u64,
     /// Adaptation of the WALNUTS `min_micro_steps`, which scales the step size
     min_micro_steps: MinMicroStepsAdaptation,
+    /// Whether `update_estimator_late` uses the symmetric accept statistic.
+    symmetric_late_estimator: bool,
 }
 
 impl Strategy {
-    pub fn new(options: StepSizeSettings) -> Self {
+    /// With WALNUTS the accept statistics come from the local energy errors
+    /// of macro steps, which do not start from the stationary distribution.
+    /// The symmetric statistic then no longer has the same expectation as
+    /// the asymmetric one, so `symmetric_late_estimator` should be false.
+    pub fn new(options: StepSizeSettings, symmetric_late_estimator: bool) -> Self {
         let adaptation = match options.adapt_options.method {
             StepSizeAdaptMethod::DualAverage => Some(Either::Left(DualAverage::new(
                 options.adapt_options.dual_average,
@@ -96,6 +102,7 @@ impl Strategy {
             last_max_energy_error: 0.0,
             last_depth: 0,
             min_micro_steps: MinMicroStepsAdaptation::default(),
+            symmetric_late_estimator,
         }
     }
 
@@ -257,13 +264,18 @@ impl Strategy {
     }
 
     pub fn update_estimator_late(&mut self) {
+        let accept = if self.symmetric_late_estimator {
+            self.last_sym_mean_tree_accept
+        } else {
+            self.last_mean_tree_accept
+        };
         match self.adaptation.as_mut() {
             None => {}
             Some(Either::Left(adapt)) => {
-                adapt.advance(self.last_sym_mean_tree_accept, self.options.target_accept);
+                adapt.advance(accept, self.options.target_accept);
             }
             Some(Either::Right(adapt)) => {
-                adapt.advance(self.last_sym_mean_tree_accept, self.options.target_accept);
+                adapt.advance(accept, self.options.target_accept);
             }
         }
     }

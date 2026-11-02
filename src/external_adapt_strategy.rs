@@ -235,7 +235,8 @@ impl<M: Math> AdaptStrategy<M> for ExternalTransformAdaptation {
     type Options = FlowSettings;
 
     fn new(_math: &mut M, options: Self::Options, num_tune: u64, chain: u64) -> Self {
-        let step_size = StepSizeStrategy::new(options.step_size_settings);
+        let step_size =
+            StepSizeStrategy::new(options.step_size_settings, options.walnuts.is_none());
         let final_window_size =
             ((num_tune as f64) * (1f64 - options.step_size_window)).floor() as u64;
         let early_end = ((num_tune as f64) * options.early_window) as u64;

@@ -263,7 +263,7 @@ impl<M: Math, A: MassMatrixAdaptStrategy<M>> AdaptStrategy<M> for GlobalStrategy
         debug_assert!(options.mass_matrix_window_growth >= 1.0);
 
         Self {
-            step_size: StepSizeStrategy::new(options.step_size_settings),
+            step_size: StepSizeStrategy::new(options.step_size_settings, options.walnuts.is_none()),
             mass_matrix_adapt: A::new(math, options.mass_matrix_options, num_tune, chain),
             options,
             schedule: WarmupSchedule {
