@@ -234,3 +234,42 @@ impl<M: Math> MassMatrixAdaptStrategy<M> for Strategy<M> {
         DrawGradCollector::new(math)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::RunningVariance;
+    use crate::math::test_logps::NormalLogp;
+    use crate::math::{CpuMath, Math};
+
+    #[test]
+    fn running_variance_matches_sample_variance() {
+        let draws = [
+            [1.0, -3.0],
+            [2.0, 0.5],
+            [3.0, 10.0],
+            [4.0, 2.0],
+            [-6.0, 0.0],
+        ];
+        let mut math = CpuMath::new(NormalLogp::new(2, 0.0));
+        let mut estimator = RunningVariance::new(&mut math);
+        let mut value = math.new_array();
+        for draw in &draws {
+            math.read_from_slice(&mut value, draw);
+            estimator.add_sample(&mut math, &value);
+        }
+
+        let (variance, scale) = estimator.current();
+        let mut variance_out = [0.0; 2];
+        math.write_to_slice(variance, &mut variance_out);
+        let mut mean_out = [0.0; 2];
+        math.write_to_slice(&estimator.mean, &mut mean_out);
+
+        let n = draws.len() as f64;
+        for i in 0..2 {
+            let mean = draws.iter().map(|d| d[i]).sum::<f64>() / n;
+            let expected = draws.iter().map(|d| (d[i] - mean).powi(2)).sum::<f64>() / (n - 1.0);
+            approx::assert_relative_eq!(mean_out[i], mean, max_relative = 1e-12);
+            approx::assert_relative_eq!(variance_out[i] * scale, expected, max_relative = 1e-12);
+        }
+    }
+}
