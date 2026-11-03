@@ -640,7 +640,7 @@ impl<F: CpuLogpFunc> Math for CpuMath<F> {
             .for_each(|(mean, var, x)| {
                 let diff = x - *mean;
                 *mean += diff * diff_scale;
-                *var += diff * diff;
+                *var += diff * (x - *mean);
             });
         })
     }
