@@ -152,5 +152,10 @@ pub use storage::{HashMapConfig, HashMapResult, HashMapValue};
 #[cfg(feature = "ndarray")]
 pub use storage::{NdarrayConfig, NdarrayTrace, NdarrayValue};
 
+/// Re-export of the `arrow` crate, so that users can work
+/// with the record batches in an [`ArrowTrace`] using the
+/// same `arrow` version as nuts-rs.
+#[cfg(feature = "arrow")]
+pub use arrow;
 #[cfg(feature = "arrow")]
 pub use storage::{ArrowConfig, ArrowTrace, ArrowTraceStorage};
