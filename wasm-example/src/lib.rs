@@ -12,10 +12,10 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use arrow::array::{Array, Float64Array, LargeListArray};
 use nuts_rs::{
     ArrowConfig, ArrowTrace, CpuLogpFunc, CpuMath, CpuMathError, DiagNutsSettings,
     InitPositionError, LogpError, Model, Sampler, SamplerWaitResult,
+    arrow::array::{Array, Float64Array, LargeListArray},
 };
 use nuts_storable::HasDims;
 use rand::Rng;
