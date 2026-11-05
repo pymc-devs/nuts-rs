@@ -2,7 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.19.1] - 2026-10-15
+## [0.19.2] - 2026-11-05
+
+### Bug Fixes
+
+- Use the updated mean in the running variance update (Raphael Fakhri)
+
+- Divergences should decrease the step size (Adrian Seyboldt)
+
+- Divergence indexes were off by one (Adrian Seyboldt)
+
+- Don't use symmetric accept stat in walnuts (Adrian Seyboldt)
+
+
+### Features
+
+- Expose fisher distance and num_grads in progress (Adrian Seyboldt)
+
+- Add AnyTrace for generic sampler output (Adrian Seyboldt)
+
+- Update flow adaptation defaults (Adrian Seyboldt)
+
+- Limit number of walnuts steps (Adrian Seyboldt)
+
+- Larger early max_energy_error (Adrian Seyboldt)
+
+- Increase max_min_micro_steps (Adrian Seyboldt)
+
+- [**breaking**] Make early walnuts more stable (Adrian Seyboldt)
+
+- Treat irreversibility as divergence for step size (Adrian Seyboldt)
+
+- Re-export arrow dependency (Adrian Seyboldt)
+
+
+### Miscellaneous Tasks
+
+- Update zarr and arrow dependencies (Adrian Seyboldt)
+
+
+### Refactor
+
+- Use Phases in AdaptStrategy (Adrian Seyboldt)
+
+
+## [0.19.0] - 2026-10-02
 
 ### Bug Fixes
 
@@ -42,14 +86,6 @@ All notable changes to this project will be documented in this file.
 - [**breaking**] Resumable errors in model init (Adrian Seyboldt)
 
 - Implement walnuts (Adrian Seyboldt)
-
-- Expose fisher distance and num_grads in progress (Adrian Seyboldt)
-
-- Add AnyTrace for generic sampler output (Adrian Seyboldt)
-
-- Update flow adaptation defaults (Adrian Seyboldt)
-
-- Limit number of walnuts steps (Adrian Seyboldt)
 
 
 ### Miscellaneous Tasks
