@@ -50,6 +50,9 @@ pub struct StepInfo {
     /// WALNUTS attempts and reversibility checks.
     pub num_gradients: u64,
     pub base_step: BaseStepOutcome,
+    /// The WALNUTS macro step was not reversible, so the trajectory stops
+    /// after it.
+    pub irreversible: bool,
 }
 
 impl StepInfo {
@@ -57,6 +60,7 @@ impl StepInfo {
     pub const PLAIN: StepInfo = StepInfo {
         num_gradients: 1,
         base_step: BaseStepOutcome::Plain,
+        irreversible: false,
     };
 }
 

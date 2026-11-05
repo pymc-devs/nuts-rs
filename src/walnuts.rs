@@ -406,6 +406,7 @@ where
                 let step = StepInfo {
                     num_gradients,
                     base_step,
+                    irreversible: !reversible,
                 };
                 collector.register_leapfrog(math, start, &end, None, &step);
                 if reversible {
@@ -443,6 +444,7 @@ where
     let step = StepInfo {
         num_gradients,
         base_step,
+        irreversible: false,
     };
     collector.register_leapfrog(math, start, &last, Some(&divergence), &step);
     Ok(MacroStep::Divergence(divergence))
@@ -857,6 +859,40 @@ mod tests {
             }
         }
         assert!(irreversible_later > 0);
+    }
+
+    /// An irreversible trajectory counts the steps that its last doubling did
+    /// not compute as rejections.
+    #[test]
+    fn irreversible_counts_missing_steps_as_rejected() {
+        let walnuts = WalnutsOptions {
+            early_max_energy_error: None,
+            ..Default::default()
+        };
+        let settings = fixed_step_settings(1.5, KineticEnergyKind::Euclidean, Some(walnuts));
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let logp = NormalLogp::new(10, 3.0);
+        let mut chain = settings.new_chain(0, CpuMath::new(logp), &mut rng).unwrap();
+        chain.set_position(&[0.1; 10]).unwrap();
+        let options = settings.stats_options();
+        let mut num_irreversible = 0;
+        for _ in 0..200 {
+            chain.draw().unwrap();
+            let stats = chain.extract_stats(&mut chain.math().clone(), options);
+            if stats.irreversible != Some(true) {
+                continue;
+            }
+            num_irreversible += 1;
+            let step_size = &stats.adapt.step_size;
+            let full = (1u64 << (stats.depth + 1)) - 1;
+            assert!(step_size.n_steps <= full);
+            // Every computed step contributes at most 1, the irreversible
+            // one and the missing ones 0.
+            let bound = (step_size.n_steps - 1) as f64 / full as f64;
+            assert!(step_size.mean_tree_accept <= bound + 1e-12);
+            assert!(step_size.mean_tree_accept_sym <= bound + 1e-12);
+        }
+        assert!(num_irreversible > 0);
     }
 
     /// If no step is ever split, WALNUTS takes exactly the same steps and
