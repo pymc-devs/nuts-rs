@@ -118,6 +118,12 @@ impl RunningMean {
         self.count += 1;
     }
 
+    /// Add `value` `n` times.
+    fn add_repeated(&mut self, value: f64, n: u64) {
+        self.sum += value * n as f64;
+        self.count += n;
+    }
+
     pub(crate) fn current(&self) -> f64 {
         self.sum / self.count as f64
     }
@@ -125,10 +131,6 @@ impl RunningMean {
     pub(crate) fn reset(&mut self) {
         self.sum = 0f64;
         self.count = 0;
-    }
-
-    pub(crate) fn count(&self) -> u64 {
-        self.count
     }
 }
 
@@ -138,6 +140,10 @@ pub struct AcceptanceRateCollector {
     pub(crate) mean_sym: RunningMean,
     pub(crate) max_energy_error: f64,
     pub(crate) num_gradients: u64,
+    /// The number of steps of the last trajectory. Unlike the count of the
+    /// running means, this does not include the rejections that are added
+    /// for the steps an irreversible WALNUTS trajectory did not compute.
+    pub(crate) num_steps: u64,
     /// The depth of the last trajectory.
     pub(crate) depth: u64,
 }
@@ -150,6 +156,7 @@ impl AcceptanceRateCollector {
             mean_sym: RunningMean::new(),
             max_energy_error: 0.,
             num_gradients: 0,
+            num_steps: 0,
             depth: 0,
         }
     }
@@ -181,6 +188,7 @@ impl<M: Math, P: Point<M>> Collector<M, P> for AcceptanceRateCollector {
         step: &StepInfo,
     ) {
         self.num_gradients += step.num_gradients;
+        self.num_steps += 1;
 
         let diff = match divergence_info {
             Some(_) => None,
@@ -192,6 +200,9 @@ impl<M: Math, P: Point<M>> Collector<M, P> for AcceptanceRateCollector {
             // includes macro steps where no attempt was within tolerance, even
             // if the first attempt had a large negative energy error.
             _ if divergence_info.is_some() => self.add_accept(None),
+            // An irreversible WALNUTS macro step stops the trajectory just like
+            // a divergence, so the step size adaptation should avoid it too.
+            _ if step.irreversible => self.add_accept(None),
             // Plain NUTS: acceptance relative to the start of the trajectory.
             BaseStepOutcome::Plain => self.add_accept(diff),
             // WALNUTS: the accepted macro steps are within tolerance by
@@ -215,6 +226,19 @@ impl<M: Math, P: Point<M>> Collector<M, P> for AcceptanceRateCollector {
 
     fn register_draw(&mut self, _math: &mut M, _state: &State<M, P>, info: &SampleInfo) {
         self.depth = info.depth;
+        // An irreversible WALNUTS macro step stops the trajectory in the
+        // middle of a doubling. A single rejection for that macro step would
+        // hardly change the mean of a long trajectory, so we also count the
+        // steps that the doubling did not compute as rejections. A completed
+        // doubling would have `2^(depth + 1) - 1` steps.
+        if info.irreversible {
+            let full = 1u64
+                .checked_shl(info.depth as u32 + 1)
+                .map_or(u64::MAX, |size| size - 1);
+            let missing = full.saturating_sub(self.num_steps);
+            self.mean.add_repeated(0., missing);
+            self.mean_sym.add_repeated(0., missing);
+        }
     }
 
     fn register_init(&mut self, _math: &mut M, state: &State<M, P>, _options: &NutsOptions) {
@@ -223,5 +247,6 @@ impl<M: Math, P: Point<M>> Collector<M, P> for AcceptanceRateCollector {
         self.mean_sym.reset();
         self.max_energy_error = 0.;
         self.num_gradients = 0;
+        self.num_steps = 0;
     }
 }

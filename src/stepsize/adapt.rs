@@ -226,7 +226,7 @@ impl Strategy {
     pub fn update(&mut self, collector: &AcceptanceRateCollector) {
         let mean_sym = collector.mean_sym.current();
         let mean = collector.mean.current();
-        let n_steps = collector.mean.count();
+        let n_steps = collector.num_steps;
         self.last_mean_tree_accept = mean;
         self.last_sym_mean_tree_accept = mean_sym;
         self.last_n_steps = n_steps;
