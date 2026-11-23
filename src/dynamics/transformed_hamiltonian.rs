@@ -705,12 +705,13 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         let mut state = self.pool().new_state(math);
         let point = state.try_point_mut().expect("State already in use");
         math.read_from_slice(&mut point.untransformed_position, untransformed_position);
-        math.logp_array_softclip(
-            &point.untransformed_position,
-            &mut point.untransformed_gradient,
-            self.clip,
-        )
-        .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
+        point.logp = math
+            .logp_array_softclip(
+                &point.untransformed_position,
+                &mut point.untransformed_gradient,
+                self.clip,
+            )
+            .map_err(|e| NutsError::LogpFailure(Box::new(e)))?;
         point.clip = self.clip;
         // Force recomputation of transformed coordinates on first leapfrog step
         point.transform_id = -1;
@@ -883,5 +884,62 @@ impl<M: Math, T: Transformation<M>> Hamiltonian<M> for TransformedHamiltonian<M,
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::{SeedableRng, rngs::SmallRng};
+
+    use super::*;
+    use crate::{
+        math::{CpuMath, test_logps::NormalLogp},
+        transform::DiagMassMatrix,
+    };
+
+    #[test]
+    fn init_state_untransformed_populates_and_overwrites_pooled_logp() {
+        let mut math = CpuMath::new(NormalLogp::new(3, 5.0));
+        let mass = DiagMassMatrix::new(&mut math, false);
+        let mut ham =
+            TransformedHamiltonian::new(&mut math, mass, KineticEnergyKind::Euclidean, None);
+
+        // Fresh state: `logp` should be populated rather than left at `0.0`.
+        let fresh = ham
+            .init_state_untransformed(&mut math, &[1.0, 2.0, 3.0])
+            .unwrap();
+        assert!((fresh.point().logp() - (-14.5)).abs() < 1e-12);
+        let mut grad = [0.0; 3];
+        math.write_to_slice(fresh.point().gradient(), &mut grad);
+        assert_eq!(grad, [4.0, 3.0, 2.0]);
+
+        ham.transformation_mut().update_diag_grad(
+            &mut math,
+            fresh.point().position(),
+            fresh.point().gradient(),
+            1.0,
+            (1e-20, 1e20),
+        );
+        drop(fresh);
+
+        // Seed the pooled slot with a non-zero `logp` via `init_state`, then verify that
+        // `init_state_untransformed` overwrites the stale value when reusing that slot.
+        let seeded = ham.init_state(&mut math, &[1.0, 2.0, 3.0]).unwrap();
+        assert!((seeded.point().logp() - (-14.5)).abs() < 1e-12);
+        drop(seeded);
+
+        let mut reused = ham
+            .init_state_untransformed(&mut math, &[5.0, 5.0, 6.0])
+            .unwrap();
+        assert!((reused.point().logp() - (-0.5)).abs() < 1e-12);
+
+        // `initialize_trajectory` takes the `inv_transform_normalize` branch (which does not
+        // recompute `logp`). `CpuMath::new_array` zero-initializes velocity, so
+        // `kinetic_energy == 0` when `resample_velocity` is `false`.
+        let mut rng = SmallRng::seed_from_u64(0);
+        ham.initialize_trajectory(&mut math, &mut reused, false, &mut rng)
+            .unwrap();
+        let expected_energy = -(-0.5 + ham.transformation().logdet());
+        assert!((reused.point().initial_energy() - expected_energy).abs() < 1e-12);
     }
 }
